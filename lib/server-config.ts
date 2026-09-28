@@ -1,0 +1,10 @@
+import { env } from "cloudflare:workers";
+
+export function serverConfig() {
+  return {
+    appkey: env.JACKYUN_APP_KEY || "92058521",
+    secret: env.JACKYUN_APP_SECRET || "",
+    configured: !!env.JACKYUN_APP_SECRET,
+    robotConfigured: !!(env.DINGTALK_CLIENT_ID && env.DINGTALK_CLIENT_SECRET && env.DINGTALK_ROBOT_CODE && env.DINGTALK_OPEN_CONVERSATION_ID),
+  };
+}

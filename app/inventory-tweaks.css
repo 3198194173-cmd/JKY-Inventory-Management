@@ -1,0 +1,22 @@
+.stock-table th,.quantity-column button,.metric>span,.filter-select,.days-select { font-size:14px!important; }
+.stock-table th span,.badge,.under-table,.sample-note { font-size:12px!important; }
+.goods-cell strong { font-size:14px; }.goods-cell p { font-size:13px; }.search-box input { font-size:14px; }
+.stock-table .quantity-column { min-width:120px; }
+.scope-summary { padding:10px 22px; font-size:13px; color:#56637c; background:#f7faff; border-top:1px solid #eef2f6; display:flex; gap:15px; justify-content:space-between; }
+.scope-summary button { color:#4169e1; cursor:pointer; flex-shrink:0; }
+.scope-dialog { max-width:650px!important; }.scope-dialog label { display:grid; gap:8px; font-size:14px; }
+.scope-text { min-height:220px; max-height:35vh; resize:vertical; font-family:monospace; font-size:14px; }
+.scope-tip { font-size:13px; color:#7b8699; line-height:1.7; }.scope-dialog .primary-action { justify-self:end; }
+.table-scroll>[data-slot="table-container"] { overflow:visible; height:100%; }.history-scroll>[data-slot="table-container"] { overflow:visible; }
+.pagination { width:auto; margin:0; }.sidebar .nav-item { justify-content:flex-start; }.sidebar .nav-item>span:last-child { margin-left:auto; }
+@media(max-width:650px) {
+  .workspace { padding-bottom:65px; }
+  .sidebar { display:flex; flex-direction:row; align-items:center; justify-content:space-evenly; position:fixed; inset:auto 0 0; width:100%; height:60px; padding:6px; background:#fff; border-top:1px solid #e3e9f2; z-index:20; }
+  .sidebar .brand,.sidebar .sidebar-label,.sidebar .sidebar-bottom,.sidebar .nav-item:last-of-type { display:none; }
+  .sidebar nav { display:contents; }
+  .sidebar .nav-item { width:auto; min-width:85px; height:45px; display:flex; flex-direction:column; gap:5px; font-size:14px; color:#8f9db3; margin:0; padding:3px 9px; }
+  .sidebar .nav-item.active { background:#eff4ff; color:#4169e1; }.sidebar .nav-item svg { width:18px; height:18px; }
+  .sidebar nav .nav-item:last-of-type { display:flex; }
+  .sidebar .nav-item { justify-content:center; }.sidebar .nav-item>span:last-child { margin-left:0; }
+  .scope-summary { flex-wrap:wrap; padding:10px 14px; }.scope-action { padding:0 10px!important; }
+}
