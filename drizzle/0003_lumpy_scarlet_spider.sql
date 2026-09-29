@@ -1,0 +1,1 @@
+ALTER TABLE `stock_snapshots` ADD `unavailable_skus` text DEFAULT '[]' NOT NULL;

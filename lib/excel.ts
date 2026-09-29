@@ -24,8 +24,9 @@ export function inventoryWorkbook(view:InventoryView,rows:StockRow[]):Uint8Array
   files["xl/worksheets/sheet1.xml"]=replaceData(files["xl/worksheets/sheet1.xml"],data,rows.length+1,"I");
   const sourceLink="https://open.jackyun.com/developer/refactored/apidocinfo.html?id=erp-stock.stock.skulist&name=true";
   const notes=[
-    ["数据性质",view.source === "sample" ? "用户提供的 12 条历史测试样本，非全仓数据；测试应用 22914895。" : "erp.stockquantity.get 自动取得仓库 SKU，erp-stock.stock.skulist 查询可购数量；核对全部规格和货主后发布。"],
-    ["自动 SKU 清单",view.snapshot?.scope ? `${view.snapshot.scope.label}，${view.snapshot.scope.count} 个条码。` : "历史测试样本，范围未确认。"],
+    ["数据性质",view.source === "sample" ? "用户提供的 12 条历史测试样本，非全仓数据；测试应用 22914895。" : "erp.stockquantity.get 游标取得仓库 SKU，erp-stock.stock.skulist 按条码或货品编码查询并核验可购数量。仅统计规格齐全的已核验货品；未取得库存的记录另列，不填零。"],
+    ["自动 SKU 清单",view.snapshot?.scope ? `${view.snapshot.scope.label}，${view.snapshot.scope.count} 个 SKU。` : "历史测试样本，范围未确认。"],
+    ["未取得库存的 SKU",`${view.unavailableSkus?.length || 0} 个；不计入库存或销售差额，含缺失规格的货品不展示部分合计。`],
     ["仓库",`${view.warehouseName}（${view.warehouseCode}）`],
     ["采集日期",view.snapshot?.capturedAt||"未记录"],
     ["原始记录 / 汇总货品",`${view.snapshot?.recordCount||0} 条规格记录 / ${rows.length} 个货品；请求 ${view.snapshot?.pageCount||0} 页。`],
@@ -37,6 +38,7 @@ export function inventoryWorkbook(view:InventoryView,rows:StockRow[]):Uint8Array
     ["原始来源",view.source === "sample" ? "资料/响应样本/库存查询_原始样本.json" : "吉客云官方 erp-stock.stock.skulist 实时采集"],
     ["接口文档",sourceLink],
   ];
+  for (const [index,row] of (view.unavailableSkus || []).entries()) notes.push([`未取得库存 ${index + 1}`,`${row.goodsNo} | ${row.goodsName} | SKU ${row.skuId} | ${row.skuBarcode || "无条码"} | ${row.reason}`]);
   let noteData=`<row r="1">${cell("A1","采集项目",base.noteStyles.A1)}${cell("B1","说明",base.noteStyles.B1)}</row>`;
   notes.forEach(([label,value],i)=>{const r=i+2;noteData+=`<row r="${r}" ht="24" customHeight="1">${cell(`A${r}`,label,base.noteStyles.A2)}${cell(`B${r}`,value,base.noteStyles.B2)}</row>`;});
   files["xl/worksheets/sheet2.xml"]=replaceData(files["xl/worksheets/sheet2.xml"],noteData,notes.length+1,"B");

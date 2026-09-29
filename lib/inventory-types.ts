@@ -1,5 +1,6 @@
 import type { ScopeInfo } from "./stock-scope";
 export type WarehouseInfo = { code: string; name: string; warehouseId: string | null; dailyTime: string; timeZone: string };
+export type UnavailableSku = { skuId: string; goodsNo: string; goodsName: string; skuName: string; skuBarcode: string; unitName: string; reason: string };
 export type StockRow = {
   goodsNo: string;
   goodsName: string;
@@ -16,6 +17,7 @@ export type SnapshotInfo = {
   pageCount: number;
   recordCount: number;
   scope: ScopeInfo | null;
+  unavailableSkus?: UnavailableSku[];
 };
 
 export type InventoryView = {
@@ -29,6 +31,7 @@ export type InventoryView = {
   salesDates?: string[];
   scheduleActive?: boolean;
   dailyTime?: string;
+  unavailableSkus?: UnavailableSku[];
   configured: boolean;
   robotConfigured: boolean;
   totalRows: number;

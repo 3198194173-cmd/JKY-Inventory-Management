@@ -22,8 +22,8 @@ export function shanghaiTimestamp(date = new Date()): string {
 
 export class ApiFailure extends Error {}
 
-export async function fetchStockPage(appkey: string, secret: string, pageIndex: number, fetcher: typeof fetch = fetch, barcodes: string[] = [], warehouseCode = WAREHOUSE_CODE): Promise<Record<string, unknown>[]> {
-  const bizcontent = JSON.stringify({ pageIndex, pageSize: STOCK_PAGE_SIZE, warehouseCode, goodsNo: "", goodsName: "", skuName: "", skuBarcode: barcodes.join(","), skuCode: "", cols: "warehouseName,orderAbleQuantity" });
+export async function fetchStockPage(appkey: string, secret: string, pageIndex: number, fetcher: typeof fetch = fetch, barcodes: string[] = [], warehouseCode = WAREHOUSE_CODE, goodsNo = ""): Promise<Record<string, unknown>[]> {
+  const bizcontent = JSON.stringify({ pageIndex, pageSize: STOCK_PAGE_SIZE, warehouseCode, goodsNo, goodsName: "", skuName: "", skuBarcode: barcodes.join(","), skuCode: "", cols: "warehouseName,orderAbleQuantity" });
   for (let attempt = 0; attempt < 3; attempt++) {
     const params = { appkey, bizcontent, contenttype: "json", method: "erp-stock.stock.skulist", timestamp: shanghaiTimestamp(), version: "v1.0" };
     let response: Response;
@@ -50,16 +50,15 @@ export async function fetchStockPage(appkey: string, secret: string, pageIndex: 
     // Live exact-match queries return success/null beyond their last page. Only
     // an explicit barcode scope may use this form; collectStock verifies every
     // requested barcode before publishing, so a short/default range cannot pass.
-    if (barcodes.length && data === null && String(body.subCode) === "0250000004") return [];
+    if ((barcodes.length || goodsNo) && data === null && String(body.subCode) === "0250000004") return [];
     if (!Array.isArray(data) || data.some(row => !row || typeof row !== "object" || Array.isArray(row))) throw new ApiFailure("库存响应缺少有效 result.data 数组");
     return data as Record<string, unknown>[];
   }
   throw new ApiFailure("库存请求失败");
 }
 
-export async function collectStock(appkey: string, secret: string, onPage: (pages: number, records: number, goods: number) => Promise<void>, pageFetcher = fetchStockPage, scope?: StockScope, warehouse = { code: WAREHOUSE_CODE, name: WAREHOUSE_NAME, id: "2391620541187785472" }, verifyRow?: (row: Record<string, unknown>) => void): Promise<{ rows: StockRow[]; pageCount: number; recordCount: number; duplicateCount: number }> {
+export async function collectStock(appkey: string, secret: string, onPage: (pages: number, records: number, goods: number) => Promise<void>, pageFetcher = fetchStockPage, scope?: StockScope, warehouse = { code: WAREHOUSE_CODE, name: WAREHOUSE_NAME, id: "2391620541187785472" }, verifyRow?: (row: Record<string, unknown>) => void, state = createAccumulator(), allowMissing = false): Promise<{ rows: StockRow[]; pageCount: number; recordCount: number; duplicateCount: number }> {
   if (!scope?.barcodes.length) throw new ApiFailure("请先设置完整条码清单；仅按仓库查询已证实会漏数据");
-  const state = createAccumulator();
   let pageCount = 0;
   for (const batch of barcodeBatches(scope)) {
     const expected = new Set(batch), seen = new Set<string>();
@@ -80,7 +79,7 @@ export async function collectStock(appkey: string, secret: string, onPage: (page
     }
     if (!ended) throw new ApiFailure("单批条码超过 100 页仍未结束，未发布本次库存");
     const missing = batch.filter(barcode => !seen.has(barcode));
-    if (missing.length) throw new ApiFailure(`有 ${missing.length} 个条码未返回：${missing.slice(0,3).join("、")}。请核对条码和仓库，本次未发布；缺失不当作 0。`);
+    if (missing.length && !allowMissing) throw new ApiFailure(`有 ${missing.length} 个条码未返回：${missing.slice(0,3).join("、")}。请核对条码和仓库，本次未发布；缺失不当作 0。`);
     await onPage(pageCount, state.recordCount, state.goods.size);
   }
   return { rows: aggregatedRows(state), pageCount, recordCount: state.recordCount, duplicateCount: state.duplicateCount };

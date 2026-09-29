@@ -29,27 +29,27 @@ test("仓库代码透传目录接口，空终页而非 total=0 决定分页结�
     return Response.json({code:200,result:{data:{goodsStockQuantity:[]},pageInfo:{total:0}}});
   }) as typeof fetch;
   assert.deepEqual(await fetchCatalogPage("fake","fake","CK_ALT",0,fetcher),[]);
-  const calls: number[] = [];
-  const catalog = await discoverCatalog("fake","fake","CK_ALT",async() => {}, async(_a,_s,_c,page) => { calls.push(page); return page === 0 ? [catalogRow()] : []; });
-  assert.deepEqual(calls,[0,1]); assert.equal(catalog.rows.length,1);
-  await assert.rejects(() => discoverCatalog("fake","fake","CK_ALT",async() => {},async() => [catalogRow()]),/重复/);
+  const calls: unknown[] = [];
+  const catalog = await discoverCatalog("fake","fake","CK_ALT",async() => {}, async(_a,_s,_c,page,_fetch,cursor) => { calls.push([page,cursor]); return cursor === "0" ? [catalogRow()] : []; });
+  assert.deepEqual(calls,[[0,"0"],[0,"1"]]); assert.equal(catalog.rows.length,1);
+  await assert.rejects(() => discoverCatalog("fake","fake","CK_ALT",async() => {},async() => [catalogRow()]),/游标/);
   await assert.rejects(() => discoverCatalog("fake","fake","CK_ALT",async() => {},async() => [catalogRow("1","CK_OTHER")]),/其他仓库/);
 });
 test("两接口自动衔接使用可购数量，校验规格和货主，无需人工范围", async () => {
-  const catalogue = async(_a:string,_s:string,_c:string,page:number) => page === 0 ? [catalogRow("1"),catalogRow("2")] : [];
+  const catalogue = async(_a:string,_s:string,_c:string,_page:number,_fetch?:typeof fetch,cursor?:string) => cursor === "0" ? [catalogRow("1"),catalogRow("2")] : [];
   const stock = async(_a:string,_s:string,page:number,_f?:typeof fetch,_batch?:string[],code?:string) => {
     assert.equal(code,"CK_ALT"); const first = {...catalogRow("1"),currentQuantity:"777",orderAbleQuantity:"0.2"} as Record<string,unknown>; delete first.ownerName; return page === 0 ? [first,{...catalogRow("2"),orderAbleQuantity:"-1"}] : [];
   };
   const result = await collectWarehouseStock("fake","fake","CK_ALT",async() => {},catalogue,stock);
   assert.equal(result.rows[0].quantity,"0.2"); assert.equal(result.rows[1].quantity,"-1"); assert.equal(result.pageCount,4);
   await assert.rejects(() => collectWarehouseStock("fake","fake","CK_ALT",async() => {},catalogue,stock,"different-registered-id"),/身份已改变/);
-  await assert.rejects(() => collectWarehouseStock("fake","fake","CK_ALT",async() => {},catalogue,async(_a,_s,page) => page === 0 ? [{...catalogRow("1"),orderAbleQuantity:"0"}] : []),/未返回/);
+  await assert.rejects(() => collectWarehouseStock("fake","fake","CK_ALT",async() => {},catalogue,async(_a,_s,page,_f,_b,_c,goodsNo) => !goodsNo && page === 0 ? [{...catalogRow("1"),orderAbleQuantity:"0"}] : []),/未返回/);
   await assert.rejects(() => collectWarehouseStock("fake","fake","CK_ALT",async() => {},catalogue,async() => [{...catalogRow("1"),ownerName:"错误货主",orderAbleQuantity:"0"}]),/货主/);
   const state = createAccumulator(); accumulatePage(state,[{...catalogRow(),orderAbleQuantity:"5"}],"测试仓","9999999999999999999");
   assert.throws(() => accumulatePage(createAccumulator(),[{...catalogRow(),orderAbleQuantity:"5"}],"测试仓","other"),/仓库身份/);
 });
 test("同规格重复行的可选货主字段不会导致库存重复求和", async () => {
-  const catalog = async(_a:string,_s:string,_c:string,page:number) => page === 0 ? [catalogRow()] : [];
+  const catalog = async(_a:string,_s:string,_c:string,_page:number,_fetch?:typeof fetch,cursor?:string) => cursor === "0" ? [catalogRow()] : [];
   const stock = async(_a:string,_s:string,page:number) => {
     const missing = {...catalogRow(),orderAbleQuantity:"10"} as Record<string,unknown>; delete missing.ownerName;
     return page === 0 ? [missing,{...catalogRow(),orderAbleQuantity:"10"}] : [];
@@ -57,11 +57,41 @@ test("同规格重复行的可选货主字段不会导致库存重复求和", as
   const result = await collectWarehouseStock("fake","fake","CK_ALT",async() => {},catalog,stock);
   assert.equal(result.recordCount,1); assert.equal(result.duplicateCount,1); assert.equal(result.rows[0].quantity,"10");
 });
+test("无条码规格通过货品编码查询，仍按SKU身份核验数量", async () => {
+  const missing = {...catalogRow("2"),skuBarcode:null};
+  const catalog = async(_a:string,_s:string,_c:string,_p:number,_f?:typeof fetch,cursor?:string) => cursor === "0" ? [catalogRow("1"),missing] : [];
+  const calls: string[] = [];
+  const stock = async(_a:string,_s:string,page:number,_f?:typeof fetch,_b?:string[],code?:string,goodsNo?:string) => {
+    assert.equal(code,"CK_ALT"); calls.push(goodsNo || "barcode");
+    return page ? [] : goodsNo ? [{...missing,orderAbleQuantity:"2.5"}] : [{...catalogRow("1"),orderAbleQuantity:"1"}];
+  };
+  const result = await collectWarehouseStock("fake","fake","CK_ALT",async()=>{},catalog,stock);
+  assert.deepEqual(result.rows.map(r=>r.quantity),["1","2.5"]); assert.equal(result.unavailable.length,0);
+  assert.deepEqual(calls,["barcode","barcode","g2","g2"]);
+});
+test("未返回库存明确保留清单，不补零；缺一个规格不显示货品的部分合计", async () => {
+  const missing = {...catalogRow("3"),goodsNo:"g2",goodsName:"货品2",skuBarcode:null};
+  const catalog = async(_a:string,_s:string,_c:string,_p:number,_f?:typeof fetch,cursor?:string) => cursor === "0" ? [catalogRow("1"),catalogRow("2"),missing] : [];
+  const stock = async(_a:string,_s:string,page:number,_f?:typeof fetch,_b?:string[],_c?:string,goodsNo?:string) => page || goodsNo ? [] : [{...catalogRow("1"),orderAbleQuantity:"7"},{...catalogRow("2"),orderAbleQuantity:"10"}];
+  const result = await collectWarehouseStock("fake","fake","CK_ALT",async()=>{},catalog,stock,undefined,true);
+  assert.equal(result.recordCount,2); assert.deepEqual(result.rows.map(r=>[r.goodsNo,r.quantity]),[["g1","7"]]);
+  assert.equal(result.unavailable[0].skuId,"3"); assert.equal(result.unavailable[0].skuBarcode,""); assert.match(result.unavailable[0].reason,/无条码/);
+  await assert.rejects(()=>collectWarehouseStock("fake","fake","CK_ALT",async()=>{},catalog,stock),/未返回/);
+  await assert.rejects(()=>collectWarehouseStock("fake","fake","CK_ALT",async()=>{},catalog,async()=>[],undefined,true),/任何可核验/);
+});
+test("游标覆盖一万条以上清单，并拒绝忽略游标或乱序", async () => {
+  const catalog = await discoverCatalog("fake","fake","CK_ALT",async()=>{},async(_a,_s,_c,page,_f,cursor) => {
+    assert.equal(page,0); const after=Number(cursor); return after >= 10200 ? [] : Array.from({length:200},(_,i)=>catalogRow(String(after+i+1)));
+  });
+  assert.equal(catalog.rows.length,10200); assert.equal(catalog.pageCount,52);
+  await assert.rejects(()=>discoverCatalog("fake","fake","CK_ALT",async()=>{},async()=>[catalogRow("2"),catalogRow("1")]),/游标/);
+});
 test("迁移保存旧数据，多仓库隔离、每日基准不覆盖、1000条查询少量绑定", () => {
   const db = new DatabaseSync(":memory:");
   for (const name of readdirSync("drizzle").filter(n => n.endsWith(".sql")).sort()) db.exec(readFileSync(`drizzle/${name}`,"utf8"));
   db.prepare("INSERT INTO warehouses (owner,code,name,created_at) VALUES ('owner','CK_ALT','测试','now')").run();
   assert.equal(db.prepare("SELECT daily_time, time_zone FROM warehouses").get()!.daily_time,"08:00");
+  assert.ok(db.prepare("PRAGMA table_info(stock_snapshots)").all().some(row=>row.name === "unavailable_skus"));
   db.exec("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES ('first','owner','2026-09-28','t1','complete',1,1000,1000,'{}',0,0,'CK_ALT','auto:v1'), ('later','owner','2026-09-28','t2','complete',1,1,1,'{}',0,0,'CK_ALT','auto:v1'), ('other','owner','2026-09-28','t3','complete',1,1,1,'{}',0,0,'CK_OTHER','auto:v1')");
   db.prepare("INSERT OR IGNORE INTO daily_slots VALUES ('owner','CK_ALT','2026-09-28',?)").run("first"); db.prepare("INSERT OR IGNORE INTO daily_slots VALUES ('owner','CK_ALT','2026-09-28',?)").run("later");
   assert.equal(db.prepare("SELECT snapshot_id FROM daily_slots").get()!.snapshot_id,"first");

@@ -33,6 +33,7 @@ export const snapshots = sqliteTable("stock_snapshots", {
   warehouseName: text("warehouse_name").notNull().default("易速菲泰国8仓成品仓"),
   coverage: text("coverage").notNull().default("legacy-partial"),
   catalogHash: text("catalog_hash").notNull().default(""),
+  unavailableSkus: text("unavailable_skus").notNull().default("[]"),
 }, t => [index("idx_snapshots_owner_date").on(t.owner, t.status, t.date, t.capturedAt)]);
 
 export const entries = sqliteTable("stock_entries", {
