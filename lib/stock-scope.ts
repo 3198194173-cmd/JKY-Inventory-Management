@@ -17,6 +17,14 @@ export function stockScope(text: unknown, label: unknown = "指定条码清单")
 export const scopeInfo = (scope: StockScope): ScopeInfo => ({ label: scope.label, count: scope.barcodes.length, key: scope.key });
 export function barcodeBatches(scope: StockScope) {
   const batches: string[][] = [];
-  for (let i = 0; i < scope.barcodes.length; i += BARCODE_BATCH_SIZE) batches.push(scope.barcodes.slice(i, i + BARCODE_BATCH_SIZE));
+  let batch: string[] = [], length = 0;
+  // The official gateway validates skuBarcode as at most 1,000 characters,
+  // independently of page size or number of requested SKUs.
+  for (const barcode of scope.barcodes) {
+    const nextLength = length + barcode.length + (batch.length ? 1 : 0);
+    if (batch.length && (batch.length >= BARCODE_BATCH_SIZE || nextLength > 1000)) { batches.push(batch); batch = []; length = 0; }
+    length += barcode.length + (batch.length ? 1 : 0); batch.push(barcode);
+  }
+  if (batch.length) batches.push(batch);
   return batches;
 }

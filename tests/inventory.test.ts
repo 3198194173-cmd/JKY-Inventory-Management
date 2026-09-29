@@ -38,11 +38,11 @@ test("分页必须查至空页，且清单每个条码都要返回",async()=>{
 });
 test("清单去重后分批，超过1000条不会由单请求隐式截断",async()=>{
   const scope=stockScope(Array.from({length:7001},(_,i)=>`b${i}`).join("\n")+"\nb0");
-  assert.equal(scope.barcodes.length,7001);assert.equal(barcodeBatches(scope).length,15);assert.ok(barcodeBatches(scope).every(b=>b.length<=500));
+  assert.equal(scope.barcodes.length,7001);assert.ok(barcodeBatches(scope).length>15);assert.ok(barcodeBatches(scope).every(b=>b.length<=500 && b.join(',').length<=1000));
   assert.equal(stockScope("b1\nb0").key,stockScope("b0,b1,b0").key);
   const requests:string[][]=[];
   const result=await collectStock("fake","fake",async()=>{},async(_a,_s,page,_f,batch)=>{if(page===0)requests.push(batch!);return batch!.slice(page*200,(page+1)*200).map(id=>({...row(id,"0"),goodsNo:id,goodsName:`货品 ${id}`}));},scope);
-  assert.equal(result.recordCount,7001);assert.equal(result.rows.length,7001);assert.equal(requests.length,15);
+  assert.equal(result.recordCount,7001);assert.equal(result.rows.length,7001);assert.equal(requests.length,barcodeBatches(scope).length);
 });
 test("只在显式条码范围内接受已实测的成功null终页，权限受限仍失败",async()=>{
   const empty=(async()=>Response.json({code:200,subCode:"0250000004",result:{data:null,noPrivilegeItem:null}})) as typeof fetch;

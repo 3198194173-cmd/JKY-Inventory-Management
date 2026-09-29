@@ -1,4 +1,5 @@
 import type { ScopeInfo } from "./stock-scope";
+export type WarehouseInfo = { code: string; name: string; warehouseId: string | null; dailyTime: string; timeZone: string };
 export type StockRow = {
   goodsNo: string;
   goodsName: string;
@@ -23,7 +24,11 @@ export type InventoryView = {
   source: "live" | "sample";
   snapshot: SnapshotInfo | null;
   snapshots: SnapshotInfo[];
-  rows: (StockRow & { history: Record<string, string | null> })[];
+  rows: (StockRow & { history: Record<string, string | null>; sales?: Record<string, string | null> })[];
+  warehouses?: WarehouseInfo[];
+  salesDates?: string[];
+  scheduleActive?: boolean;
+  dailyTime?: string;
   configured: boolean;
   robotConfigured: boolean;
   totalRows: number;
@@ -44,4 +49,5 @@ export type RunInfo = {
   recordCount: number;
   goodsCount: number;
   message: string | null;
+  warehouseCode?: string;
 };

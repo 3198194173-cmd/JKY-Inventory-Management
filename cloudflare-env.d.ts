@@ -9,5 +9,6 @@ declare namespace Cloudflare {
     DINGTALK_CLIENT_SECRET?: string;
     DINGTALK_ROBOT_CODE?: string;
     DINGTALK_OPEN_CONVERSATION_ID?: string;
+    INVENTORY_CRON_SECRET?: string;
   }
 }

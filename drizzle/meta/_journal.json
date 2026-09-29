@@ -15,6 +15,13 @@
       "when": 1790586267588,
       "tag": "0001_narrow_skreet",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790666514946,
+      "tag": "0002_dry_loki",
+      "breakpoints": true
     }
   ]
 }

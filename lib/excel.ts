@@ -24,12 +24,13 @@ export function inventoryWorkbook(view:InventoryView,rows:StockRow[]):Uint8Array
   files["xl/worksheets/sheet1.xml"]=replaceData(files["xl/worksheets/sheet1.xml"],data,rows.length+1,"I");
   const sourceLink="https://open.jackyun.com/developer/refactored/apidocinfo.html?id=erp-stock.stock.skulist&name=true";
   const notes=[
-    ["数据性质",view.source === "sample" ? "用户提供的 12 条历史测试样本，非全仓数据；测试应用 22914895。" : "应用 92058521 按指定条码清单采集；逐项核对与分页结束后发布。是否覆盖全仓取决于清单完整性。"],
-    ["采集范围",view.snapshot?.scope ? `${view.snapshot.scope.label}，${view.snapshot.scope.count} 个条码。` : "历史测试样本，范围未确认。"],
+    ["数据性质",view.source === "sample" ? "用户提供的 12 条历史测试样本，非全仓数据；测试应用 22914895。" : "erp.stockquantity.get 自动取得仓库 SKU，erp-stock.stock.skulist 查询可购数量；核对全部规格和货主后发布。"],
+    ["自动 SKU 清单",view.snapshot?.scope ? `${view.snapshot.scope.label}，${view.snapshot.scope.count} 个条码。` : "历史测试样本，范围未确认。"],
     ["仓库",`${view.warehouseName}（${view.warehouseCode}）`],
     ["采集日期",view.snapshot?.capturedAt||"未记录"],
     ["原始记录 / 汇总货品",`${view.snapshot?.recordCount||0} 条规格记录 / ${rows.length} 个货品；请求 ${view.snapshot?.pageCount||0} 页。`],
     ["库存口径","库存现有 = orderAbleQuantity（可订购量）；按 goodsNo 合并同单位规格，保留小数、负数与零。"],
+    ["网页销售口径","昨天每日基准库存减今天每日基准库存，记在昨天；仅比较连续日期和相同单位。每日北京时间08:00后首次成功采集为固定基准，补货可能产生负值。"],
     ["单位合计",Object.entries(view.totalsByUnit).map(([u,q])=>`${q} ${u}`).join("；")],
     ["未接入的字段","均值、日期业务列、库存周转、在途、建议补货保持为空；不把缺失数据填成 0。"],
     ["数值精度","数量超过 Excel 的 15 位有效数字限制时存为文本，以保留原始精度。"],

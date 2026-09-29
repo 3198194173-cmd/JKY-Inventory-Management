@@ -18,7 +18,7 @@ function identifier(value: unknown, field: string): string {
   return String(value);
 }
 
-export function accumulatePage(state: StockAccumulator, rows: Record<string, unknown>[], warehouseName: string): number {
+export function accumulatePage(state: StockAccumulator, rows: Record<string, unknown>[], warehouseName: string, expectedWarehouseId = "2391620541187785472"): number {
   let newRecords = 0;
   for (const row of rows) {
     const goodsNo = identifier(row.goodsNo, "goodsNo");
@@ -26,9 +26,9 @@ export function accumulatePage(state: StockAccumulator, rows: Record<string, unk
     const goodsName = typeof row.goodsName === "string" ? row.goodsName.trim() : "";
     const unitName = typeof row.unitName === "string" ? row.unitName.trim() : "";
     if (!goodsName || !unitName) throw new Error(`货品 ${goodsNo} 缺少名称或单位`);
-    if (row.warehouseName !== warehouseName) throw new Error(`货品 ${goodsNo} 的仓库与 CK031 不符`);
+    if (row.warehouseName !== warehouseName) throw new Error(`货品 ${goodsNo} 的仓库名称不符`);
     const warehouseId = identifier(row.warehouseId, "warehouseId");
-    if (warehouseId !== "2391620541187785472") throw new Error(`货品 ${goodsNo} 的仓库身份与 CK031 不符`);
+    if (warehouseId !== expectedWarehouseId) throw new Error(`货品 ${goodsNo} 的仓库身份不符`);
     const owner = row.ownerId != null ? identifier(row.ownerId, "ownerId") : row.ownerName != null ? identifier(row.ownerName, "ownerName") : "";
     const identity = `${warehouseId}|${skuId}|${owner}`;
     const quantity = normalizeQuantity(row.orderAbleQuantity);

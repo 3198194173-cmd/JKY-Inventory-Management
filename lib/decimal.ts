@@ -41,3 +41,7 @@ export function compareQuantity(left: string, right: string): number {
   const difference = parts(addQuantity(left, right.startsWith("-") ? right.slice(1) : "-" + right)).integer;
   return difference < 0n ? -1 : difference > 0n ? 1 : 0;
 }
+
+export function subtractQuantity(left: string, right: string): string {
+  return addQuantity(left, right.startsWith("-") ? right.slice(1) : "-" + right);
+}

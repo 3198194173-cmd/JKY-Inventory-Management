@@ -10,6 +10,8 @@ export const runs = sqliteTable("sync_runs", {
   recordCount: integer("record_count").notNull().default(0),
   goodsCount: integer("goods_count").notNull().default(0),
   message: text("message"),
+  warehouseCode: text("warehouse_code").notNull().default("CK031"),
+  trigger: text("trigger").notNull().default("manual"),
 }, t => [index("idx_runs_owner_time").on(t.owner, t.startedAt)]);
 
 export const snapshots = sqliteTable("stock_snapshots", {
@@ -27,6 +29,10 @@ export const snapshots = sqliteTable("stock_snapshots", {
   scopeKey: text("scope_key").notNull().default(""),
   scopeLabel: text("scope_label").notNull().default("范围未确认"),
   scopeCount: integer("scope_count").notNull().default(0),
+  warehouseCode: text("warehouse_code").notNull().default("CK031"),
+  warehouseName: text("warehouse_name").notNull().default("易速菲泰国8仓成品仓"),
+  coverage: text("coverage").notNull().default("legacy-partial"),
+  catalogHash: text("catalog_hash").notNull().default(""),
 }, t => [index("idx_snapshots_owner_date").on(t.owner, t.status, t.date, t.capturedAt)]);
 
 export const entries = sqliteTable("stock_entries", {
@@ -54,3 +60,21 @@ export const stockScopes = sqliteTable("stock_scopes", {
   label: text("label").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const warehouses = sqliteTable("warehouses", {
+  owner: text("owner").notNull(),
+  code: text("code").notNull(),
+  name: text("name").notNull(),
+  warehouseId: text("warehouse_id"),
+  scheduleEnabled: integer("schedule_enabled").notNull().default(1),
+  dailyTime: text("daily_time").notNull().default("08:00"),
+  timeZone: text("time_zone").notNull().default("Asia/Shanghai"),
+  createdAt: text("created_at").notNull(),
+}, t => [primaryKey({ columns: [t.owner, t.code] })]);
+
+export const dailySlots = sqliteTable("daily_slots", {
+  owner: text("owner").notNull(),
+  warehouseCode: text("warehouse_code").notNull(),
+  date: text("date").notNull(),
+  snapshotId: text("snapshot_id").notNull().references(() => snapshots.id),
+}, t => [primaryKey({ columns: [t.owner, t.warehouseCode, t.date] })]);

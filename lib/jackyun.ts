@@ -22,8 +22,8 @@ export function shanghaiTimestamp(date = new Date()): string {
 
 export class ApiFailure extends Error {}
 
-export async function fetchStockPage(appkey: string, secret: string, pageIndex: number, fetcher: typeof fetch = fetch, barcodes: string[] = []): Promise<Record<string, unknown>[]> {
-  const bizcontent = JSON.stringify({ pageIndex, pageSize: STOCK_PAGE_SIZE, warehouseCode: WAREHOUSE_CODE, goodsNo: "", goodsName: "", skuName: "", skuBarcode: barcodes.join(","), skuCode: "", cols: "warehouseName,orderAbleQuantity" });
+export async function fetchStockPage(appkey: string, secret: string, pageIndex: number, fetcher: typeof fetch = fetch, barcodes: string[] = [], warehouseCode = WAREHOUSE_CODE): Promise<Record<string, unknown>[]> {
+  const bizcontent = JSON.stringify({ pageIndex, pageSize: STOCK_PAGE_SIZE, warehouseCode, goodsNo: "", goodsName: "", skuName: "", skuBarcode: barcodes.join(","), skuCode: "", cols: "warehouseName,orderAbleQuantity" });
   for (let attempt = 0; attempt < 3; attempt++) {
     const params = { appkey, bizcontent, contenttype: "json", method: "erp-stock.stock.skulist", timestamp: shanghaiTimestamp(), version: "v1.0" };
     let response: Response;
@@ -41,6 +41,7 @@ export async function fetchStockPage(appkey: string, secret: string, pageIndex: 
     if (Number(body.code) !== 200) {
       const code=String(body.subCode ?? body.code).replace(/[^\w-]/g, "").slice(0,30);
       if(code === "0130020327") throw new ApiFailure("吉客云限制每页最多 200 条，本次分页参数超出上限");
+      if(code === "0250019301") throw new ApiFailure("吉客云限制条码查询参数最多 1000 字符，请缩小条码批次");
       throw new ApiFailure(`吉客云业务请求失败（错误码 ${code}），请检查应用权限与本机配置`);
     }
     const data = body.result?.data;
@@ -56,7 +57,7 @@ export async function fetchStockPage(appkey: string, secret: string, pageIndex: 
   throw new ApiFailure("库存请求失败");
 }
 
-export async function collectStock(appkey: string, secret: string, onPage: (pages: number, records: number, goods: number) => Promise<void>, pageFetcher = fetchStockPage, scope?: StockScope): Promise<{ rows: StockRow[]; pageCount: number; recordCount: number; duplicateCount: number }> {
+export async function collectStock(appkey: string, secret: string, onPage: (pages: number, records: number, goods: number) => Promise<void>, pageFetcher = fetchStockPage, scope?: StockScope, warehouse = { code: WAREHOUSE_CODE, name: WAREHOUSE_NAME, id: "2391620541187785472" }, verifyRow?: (row: Record<string, unknown>) => void): Promise<{ rows: StockRow[]; pageCount: number; recordCount: number; duplicateCount: number }> {
   if (!scope?.barcodes.length) throw new ApiFailure("请先设置完整条码清单；仅按仓库查询已证实会漏数据");
   const state = createAccumulator();
   let pageCount = 0;
@@ -64,7 +65,7 @@ export async function collectStock(appkey: string, secret: string, onPage: (page
     const expected = new Set(batch), seen = new Set<string>();
     let ended = false;
     for (let pageIndex = 0; pageIndex < 100; pageIndex++) {
-      const rows = await pageFetcher(appkey, secret, pageIndex, fetch, batch);
+      const rows = await pageFetcher(appkey, secret, pageIndex, fetch, batch, warehouse.code);
       pageCount++;
       if (rows.length > STOCK_PAGE_SIZE) throw new ApiFailure("接口返回数量超过请求页大小");
       if (!rows.length) { ended = true; break; }
@@ -72,8 +73,9 @@ export async function collectStock(appkey: string, secret: string, onPage: (page
         const barcode = String(row.skuBarcode ?? "");
         if (!expected.has(barcode)) throw new ApiFailure(`返回了清单以外的条码 ${barcode.slice(0,80)}，未发布本次数据`);
         seen.add(barcode);
+        verifyRow?.(row);
       }
-      const added = accumulatePage(state, rows, WAREHOUSE_NAME);
+      const added = accumulatePage(state, rows, warehouse.name, warehouse.id);
       if (!added) throw new ApiFailure(`第 ${pageCount} 次请求完全重复，采集已终止以防无限分页`);
     }
     if (!ended) throw new ApiFailure("单批条码超过 100 页仍未结束，未发布本次库存");

@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./inventory-tweaks.css";
+import "./compact-inventory.css";
 
 export const metadata: Metadata = {
-  title: "仓库库存分析 · 吉客云",
-  description: "易速菲泰国8仓成品仓的可订购量、库存快照和 Excel 汇总。",
+  title: "仓库数据 · 库存与销售",
+  description: "多仓库实时可购数量、每日销售库存差额与 Excel 汇总。",
   icons: {
     icon: "/inventory-icon.svg",
     shortcut: "/inventory-icon.svg",

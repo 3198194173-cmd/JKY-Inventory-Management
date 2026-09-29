@@ -6,7 +6,7 @@ export async function GET(request: Request) {
     const owner = await currentOwner(), p = new URL(request.url).searchParams;
     const days = [7,14,30].includes(Number(p.get("days"))) ? Number(p.get("days")) : 14;
     const page = Math.max(1, Math.min(2000, Number(p.get("page")) || 1));
-    const data = await loadInventory(owner, { source: p.get("source") || undefined, q: (p.get("q") || "").slice(0,100), filter: p.get("filter") || "all", days, page: Math.floor(page), sort: p.get("sort") || "code" });
+    const data = await loadInventory(owner, { warehouseCode: p.get("warehouseCode") || "CK031", q: (p.get("q") || "").slice(0,100), filter: p.get("filter") || "all", days, page: Math.floor(page), pageSize: Number(p.get("pageSize")) || 100, sort: p.get("sort") || "code" });
     return Response.json(data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) { return errorResponse(error); }
 }
