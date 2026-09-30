@@ -92,6 +92,7 @@ test("迁移保存旧数据，多仓库隔离、每日基准不覆盖、1000条�
   db.prepare("INSERT INTO warehouses (owner,code,name,created_at) VALUES ('owner','CK_ALT','测试','now')").run();
   assert.equal(db.prepare("SELECT daily_time, time_zone FROM warehouses").get()!.daily_time,"08:00");
   assert.ok(db.prepare("PRAGMA table_info(stock_snapshots)").all().some(row=>row.name === "unavailable_skus"));
+  assert.ok(db.prepare("PRAGMA table_info(sync_runs)").all().some(row=>row.name === "last_progress_at"));
   db.exec("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES ('first','owner','2026-09-28','t1','complete',1,1000,1000,'{}',0,0,'CK_ALT','auto:v1'), ('later','owner','2026-09-28','t2','complete',1,1,1,'{}',0,0,'CK_ALT','auto:v1'), ('other','owner','2026-09-28','t3','complete',1,1,1,'{}',0,0,'CK_OTHER','auto:v1')");
   db.prepare("INSERT OR IGNORE INTO daily_slots VALUES ('owner','CK_ALT','2026-09-28',?)").run("first"); db.prepare("INSERT OR IGNORE INTO daily_slots VALUES ('owner','CK_ALT','2026-09-28',?)").run("later");
   assert.equal(db.prepare("SELECT snapshot_id FROM daily_slots").get()!.snapshot_id,"first");

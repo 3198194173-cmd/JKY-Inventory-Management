@@ -56,7 +56,7 @@ export async function discoverCatalog(appkey: string, secret: string, code: stri
       maxQuantityId = identity;
       rows.push(row);
     }
-    await onPage(pageCount, rows.length);
+    if (pageCount % 5 === 0 || batch.length < STOCK_PAGE_SIZE) await onPage(pageCount, rows.length);
   }
   if (!ended) throw new ApiFailure("仓库 SKU 清单超过 200,000 条保护上限，本次未发布截断数据");
   if (!rows.length) throw new ApiFailure("该仓库没有返回 SKU，请检查编码、权限或仓库是否为空；未生成零库存记录");
@@ -95,7 +95,7 @@ export async function collectWarehouseStock(appkey: string, secret: string, code
   };
   let stockPages = 0;
   if (barcodes.length) {
-    const result = await collectStock(appkey, secret, (pages, records, goods) => onPage(catalog.pageCount + pages, records, goods), stockFetcher, scope, { code, id: catalog.id, name: catalog.name }, verify, state, allowUnavailable);
+    const result = await collectStock(appkey, secret, (pages, records, goods) => onPage(catalog.pageCount + pages, records, goods), stockFetcher, scope, { code, id: catalog.id, name: catalog.name }, verify, state, allowUnavailable, 2);
     stockPages = result.pageCount;
   }
   for (const goodsNo of new Set(catalog.rows.filter(r => !seen.has(identity(r))).map(r => field(r,"goodsNo")))) {

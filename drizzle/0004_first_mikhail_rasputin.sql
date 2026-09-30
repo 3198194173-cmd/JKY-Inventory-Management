@@ -1,0 +1,1 @@
+ALTER TABLE `sync_runs` ADD `last_progress_at` text DEFAULT '' NOT NULL;

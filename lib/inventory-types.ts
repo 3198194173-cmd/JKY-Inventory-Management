@@ -47,6 +47,7 @@ export type RunInfo = {
   id: string;
   status: string;
   startedAt: string;
+  lastProgressAt?: string;
   completedAt: string | null;
   pageCount: number;
   recordCount: number;

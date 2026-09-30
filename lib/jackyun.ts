@@ -57,29 +57,42 @@ export async function fetchStockPage(appkey: string, secret: string, pageIndex: 
   throw new ApiFailure("库存请求失败");
 }
 
-export async function collectStock(appkey: string, secret: string, onPage: (pages: number, records: number, goods: number) => Promise<void>, pageFetcher = fetchStockPage, scope?: StockScope, warehouse = { code: WAREHOUSE_CODE, name: WAREHOUSE_NAME, id: "2391620541187785472" }, verifyRow?: (row: Record<string, unknown>) => void, state = createAccumulator(), allowMissing = false): Promise<{ rows: StockRow[]; pageCount: number; recordCount: number; duplicateCount: number }> {
+export async function collectStock(appkey: string, secret: string, onPage: (pages: number, records: number, goods: number) => Promise<void>, pageFetcher = fetchStockPage, scope?: StockScope, warehouse = { code: WAREHOUSE_CODE, name: WAREHOUSE_NAME, id: "2391620541187785472" }, verifyRow?: (row: Record<string, unknown>) => void, state = createAccumulator(), allowMissing = false, concurrency = 1): Promise<{ rows: StockRow[]; pageCount: number; recordCount: number; duplicateCount: number }> {
   if (!scope?.barcodes.length) throw new ApiFailure("请先设置完整条码清单；仅按仓库查询已证实会漏数据");
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new ApiFailure("库存查询并发数无效");
   let pageCount = 0;
-  for (const batch of barcodeBatches(scope)) {
-    const expected = new Set(batch), seen = new Set<string>();
-    let ended = false;
-    for (let pageIndex = 0; pageIndex < 100; pageIndex++) {
-      const rows = await pageFetcher(appkey, secret, pageIndex, fetch, batch, warehouse.code);
-      pageCount++;
-      if (rows.length > STOCK_PAGE_SIZE) throw new ApiFailure("接口返回数量超过请求页大小");
-      if (!rows.length) { ended = true; break; }
-      for (const row of rows) {
-        const barcode = String(row.skuBarcode ?? "");
-        if (!expected.has(barcode)) throw new ApiFailure(`返回了清单以外的条码 ${barcode.slice(0,80)}，未发布本次数据`);
-        seen.add(barcode);
-        verifyRow?.(row);
+  const batches = barcodeBatches(scope);
+  for (let start = 0; start < batches.length; start += concurrency) {
+    // Fetch independent exact-barcode batches together, then validate and
+    // aggregate in source order. This keeps identity checks deterministic and
+    // avoids one D1 progress write per tiny barcode batch.
+    const fetched = await Promise.all(batches.slice(start, start + concurrency).map(async batch => {
+      const pages: Record<string, unknown>[][] = [];
+      const expected = new Set(batch), seen = new Set<string>(), local = createAccumulator();
+      for (let pageIndex = 0; pageIndex < 100; pageIndex++) {
+        const rows = await pageFetcher(appkey, secret, pageIndex, fetch, batch, warehouse.code);
+        pages.push(rows);
+        if (rows.length > STOCK_PAGE_SIZE) throw new ApiFailure("接口返回数量超过请求页大小");
+        if (!rows.length) return { batch, pages, seen };
+        for (const row of rows) {
+          const barcode = String(row.skuBarcode ?? "");
+          if (!expected.has(barcode)) throw new ApiFailure(`返回了清单以外的条码 ${barcode.slice(0,80)}，未发布本次数据`);
+          seen.add(barcode);
+          verifyRow?.(row);
+        }
+        if (!accumulatePage(local, rows, warehouse.name, warehouse.id)) throw new ApiFailure(`第 ${pageIndex + 1} 页完全重复，采集已终止以防无限分页`);
       }
-      const added = accumulatePage(state, rows, warehouse.name, warehouse.id);
-      if (!added) throw new ApiFailure(`第 ${pageCount} 次请求完全重复，采集已终止以防无限分页`);
+      throw new ApiFailure("单批条码超过 100 页仍未结束，未发布本次库存");
+    }));
+    for (const { batch, pages, seen } of fetched) {
+      for (const rows of pages) {
+        pageCount++;
+        if (!rows.length) continue;
+        accumulatePage(state, rows, warehouse.name, warehouse.id);
+      }
+      const missing = batch.filter(barcode => !seen.has(barcode));
+      if (missing.length && !allowMissing) throw new ApiFailure(`有 ${missing.length} 个条码未返回：${missing.slice(0,3).join("、")}。请核对条码和仓库，本次未发布；缺失不当作 0。`);
     }
-    if (!ended) throw new ApiFailure("单批条码超过 100 页仍未结束，未发布本次库存");
-    const missing = batch.filter(barcode => !seen.has(barcode));
-    if (missing.length && !allowMissing) throw new ApiFailure(`有 ${missing.length} 个条码未返回：${missing.slice(0,3).join("、")}。请核对条码和仓库，本次未发布；缺失不当作 0。`);
     await onPage(pageCount, state.recordCount, state.goods.size);
   }
   return { rows: aggregatedRows(state), pageCount, recordCount: state.recordCount, duplicateCount: state.duplicateCount };

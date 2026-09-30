@@ -5,6 +5,7 @@ export const runs = sqliteTable("sync_runs", {
   owner: text("owner").notNull(),
   status: text("status").notNull(),
   startedAt: text("started_at").notNull(),
+  lastProgressAt: text("last_progress_at").notNull().default(""),
   completedAt: text("completed_at"),
   pageCount: integer("page_count").notNull().default(0),
   recordCount: integer("record_count").notNull().default(0),

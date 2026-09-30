@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowDownToLine, ArrowDownUp, ArrowLeft, ArrowRight, BellRing, CircleHelp, Clock3, LoaderCircle, Plus, RefreshCw, Search, Warehouse } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,10 @@ import type { AlertSettings } from "@/lib/alerts-store";
 const quantity = (value: string) => { const [a,b] = value.split("."); return a.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (b ? "." + b : ""); };
 const time = (value: string) => new Date(value).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
 async function apiJson<T>(response: Response): Promise<T> {
-  const data = await response.json() as { error?: string };
+  const raw = await response.text();
+  let data: { error?: string };
+  try { data = JSON.parse(raw) as { error?: string }; }
+  catch { throw new Error(`服务返回了非数据页面（HTTP ${response.status}）。请查看采集记录确认结果，稍后重试。`); }
   if (!response.ok) throw new Error(data.error || "请求失败，请重试");
   return data as T;
 }
@@ -44,9 +47,11 @@ export default function InventoryDashboard({ initial }: { initial: InventoryView
   const [selected,setSelected] = useState<InventoryView["rows"][number] | null>(null);
   const [alerts,setAlerts] = useState<AlertSettings>({ enabled:false, threshold:"0", lastSentAt:null, lastResult:null, robotConfigured:initial.robotConfigured });
   const [threshold,setThreshold] = useState("0"), [enabled,setEnabled] = useState(false), [saving,setSaving] = useState(false);
-  const dates = view.salesDates || [], active = warehouses.find(w => w.code === code);
+  const skipInitialLoad = useRef(true), previousRun = useRef<RunInfo | null>(null);
+  const dates = view.salesDates || [], active = warehouses.find(w => w.code === code), latestRun = runs[0], running = syncing || latestRun?.status === "running";
   useEffect(() => { const timer = setTimeout(() => { setQuery(search); setPage(1); },300); return () => clearTimeout(timer); },[search]);
   useEffect(() => {
+    if (skipInitialLoad.current) { skipInitialLoad.current = false; return; }
     const controller = new AbortController(); setLoading(true);
     fetch(`/api/inventory?${new URLSearchParams({ warehouseCode:code, q:query, days, page:String(page), pageSize, sort })}`, { signal:controller.signal })
       .then(r => apiJson<InventoryView>(r)).then(d => { setView(d); setWarehouses(d.warehouses || []); setError(""); })
@@ -54,11 +59,27 @@ export default function InventoryDashboard({ initial }: { initial: InventoryView
     return () => controller.abort();
   },[code,query,days,page,pageSize,sort,refresh]);
   useEffect(() => {
-    if (!recordsOpen) return;
     const controller = new AbortController();
     fetch(`/api/sync?${new URLSearchParams({warehouseCode:code})}`, {signal:controller.signal}).then(r => apiJson<{runs:RunInfo[]}>(r)).then(d => setRuns(d.runs)).catch(e => { if(e.name !== "AbortError") setError(e.message); });
     return () => controller.abort();
   },[recordsOpen,code,refresh]);
+  useEffect(() => {
+    if (!running) return;
+    let stopped = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const result = await apiJson<{runs:RunInfo[]}>(await fetch(`/api/sync?${new URLSearchParams({warehouseCode:code})}`));
+        if (!stopped) setRuns(result.runs);
+      } catch { /* A transient status request must not erase the last known result. */ }
+    }, 3000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  },[code,running]);
+  useEffect(() => {
+    const before = previousRun.current; previousRun.current = latestRun || null;
+    if (!before || before.id !== latestRun?.id || before.status !== "running" || latestRun.status === "running") return;
+    if (latestRun.status === "complete") { setError(""); setNotice(latestRun.message || "采集完成"); setRefresh(r => r + 1); }
+    if (latestRun.status === "failed") { setNotice(""); setError(latestRun.message || "采集失败，上次成功数据已保留"); }
+  },[latestRun]);
   useEffect(() => {
     if (!alertsOpen) return;
     fetch("/api/alerts").then(r => apiJson<AlertSettings>(r)).then(d => { setAlerts(d); setThreshold(d.threshold); setEnabled(d.enabled); }).catch(e => setError(e.message));
@@ -77,7 +98,7 @@ export default function InventoryDashboard({ initial }: { initial: InventoryView
   },[code]);
   function changeWarehouse(next: string) {
     if (next === code) return;
-    setCode(next); setPage(1); setSearch(""); setQuery(""); setSelected(null); setNotice(""); setError(""); setRuns([]);
+    setCode(next); setPage(1); setSearch(""); setQuery(""); setSelected(null); setNotice(""); setError(""); setRuns([]); previousRun.current = null;
     setUnavailableOpen(false); setView(v => ({ ...v, warehouseCode:next, snapshot:null, rows:[], snapshots:[], salesDates:[], unavailableSkus:[], totalRows:0 }));
   }
   async function add() {
@@ -88,11 +109,20 @@ export default function InventoryDashboard({ initial }: { initial: InventoryView
     } catch(e) { setError(e instanceof Error ? e.message : "仓库保存失败"); } finally { setSavingWarehouse(false); }
   }
   async function sync() {
-    setSyncing(true); setError(""); setNotice("正在自动获取仓库 SKU 并采集可购数量，请稍候…");
+    setSyncing(true); setError(""); setNotice("正在读取 SKU 目录。采集进度会显示在页面上，请勿重复提交。");
     try {
       const result = await apiJson<{goodsCount:number;skuCount:number;recordCount:number;unavailableCount:number}>(await fetch("/api/sync", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({warehouseCode:code})}));
       setNotice(`采集完成：已核验 ${result.recordCount.toLocaleString()} / ${result.skuCount.toLocaleString()} 个 SKU，${result.goodsCount.toLocaleString()} 个货品。${result.unavailableCount ? ` ${result.unavailableCount} 个 SKU 未取得库存，查看下方清单。` : ""}`); setRefresh(r => r + 1);
-    } catch(e) { setNotice(""); setError(e instanceof Error ? e.message : "采集失败"); } finally { setSyncing(false); }
+    } catch(e) {
+      try {
+        const status = await apiJson<{runs:RunInfo[]}>(await fetch(`/api/sync?${new URLSearchParams({warehouseCode:code})}`));
+        setRuns(status.runs);
+        const run = status.runs[0];
+        if (run?.status === "running") setNotice(`${run.message || "采集中"}。网页连接已中断，仍在核对服务器状态；请勿重复提交。`);
+        else if (run?.status === "complete" && Date.now() - new Date(run.startedAt).getTime() < 5 * 60_000) { setNotice(run.message || "采集完成"); setRefresh(r => r + 1); }
+        else { setNotice(""); setError(run?.status === "failed" ? run.message || "采集失败，上次成功数据已保留" : e instanceof Error ? e.message : "采集结果暂时无法确认，请查看采集记录"); }
+      } catch { setNotice(""); setError("连接暂时中断，请打开采集记录确认结果；上次成功库存仍保留。"); }
+    } finally { setSyncing(false); }
   }
   async function download() {
     setExporting(true); setError("");
@@ -111,13 +141,15 @@ export default function InventoryDashboard({ initial }: { initial: InventoryView
     <header className="compact-header"><div className="compact-brand"><span className="compact-logo"><Warehouse size={22}/></span><h1>仓库数据</h1><span className="compact-subtitle">库存与销售</span></div><nav aria-label="辅助功能"><Button variant="ghost" onClick={() => setRecordsOpen(true)}><Clock3/>采集记录</Button><Button variant="ghost" onClick={() => setAlertsOpen(true)}><BellRing/>预警</Button><Button variant="ghost" size="icon" aria-label="数据口径与自动采集说明" onClick={() => setHelp(true)}><CircleHelp/></Button></nav></header>
     <section className="compact-panel" aria-label="仓库库存与销售分析">
       <div className="compact-toolbar">
-        <div className="compact-warehouse"><Select value={code} onValueChange={v => v && changeWarehouse(v)} disabled={syncing}><SelectTrigger aria-label="选择仓库"><SelectValue>{code} · {active?.name || code}</SelectValue></SelectTrigger><SelectContent>{warehouses.map(w => <SelectItem key={w.code} value={w.code}>{w.code} · {w.name}</SelectItem>)}</SelectContent></Select><Button variant="outline" size="icon" aria-label="增加仓库" onClick={() => { setError(""); setAddOpen(true); }} disabled={syncing}><Plus/></Button></div>
+        <div className="compact-warehouse"><Select value={code} onValueChange={v => v && changeWarehouse(v)} disabled={running}><SelectTrigger aria-label="选择仓库"><SelectValue>{code} · {active?.name || code}</SelectValue></SelectTrigger><SelectContent>{warehouses.map(w => <SelectItem key={w.code} value={w.code}>{w.code} · {w.name}</SelectItem>)}</SelectContent></Select><Button variant="outline" size="icon" aria-label="增加仓库" onClick={() => { setError(""); setAddOpen(true); }} disabled={running}><Plus/></Button></div>
         <div className="compact-search"><Search size={16}/><Input aria-label="搜索货品编码或名称" placeholder="搜索编码 / 名称" value={search} onChange={e => setSearch(e.target.value)}/></div>
         <Select value={sort} onValueChange={v => { if(v) { setSort(v); setPage(1); } }}><SelectTrigger className="compact-sort" aria-label="库存排序"><ArrowDownUp size={15}/><SelectValue>{sort === "quantity_desc" ? "库存从大到小" : sort === "quantity_asc" ? "库存从小到大" : "编码排序"}</SelectValue></SelectTrigger><SelectContent><SelectItem value="code">编码排序</SelectItem><SelectItem value="quantity_desc">库存从大到小</SelectItem><SelectItem value="quantity_asc">库存从小到大</SelectItem></SelectContent></Select>
         <Select value={days} onValueChange={v => { if(v) { setDays(v); setPage(1); } }}><SelectTrigger className="compact-days" aria-label="销售日期范围"><SelectValue>近 {days} 天</SelectValue></SelectTrigger><SelectContent><SelectItem value="7">近 7 天</SelectItem><SelectItem value="14">近 14 天</SelectItem><SelectItem value="30">近 30 天</SelectItem></SelectContent></Select>
-        <div className="compact-actions"><Button variant="outline" onClick={download} disabled={exporting || !view.snapshot || loading}>{exporting ? <LoaderCircle className="animate-spin"/> : <ArrowDownToLine/>}导出 Excel</Button><Button onClick={sync} disabled={syncing || !view.configured || loading}>{syncing ? <LoaderCircle className="animate-spin"/> : <RefreshCw/>}{syncing ? "采集中" : "采集库存"}</Button></div>
+        <div className="compact-actions"><Button variant="outline" onClick={download} disabled={exporting || !view.snapshot || loading}>{exporting ? <LoaderCircle className="animate-spin"/> : <ArrowDownToLine/>}导出 Excel</Button><Button onClick={sync} disabled={running || !view.configured || loading}>{running ? <LoaderCircle className="animate-spin"/> : <RefreshCw/>}{running ? "采集中" : "采集库存"}</Button></div>
       </div>
       <div className="compact-status"><span>{view.snapshot ? `更新于 ${time(view.snapshot.capturedAt)}` : "暂无完整采集"}{loading && <LoaderCircle size={13} className="animate-spin"/>}</span><button type="button" onClick={() => setHelp(true)}>每天 08:00 · 云端定时待启用</button></div>
+      {latestRun?.status === "running" && <p className="compact-feedback" role="status"><LoaderCircle size={14} className="animate-spin"/> {latestRun.message || "正在采集"} · 已处理 {latestRun.pageCount} 页。未完成前继续显示上次成功库存。</p>}
+      {latestRun?.status === "failed" && !error && <p className="compact-feedback compact-error" role="alert">最近一次采集失败：{latestRun.message || "请重试"}。当前展示上次成功库存。</p>}
       {error && !addOpen && <p className="compact-feedback compact-error" role="alert">{error}</p>}{notice && <p className="compact-feedback" role="status">{notice}</p>}
       {!!view.unavailableSkus?.length && <div className="compact-feedback" role="status"><span>{view.unavailableSkus.length.toLocaleString()} 个 SKU 未取得可购库存，未计入库存及销售差额。</span><Button variant="link" onClick={() => setUnavailableOpen(true)}>查看未取得库存清单</Button></div>}
       <div className="compact-table-wrap" aria-busy={loading}>

@@ -19,8 +19,11 @@ type WarehouseRecord = { code: string; name: string; warehouse_id: string | null
 const mapWarehouse = (w: WarehouseRecord): WarehouseInfo => ({ code: w.code, name: w.name, warehouseId: w.warehouse_id, dailyTime: w.daily_time, timeZone: w.time_zone });
 export async function loadWarehouses(owner: string): Promise<WarehouseInfo[]> {
   const db = database();
-  await db.prepare("INSERT OR IGNORE INTO warehouses (owner, code, name, warehouse_id, created_at) VALUES (?, ?, ?, ?, ?)").bind(owner, WAREHOUSE_CODE, WAREHOUSE_NAME, "2391620541187785472", new Date().toISOString()).run();
-  const result = await db.prepare("SELECT * FROM warehouses WHERE owner = ? ORDER BY created_at, code").bind(owner).all<WarehouseRecord>();
+  let result = await db.prepare("SELECT * FROM warehouses WHERE owner = ? ORDER BY created_at, code").bind(owner).all<WarehouseRecord>();
+  if (!result.results.some(w => w.code === WAREHOUSE_CODE)) {
+    await db.prepare("INSERT OR IGNORE INTO warehouses (owner, code, name, warehouse_id, created_at) VALUES (?, ?, ?, ?, ?)").bind(owner, WAREHOUSE_CODE, WAREHOUSE_NAME, "2391620541187785472", new Date().toISOString()).run();
+    result = await db.prepare("SELECT * FROM warehouses WHERE owner = ? ORDER BY created_at, code").bind(owner).all<WarehouseRecord>();
+  }
   return result.results.map(mapWarehouse);
 }
 export async function addWarehouse(owner: string, code: unknown, name: unknown) {
@@ -78,15 +81,15 @@ export async function loadInventory(owner: string, query: { source?: string; war
 }
 
 export async function acquireRun(owner: string, code = WAREHOUSE_CODE, trigger = "manual"): Promise<string> {
-  const db = database(), now = new Date().toISOString(), cutoff = new Date(Date.now() - 10 * 60_000).toISOString();
-  await db.prepare("UPDATE sync_runs SET status = 'failed', completed_at = ?, message = '采集超过十分钟，已解除锁定；请重试' WHERE owner = ? AND warehouse_code = ? AND status = 'running' AND started_at < ?").bind(now, owner, code, cutoff).run();
+  const db = database(), now = new Date().toISOString();
+  await failStaleRuns(owner, code);
   const id = crypto.randomUUID();
-  const result = await db.prepare("INSERT INTO sync_runs (id, owner, status, started_at, warehouse_code, trigger) SELECT ?, ?, 'running', ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM sync_runs WHERE owner = ? AND warehouse_code = ? AND status = 'running')").bind(id, owner, now, code, trigger, owner, code).run();
+  const result = await db.prepare("INSERT INTO sync_runs (id, owner, status, started_at, last_progress_at, warehouse_code, trigger, message) SELECT ?, ?, 'running', ?, ?, ?, ?, '正在读取 SKU 目录' WHERE NOT EXISTS (SELECT 1 FROM sync_runs WHERE owner = ? AND warehouse_code = ? AND status = 'running')").bind(id, owner, now, now, code, trigger, owner, code).run();
   if (!result.meta.changes) throw new Error("该仓库已有库存采集正在进行，请等待完成");
   return id;
 }
 export async function updateRun(id: string, pages: number, records: number, goods: number) {
-  await database().prepare("UPDATE sync_runs SET page_count = ?, record_count = ?, goods_count = ? WHERE id = ? AND status = 'running'").bind(pages, records, goods, id).run();
+  await database().prepare("UPDATE sync_runs SET page_count = ?, record_count = ?, goods_count = ?, last_progress_at = ?, message = ? WHERE id = ? AND status = 'running'").bind(pages, records, goods, new Date().toISOString(), goods ? `正在核验可购库存：${records} 个 SKU` : `正在读取 SKU 目录：${records} 个 SKU`, id).run();
 }
 export async function publishSnapshot(owner: string, id: string, rows: StockRow[], pageCount: number, recordCount: number, duplicateCount: number, scope: ScopeInfo, warehouse: { code: string; name: string; id: string; hash: string }, unavailable: UnavailableSku[] = []) {
   const db = database(), capturedDate = new Date(), captured = capturedDate.toISOString(), localTime = shanghaiTimestamp(capturedDate), date = localTime.slice(0,10), summary = summarizeRows(rows);
@@ -97,7 +100,7 @@ export async function publishSnapshot(owner: string, id: string, rows: StockRow[
     await db.prepare("INSERT INTO stock_entries (snapshot_id, goods_no, goods_name, unit_name, quantity, sku_count, sign) SELECT ?, json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]'), json_extract(value, '$[4]'), json_extract(value, '$[5]') FROM json_each(?)").bind(id, payload).run();
   }
   const result = await db.batch([
-    db.prepare("UPDATE sync_runs SET status = 'complete', completed_at = ?, page_count = ?, record_count = ?, goods_count = ?, message = ? WHERE id = ? AND owner = ? AND warehouse_code = ? AND status = 'running'").bind(captured, pageCount, recordCount, rows.length, `已核验 ${recordCount} 个规格、${rows.length} 个货品；${unavailable.length ? `${unavailable.length} 个规格未取得库存，已列出；` : ""}${duplicateCount ? `去重 ${duplicateCount} 条；` : ""}目录游标读取完成`, id, owner, warehouse.code),
+    db.prepare("UPDATE sync_runs SET status = 'complete', completed_at = ?, last_progress_at = ?, page_count = ?, record_count = ?, goods_count = ?, message = ? WHERE id = ? AND owner = ? AND warehouse_code = ? AND status = 'running'").bind(captured, captured, pageCount, recordCount, rows.length, `已核验 ${recordCount} 个规格、${rows.length} 个货品；${unavailable.length ? `${unavailable.length} 个规格未取得库存，已列出；` : ""}${duplicateCount ? `去重 ${duplicateCount} 条；` : ""}目录游标读取完成`, id, owner, warehouse.code),
     db.prepare("UPDATE stock_snapshots SET status = 'complete' WHERE id = ? AND EXISTS (SELECT 1 FROM sync_runs WHERE id = ? AND status = 'complete' AND completed_at = ?)").bind(id, id, captured),
     db.prepare("UPDATE warehouses SET name = ?, warehouse_id = ? WHERE owner = ? AND code = ? AND EXISTS (SELECT 1 FROM stock_snapshots WHERE id = ? AND status = 'complete')").bind(warehouse.name, warehouse.id, owner, warehouse.code, id),
     // Immutable first successful capture after 08:00; later manual refreshes update current inventory only.
@@ -107,10 +110,16 @@ export async function publishSnapshot(owner: string, id: string, rows: StockRow[
   return captured;
 }
 export async function failRun(id: string, message: string) {
-  await database().prepare("UPDATE sync_runs SET status = 'failed', completed_at = ?, message = ? WHERE id = ? AND status = 'running'").bind(new Date().toISOString(), message.slice(0,300), id).run();
+  const now = new Date().toISOString();
+  await database().prepare("UPDATE sync_runs SET status = 'failed', completed_at = ?, last_progress_at = ?, message = ? WHERE id = ? AND status = 'running'").bind(now, now, message.slice(0,300), id).run();
+}
+async function failStaleRuns(owner: string, code: string) {
+  const now = new Date().toISOString(), cutoff = new Date(Date.now() - 2 * 60_000).toISOString();
+  await database().prepare("UPDATE sync_runs SET status = 'failed', completed_at = ?, message = '采集连接已中断；上次成功库存仍保留，请重试' WHERE owner = ? AND warehouse_code = ? AND status = 'running' AND COALESCE(NULLIF(last_progress_at, ''), started_at) < ?").bind(now, owner, code, cutoff).run();
 }
 export async function loadRuns(owner: string, code = WAREHOUSE_CODE): Promise<RunInfo[]> {
-  const result = await database().prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, page_count AS pageCount, record_count AS recordCount, goods_count AS goodsCount, message, warehouse_code AS warehouseCode FROM sync_runs WHERE owner = ? AND warehouse_code = ? ORDER BY started_at DESC LIMIT 20").bind(owner, code).all<RunInfo>();
+  await failStaleRuns(owner, code);
+  const result = await database().prepare("SELECT id, status, started_at AS startedAt, last_progress_at AS lastProgressAt, completed_at AS completedAt, page_count AS pageCount, record_count AS recordCount, goods_count AS goodsCount, message, warehouse_code AS warehouseCode FROM sync_runs WHERE owner = ? AND warehouse_code = ? ORDER BY started_at DESC LIMIT 20").bind(owner, code).all<RunInfo>();
   return result.results;
 }
 export async function allRows(owner: string, code = WAREHOUSE_CODE) {
