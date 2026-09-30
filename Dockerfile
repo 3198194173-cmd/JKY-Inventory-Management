@@ -17,6 +17,8 @@ COPY --from=builder --chown=node:node /app/drizzle ./drizzle
 COPY --from=builder --chown=node:node /app/build-node ./build-node
 COPY --from=builder --chown=node:node /app/scripts/server-config.mjs ./scripts/server-config.mjs
 COPY --from=builder --chown=node:node /app/scripts/backup.mjs ./scripts/backup.mjs
+COPY --from=builder --chown=node:node /app/lib/sqlite.mjs ./lib/sqlite.mjs
+COPY --from=builder --chown=node:node /app/scripts/import-legacy-snapshot.mjs ./scripts/import-legacy-snapshot.mjs
 RUN mkdir -p /app/storage && chown node:node /app/storage
 USER node
 EXPOSE 3000
