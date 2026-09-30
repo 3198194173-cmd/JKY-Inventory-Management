@@ -49,3 +49,9 @@ next-env.d.ts
 /outputs/
 /work/
 /.local-tools/
+
+/storage/
+/build-node/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

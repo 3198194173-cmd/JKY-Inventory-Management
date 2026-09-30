@@ -1,0 +1,17 @@
+node_modules
+.git
+.next
+dist
+.wrangler
+.sites-runtime
+.env*
+.dev.vars*
+storage
+outputs
+work
+资料
+*.pem
+*.sqlite*
+build-node
+.agents
+.codex

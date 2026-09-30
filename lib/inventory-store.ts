@@ -1,4 +1,5 @@
-import { env } from "cloudflare:workers";
+import { runtimeDatabase } from "./runtime";
+import { workerActive } from "./local-jobs";
 import { compareQuantity } from "./decimal";
 import { shanghaiTimestamp, WAREHOUSE_CODE, WAREHOUSE_NAME } from "./jackyun";
 import { summarizeRows } from "./sample";
@@ -8,8 +9,7 @@ import type { InventoryView, RunInfo, SnapshotInfo, StockRow, WarehouseInfo, Una
 import type { ScopeInfo } from "./stock-scope";
 
 export function database(): D1Database {
-  if (!env.DB) throw new Error("库存数据存储尚未配置");
-  return env.DB;
+  return runtimeDatabase;
 }
 export function warehouseCode(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9_.-]{1,50}$/.test(value.trim())) throw new Error("仓库编码须为 1 至 50 位字母、数字、点、横线或下划线");
@@ -50,7 +50,7 @@ export async function loadInventory(owner: string, query: { source?: string; war
   const days = [7,14,30].includes(query.days || 0) ? query.days! : 14;
   const requestedPage = Math.max(1, Math.floor(query.page || 1)), pageSize = [100,200,500,1000].includes(query.pageSize || 0) ? query.pageSize! : 100;
   const latest = await database().prepare("SELECT * FROM stock_snapshots WHERE owner = ? AND warehouse_code = ? AND coverage = 'auto:v1' AND status = 'complete' ORDER BY captured_at DESC, id DESC LIMIT 1").bind(owner, warehouse.code).first<SnapshotRecord>();
-  const base = { warehouseCode: warehouse.code, warehouseName: warehouse.name, warehouses, source: "live" as const, configured: config.configured, robotConfigured: config.robotConfigured, scheduleActive: false, dailyTime: "08:00", pageSize };
+  const base = { warehouseCode: warehouse.code, warehouseName: warehouse.name, warehouses, source: "live" as const, configured: config.configured, robotConfigured: config.robotConfigured, scheduleActive: workerActive(), dailyTime: "08:00", pageSize };
   if (!latest) return { ...base, snapshot: null, snapshots: [], salesDates: [], rows: [], totalRows: 0, goodsCount: 0, page: 1, totalsByUnit: {}, zeroCount: 0, negativeCount: 0 };
   const records = await database().prepare("SELECT s.* FROM daily_slots d JOIN stock_snapshots s ON s.id = d.snapshot_id WHERE d.owner = ? AND d.warehouse_code = ? AND s.coverage = 'auto:v1' AND s.status = 'complete' ORDER BY d.date DESC LIMIT 31").bind(owner, warehouse.code).all<SnapshotRecord>();
   const lower = new Date(latest.date + "T00:00:00Z"); lower.setUTCDate(lower.getUTCDate() - days);
@@ -80,10 +80,10 @@ export async function loadInventory(owner: string, query: { source?: string; war
   }), totalRows, goodsCount: latest.goods_count, page, totalsByUnit: JSON.parse(latest.totals), zeroCount: latest.zero_count, negativeCount: latest.negative_count };
 }
 
-export async function acquireRun(owner: string, code = WAREHOUSE_CODE, trigger = "manual"): Promise<string> {
+export async function acquireRun(owner: string, code = WAREHOUSE_CODE, trigger = "manual", requestedId?: string): Promise<string> {
   const db = database(), now = new Date().toISOString();
   await failStaleRuns(owner, code);
-  const id = crypto.randomUUID();
+  const id = requestedId || crypto.randomUUID();
   const result = await db.prepare("INSERT INTO sync_runs (id, owner, status, started_at, last_progress_at, warehouse_code, trigger, message) SELECT ?, ?, 'running', ?, ?, ?, ?, '正在读取 SKU 目录' WHERE NOT EXISTS (SELECT 1 FROM sync_runs WHERE owner = ? AND warehouse_code = ? AND status = 'running')").bind(id, owner, now, now, code, trigger, owner, code).run();
   if (!result.meta.changes) throw new Error("该仓库已有库存采集正在进行，请等待完成");
   return id;

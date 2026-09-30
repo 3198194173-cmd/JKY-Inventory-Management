@@ -8,7 +8,7 @@ export async function currentOwner(): Promise<string> {
 
 export function assertSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
-  if (!origin || origin !== new URL(request.url).origin) throw new Error("请求来源不匹配");
+  if (!origin || origin !== (process.env.INVENTORY_SITE_URL || new URL(request.url).origin)) throw new Error("请求来源不匹配");
 }
 
 export function errorResponse(error: unknown, status = 400) {

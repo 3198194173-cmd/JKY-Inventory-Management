@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env } from "./runtime";
 import { database } from "./inventory-store";
 import { serverConfig } from "./server-config";
 import { alertDigest, alertMessage, alertRows, sendRobotMessage } from "./dingtalk";

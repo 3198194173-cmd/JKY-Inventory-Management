@@ -3,11 +3,11 @@ import { collectWarehouseStock } from "./warehouse-collector";
 import { serverConfig } from "./server-config";
 import { notifyAfterSnapshot } from "./alerts-store";
 
-export async function syncWarehouse(owner: string, code: string, trigger = "manual") {
+export async function syncWarehouse(owner: string, code: string, trigger = "manual", existingRunId?: string) {
   const registered = await requireWarehouse(owner, code);
   const config = serverConfig();
   if (!config.configured) throw new Error("尚未配置吉客云 AppSecret，请先完成服务端配置");
-  const id = await acquireRun(owner, code, trigger);
+  const id = existingRunId || await acquireRun(owner, code, trigger);
   try {
     const result = await collectWarehouseStock(config.appkey, config.secret, code, (pages, records, goods) => updateRun(id, pages, records, goods), undefined, undefined, registered.warehouseId, true);
     const scope = {key:result.scope.key,label:result.scope.label,count:result.catalog.rows.length};

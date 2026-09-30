@@ -1,0 +1,38 @@
+name: jky-inventory
+services:
+  web:
+    image: jky-inventory:local
+    build: .
+    restart: unless-stopped
+    init: true
+    env_file: .env.production
+    ports:
+      - "127.0.0.1:3108:3000"
+    volumes:
+      - inventory-data:/app/storage
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  worker:
+    image: jky-inventory:local
+    restart: unless-stopped
+    init: true
+    command: ["node", "build-node/worker.mjs"]
+    env_file: .env.production
+    volumes:
+      - inventory-data:/app/storage
+    depends_on:
+      web:
+        condition: service_healthy
+    stop_grace_period: 2m
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+volumes:
+  inventory-data:

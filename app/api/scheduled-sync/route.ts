@@ -1,7 +1,7 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/runtime";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { database, loadInventory, loadRuns } from "@/lib/inventory-store";
-import { syncWarehouse } from "@/lib/sync-warehouse";
+import { enqueue } from "@/lib/local-jobs";
 import { shanghaiTimestamp } from "@/lib/jackyun";
 import { errorResponse } from "@/lib/auth";
 
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       // Registered owners/warehouses are server-side data; callers cannot choose another user's identity.
       const done = await database().prepare("SELECT snapshot_id FROM daily_slots WHERE owner = ? AND warehouse_code = ? AND date = ?").bind(target.owner,target.code,date).first();
       if (done) { results.push({warehouseCode:target.code, status:"already_complete"}); continue; }
-      try { results.push({ ...await syncWarehouse(target.owner,target.code,"daily"), status:"complete" }); }
+      try { results.push({ ...enqueue(target.owner,target.code,"daily"), status:"queued" }); }
       catch(error) { results.push({warehouseCode:target.code,status:"failed",error:error instanceof Error ? error.message : "采集失败"}); }
     }
     return Response.json({date,results}, {headers:{"Cache-Control":"no-store"}});

@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {mkdirSync,cpSync} from 'node:fs';
+import {resolve} from 'node:path';
+import {scryptSync} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
+
+mkdirSync('.sites-runtime/tests',{recursive:true});
+const path=resolve(`.sites-runtime/tests/http-${Date.now()}.sqlite`);
+// Reproduce the standalone files copied into the Docker runtime stage.
+cpSync('drizzle','.next/standalone/drizzle',{recursive:true});
+cpSync('public','.next/standalone/public',{recursive:true});
+cpSync('.next/static','.next/standalone/.next/static',{recursive:true});
+const url='http://127.0.0.1:3188',password='Integration-only-password',salt='test-salt';
+const env={...process.env,INVENTORY_DB_PATH:path,INVENTORY_SITE_URL:url,INVENTORY_USERNAME:'admin',INVENTORY_PASSWORD_HASH:`${salt}:${scryptSync(password,salt,64).toString('hex')}`,INVENTORY_OWNER_ID:'http-test',INVENTORY_SCHEDULE_ENABLED:'false',JACKYUN_APP_SECRET:'',DINGTALK_CLIENT_SECRET:''};
+let server,worker,output='';
+function start() {server=spawn(process.execPath,['.next/standalone/server.js'],{env:{...env,HOSTNAME:'127.0.0.1',PORT:'3188'},stdio:['ignore','pipe','pipe']}); server.stdout.on('data',d=>output+=d);server.stderr.on('data',d=>output+=d);}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function ready() {for(let n=0;n<60;n++){try{if((await fetch(url+'/api/health')).ok)return;}catch{} await sleep(500);}throw new Error(output);}
+async function stop(child){if(!child||child.exitCode!==null)return;const done=new Promise(r=>child.once('exit',r));child.kill();await done;}
+try {
+  start();await ready();
+  let r=await fetch(url+'/',{redirect:'manual',headers:{'oai-authenticated-user-id':'forged','oai-authenticated-user-email':'fake@example.com'}});
+  assert.equal(r.status,307);assert.equal(r.headers.get('location'),'/login');
+  r=await fetch(url+'/api/inventory');assert.equal(r.ok,false);
+  r=await fetch(url+'/api/session',{method:'POST',headers:{origin:'https://evil.example'},body:new URLSearchParams({username:'admin',password}),redirect:'manual'});assert.equal(r.ok,false);
+  r=await fetch(url+'/api/session',{method:'POST',headers:{origin:url},body:new URLSearchParams({username:'admin',password}),redirect:'manual'});assert.equal(r.status,303);
+  const cookie=r.headers.get('set-cookie').split(';')[0];assert.ok(r.headers.get('set-cookie').includes('HttpOnly'));
+  const headers={cookie,origin:url,'content-type':'application/json'};
+  r=await fetch(url+'/api/warehouses',{method:'POST',headers,body:JSON.stringify({code:'TEST02',name:'测试持久化仓库'})});assert.equal(r.ok,true);
+  r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});assert.equal(r.status,202);const queued=await r.json();
+  r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});assert.equal((await r.json()).job.id,queued.job.id);
+  await stop(server);start();await ready();
+  r=await fetch(url+'/api/inventory?warehouseCode=TEST02',{headers:{cookie}});assert.equal((await r.json()).warehouseCode,'TEST02');
+  worker=spawn(process.execPath,['build-node/worker.mjs'],{env,stdio:['ignore','pipe','pipe']});worker.stderr.on('data',d=>output+=d);
+  let state;
+  for(let i=0;i<40;i++){
+    const db=new DatabaseSync(path);state=db.prepare('SELECT state FROM local_jobs WHERE id=?').get(queued.job.id)?.state;db.close();
+    if(state==='failed')break;await sleep(250);
+  }
+  assert.equal(state,'failed',output);
+  r=await fetch(url+'/api/sync?warehouseCode=TEST02',{headers:{cookie}});const runs=(await r.json()).runs;assert.equal(runs[0].status,'failed');assert.equal(runs[0].id,queued.job.id);
+  await stop(worker);
+  // Simulate restart after an ungraceful process exit without waiting for the lease timeout.
+  { const db=new DatabaseSync(path);db.prepare("UPDATE local_worker SET heartbeat='2000-01-01T00:00:00Z'").run();db.close(); }
+  r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});const successJob=(await r.json()).job;
+  await stop(server); // No HTTP server/browser connection remains while collection runs.
+  worker=spawn(process.execPath,['--import','./tests/mock-jackyun.mjs','build-node/worker.mjs'],{env:{...env,JACKYUN_APP_SECRET:'test-only-fake-secret'},stdio:['ignore','pipe','pipe']});worker.stderr.on('data',d=>output+=d);
+  for(let i=0;i<60;i++){
+    const db=new DatabaseSync(path);state=db.prepare('SELECT state FROM local_jobs WHERE id=?').get(successJob.id)?.state;db.close();
+    if(state==='complete'||state==='failed')break;await sleep(250);
+  }
+  assert.equal(state,'complete',output);
+  start();await ready();
+  r=await fetch(url+'/api/inventory?warehouseCode=TEST02',{headers:{cookie}});const inventory=await r.json();assert.equal(inventory.rows[0].quantity,'17.25');
+  r=await fetch(url+'/api/export?warehouseCode=TEST02',{headers:{cookie}});assert.equal(r.ok,true);assert.ok((await r.arrayBuffer()).byteLength>1000);
+  r=await fetch(url+'/api/session',{method:'DELETE',headers});assert.equal(r.ok,true);
+  r=await fetch(url+'/api/inventory',{headers:{cookie}});assert.equal(r.ok,false);
+  console.log('PASS: 登录/伪造身份拒绝/同源校验/队列去重/重启持久化/独立worker失败回报/网页进程关闭后完成采集/Excel导出/退出失效');
+} finally {await stop(worker);await stop(server);}
