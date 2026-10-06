@@ -53,8 +53,35 @@ try {
   assert.equal(state,'complete',output);
   start();await ready();
   r=await fetch(url+'/api/inventory?warehouseCode=TEST02',{headers:{cookie}});const inventory=await r.json();assert.equal(inventory.rows[0].quantity,'17.25');
+  assert.equal(inventory.rows[0].metrics.average7,null);
+  assert.equal(inventory.rows[0].metrics.reason,'insufficient_data');
+  r=await fetch(url+'/',{headers:{cookie}});const pageHtml=await r.text();assert.equal(r.status,200);
+  assert.match(pageHtml,/>均值<span/);assert.match(pageHtml,/>库存周转<span/);
+  assert.doesNotMatch(pageHtml,/<th[^>]*>单位<\/th>/);
+  // Seed a preceding fixed baseline, then let a real worker collection perform
+  // its own signed (mock gateway) inbound lookup and persist the correction.
+  const priorDate=new Date(inventory.snapshot.date+'T00:00:00Z');priorDate.setUTCDate(priorDate.getUTCDate()-1);const previous=priorDate.toISOString().slice(0,10);
+  {
+    const db=new DatabaseSync(path);db.exec('BEGIN IMMEDIATE');
+    db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES('http-inbound-before','http-test',?,?,'complete',1,1,1,'{}',0,0,'TEST02','auto:v1')").run(previous,previous+'T00:00:00Z');
+    db.prepare("INSERT INTO stock_entries VALUES('http-inbound-before','TEST-GOODS','测试商品','Pcs','14.25',1,1)").run();
+    db.prepare("INSERT INTO daily_slots VALUES('http-test','TEST02',?,'http-inbound-before')").run(previous);
+    db.prepare("INSERT OR IGNORE INTO daily_slots VALUES('http-test','TEST02',?,?)").run(inventory.snapshot.date,inventory.snapshot.id);
+    db.exec('COMMIT');db.close();
+  }
+  r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});const inboundJob=(await r.json()).job;
+  for(let i=0;i<60;i++){
+    const db=new DatabaseSync(path);state=db.prepare('SELECT state FROM local_jobs WHERE id=?').get(inboundJob.id)?.state;db.close();
+    if(state==='complete'||state==='failed')break;await sleep(250);
+  }
+  assert.equal(state,'complete',output);
+  r=await fetch(url+'/api/inventory?warehouseCode=TEST02',{headers:{cookie}});const reconciled=await r.json();
+  assert.equal(reconciled.rows[0].rawSales[previous],'-3');assert.equal(reconciled.rows[0].sales[previous],'1');
+  assert.equal(reconciled.rows[0].inbound[previous].inboundQuantity,'4');assert.equal(reconciled.rows[0].inbound[previous].records[0].documentNo,'TEST-INBOUND-4');
+  assert.equal(reconciled.rows[0].currentInbound.correctedQuantity,'0','手动区间不重复记入此前入库');
+  r=await fetch(url+'/api/sync?warehouseCode=TEST02',{headers:{cookie}});assert.match((await r.json()).runs[0].message,/仓库入库核验 2 个区间、2 个货品区间：已核算 2/);
   r=await fetch(url+'/api/export?warehouseCode=TEST02',{headers:{cookie}});assert.equal(r.ok,true);assert.ok((await r.arrayBuffer()).byteLength>1000);
   r=await fetch(url+'/api/session',{method:'DELETE',headers});assert.equal(r.ok,true);
   r=await fetch(url+'/api/inventory',{headers:{cookie}});assert.equal(r.ok,false);
-  console.log('PASS: 登录/伪造身份拒绝/同源校验/队列去重/重启持久化/独立worker失败回报/网页进程关闭后完成采集/Excel导出/退出失效');
+  console.log('PASS: 登录/伪造身份拒绝/同源校验/队列去重/重启持久化/独立worker失败回报/网页关闭后采集/worker自动入库修正/Excel导出/退出失效');
 } finally {await stop(worker);await stop(server);}

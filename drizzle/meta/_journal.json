@@ -36,6 +36,20 @@
       "when": 1790736945623,
       "tag": "0004_first_mikhail_rasputin",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791255543845,
+      "tag": "0005_inbound_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1791256514218,
+      "tag": "0006_warehouse_inbound",
+      "breakpoints": true
     }
   ]
 }

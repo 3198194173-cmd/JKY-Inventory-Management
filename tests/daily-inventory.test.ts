@@ -2,12 +2,46 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
-import { comparableDates, dailySales } from "../lib/daily-sales";
+import { comparableDates, dailySales, type DailyValue } from "../lib/daily-sales";
 import { collectWarehouseStock, discoverCatalog, fetchCatalogPage } from "../lib/warehouse-collector";
 import { addQuantity, subtractQuantity, compareQuantity } from "../lib/decimal";
 import { createAccumulator, accumulatePage } from "../lib/stock-aggregation";
+import { inventoryMetrics as calculateMetrics, recentSalesDates } from "../lib/inventory-metrics";
+import { divideQuantity } from "../lib/decimal";
 
+// These calculation fixtures explicitly model a completed warehouse query with no inbound.
+function inventoryMetrics(values: DailyValue[], asOf: string, stock: string, unit: string) {
+  const raw=dailySales(values,recentSalesDates(asOf),unit);
+  const corrections=Object.fromEntries(Object.entries(raw).filter(([,q])=>q!=null && compareQuantity(q,"0")>=0).map(([date,q])=>[date,{date,rawDifference:q!,openingQuantity:"0",closingQuantity:"0",inboundQuantity:"0",correctedQuantity:q!,status:"verified" as const,windowStart:"",windowEnd:"",records:[],error:null,checkedAt:""}]));
+  return calculateMetrics(values,asOf,stock,unit,corrections);
+}
 const catalogRow = (id = "1",code = "CK_ALT") => ({quantityId:id,skuId:id,skuBarcode:`b${id}`,goodsNo:`g${id}`,goodsName:`货品${id}`,unitName:"Pcs",ownerName:"货主",warehouseId:"9999999999999999999",warehouseCode:code,warehouseName:"测试仓"});
+
+test("近7天均值固定除7，周转使用最新库存及未舍入均值", () => {
+  const values = Array.from({length:8},(_,i)=>({date:`2026-10-0${i+1}`,quantity:String(20-i),unitName:"Pcs"}));
+  const metric = inventoryMetrics(values,"2026-10-08","10","Pcs");
+  assert.equal(metric.average7,"1"); assert.equal(metric.turnoverDays,"10"); assert.equal(metric.validDays,7);
+  const fractional = values.map((v,i)=>({...v,quantity:i === 0 ? "21" : "20"}));
+  const rounded = inventoryMetrics(fractional,"2026-10-08","10","Pcs");
+  assert.equal(rounded.average7,"0.14"); assert.equal(rounded.turnoverDays,"70");
+  assert.deepEqual(recentSalesDates("2027-01-03"),["2027-01-02","2027-01-01","2026-12-31","2026-12-30","2026-12-29","2026-12-28","2026-12-27"]);
+  assert.equal(divideQuantity("12345678901234567890.7","7"),"1763668414462081127.24");
+  assert.equal(divideQuantity("1.005","1"),"1.01");
+  assert.throws(()=>divideQuantity("1","0"),/除以零/);
+});
+
+test("缺日、单位变化、负差额、零消耗和负库存不伪造周转", () => {
+  const values = Array.from({length:8},(_,i)=>({date:`2026-10-0${i+1}`,quantity:String(20-i),unitName:"Pcs"}));
+  const missing = inventoryMetrics(values.filter((_,i)=>i!==3),"2026-10-08","10","Pcs");
+  assert.equal(missing.average7,null); assert.equal(missing.reason,"insufficient_data"); assert.equal(missing.validDays,5);
+  assert.equal(inventoryMetrics(values.map((v,i)=>i===3?{...v,unitName:"Box"}:v),"2026-10-08","10","Pcs").reason,"insufficient_data");
+  const inbound = inventoryMetrics(values.map((v,i)=>i===3?{...v,quantity:"519"}:v),"2026-10-08","10","Pcs");
+  assert.equal(inbound.average7,null); assert.equal(inbound.turnoverDays,null); assert.equal(inbound.reason,"inbound_unverified");
+  const zero = inventoryMetrics(values.map(v=>({...v,quantity:"20"})),"2026-10-08","10","Pcs");
+  assert.equal(zero.average7,"0"); assert.equal(zero.turnoverDays,null); assert.equal(zero.reason,"no_consumption");
+  assert.equal(inventoryMetrics(values,"2026-10-08","0","Pcs").turnoverDays,"0");
+  assert.equal(inventoryMetrics(values,"2026-10-08","-1","Pcs").reason,"negative_inventory");
+});
 test("昨日销量准确保留小数、负数、零和长数量精度", () => {
   assert.equal(subtractQuantity("9007199254740990.5","9007199254740989.2"),"1.3");
   const values = ["5.2","3.1","7.6","7.6"].map((q,i) => ({date:`2026-09-${26+i}`,quantity:q,unitName:"Pcs"}));

@@ -1,4 +1,6 @@
 import type { ScopeInfo } from "./stock-scope";
+import type { InventoryMetrics } from "./inventory-metrics";
+import type { InboundReconciliation } from "./inbound";
 export type WarehouseInfo = { code: string; name: string; warehouseId: string | null; dailyTime: string; timeZone: string };
 export type UnavailableSku = { skuId: string; goodsNo: string; goodsName: string; skuName: string; skuBarcode: string; unitName: string; reason: string };
 export type StockRow = {
@@ -26,7 +28,7 @@ export type InventoryView = {
   source: "live" | "sample";
   snapshot: SnapshotInfo | null;
   snapshots: SnapshotInfo[];
-  rows: (StockRow & { history: Record<string, string | null>; sales?: Record<string, string | null> })[];
+  rows: (StockRow & { history: Record<string, string | null>; sales?: Record<string, string | null>; rawSales?: Record<string, string | null>; inbound?: Record<string, InboundReconciliation>; currentInbound?: InboundReconciliation; metrics?: InventoryMetrics })[];
   warehouses?: WarehouseInfo[];
   salesDates?: string[];
   scheduleActive?: boolean;

@@ -80,3 +80,25 @@ export const dailySlots = sqliteTable("daily_slots", {
   date: text("date").notNull(),
   snapshotId: text("snapshot_id").notNull().references(() => snapshots.id),
 }, t => [primaryKey({ columns: [t.owner, t.warehouseCode, t.date] })]);
+
+export const inboundReconciliations = sqliteTable("inbound_reconciliations", {
+  queryScope: text("query_scope").notNull().default("goods:v1"),
+  owner: text("owner").notNull(),
+  warehouseCode: text("warehouse_code").notNull(),
+  goodsNo: text("goods_no").notNull(),
+  date: text("date").notNull(),
+  beforeSnapshotId: text("before_snapshot_id").notNull().references(() => snapshots.id),
+  afterSnapshotId: text("after_snapshot_id").notNull().references(() => snapshots.id),
+  unitName: text("unit_name").notNull(),
+  rawDifference: text("raw_difference").notNull(),
+  openingQuantity: text("opening_quantity").notNull(),
+  closingQuantity: text("closing_quantity").notNull(),
+  status: text("status").notNull(),
+  inboundQuantity: text("inbound_quantity"),
+  correctedQuantity: text("corrected_quantity"),
+  windowStart: text("window_start").notNull(),
+  windowEnd: text("window_end").notNull(),
+  records: text("records").notNull().default("[]"),
+  error: text("error"),
+  checkedAt: text("checked_at").notNull(),
+}, t => [primaryKey({ columns: [t.owner,t.warehouseCode,t.goodsNo,t.beforeSnapshotId,t.afterSnapshotId] }),index("idx_inbound_owner_warehouse_date").on(t.owner,t.warehouseCode,t.date)]);

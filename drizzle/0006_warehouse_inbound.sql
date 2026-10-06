@@ -1,0 +1,1 @@
+ALTER TABLE `inbound_reconciliations` ADD `query_scope` text DEFAULT 'goods:v1' NOT NULL;

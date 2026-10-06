@@ -4,7 +4,10 @@ import { compareQuantity } from "./decimal";
 import { shanghaiTimestamp, WAREHOUSE_CODE, WAREHOUSE_NAME } from "./jackyun";
 import { summarizeRows } from "./sample";
 import { serverConfig } from "./server-config";
-import { comparableDates, dailySales } from "./daily-sales";
+import { comparableDates, dailySales, reconciledSales } from "./daily-sales";
+import { loadCurrentInboundReconciliations, loadInboundReconciliations } from "./inbound-store";
+import type { InboundReconciliation } from "./inbound";
+import { inventoryMetrics } from "./inventory-metrics";
 import type { InventoryView, RunInfo, SnapshotInfo, StockRow, WarehouseInfo, UnavailableSku } from "./inventory-types";
 import type { ScopeInfo } from "./stock-scope";
 
@@ -43,6 +46,21 @@ type EntryRecord = { goods_no: string; goods_name: string; unit_name: string; qu
 const mapSnapshot = (s: SnapshotRecord): SnapshotInfo => ({ id: s.id, date: s.date, capturedAt: s.captured_at, pageCount: s.page_count, recordCount: s.record_count, source: "live", scope: { key: s.scope_key, label: s.scope_label, count: s.scope_count }, unavailableSkus:JSON.parse(s.unavailable_skus || "[]") });
 const mapEntry = (r: EntryRecord): StockRow => ({ goodsNo: r.goods_no, goodsName: r.goods_name, unitName: r.unit_name, quantity: r.quantity, skuCount: r.sku_count });
 
+async function rowHistory(owner: string, snapshots: string[], goods: string[]) {
+  const history = new Map<string, EntryRecord[]>();
+  if (snapshots.length && goods.length) {
+    const values = await database().prepare("SELECT e.goods_no, e.quantity, e.unit_name, s.date FROM stock_entries e JOIN stock_snapshots s ON s.id = e.snapshot_id WHERE s.owner = ? AND e.snapshot_id IN (SELECT value FROM json_each(?)) AND e.goods_no IN (SELECT value FROM json_each(?))").bind(owner, JSON.stringify(snapshots), JSON.stringify(goods)).all<EntryRecord>();
+    for (const row of values.results) { const list = history.get(row.goods_no) || []; list.push(row); history.set(row.goods_no, list); }
+  }
+  return history;
+}
+
+function analyzedEntry(row: EntryRecord, values: EntryRecord[], date: string, salesDates: string[], inbound: Record<string, InboundReconciliation> = {}, currentInbound?: InboundReconciliation) {
+  const dailyValues = values.map(v => ({ date: v.date!, quantity: v.quantity, unitName: v.unit_name }));
+  const rawSales = dailySales(dailyValues, salesDates, row.unit_name);
+  return { ...mapEntry(row), history: Object.fromEntries(values.map(v => [v.date!, v.quantity])), rawSales, sales: reconciledSales(rawSales, inbound), inbound, currentInbound, metrics: inventoryMetrics(dailyValues, date, row.quantity, row.unit_name, inbound) };
+}
+
 export async function loadInventory(owner: string, query: { source?: string; warehouseCode?: string; q?: string; filter?: string; days?: number; page?: number; pageSize?: number; sort?: string } = {}): Promise<InventoryView> {
   const config = serverConfig(), warehouses = await loadWarehouses(owner);
   const warehouse = warehouses.find(w => w.code === (query.warehouseCode || WAREHOUSE_CODE));
@@ -68,16 +86,11 @@ export async function loadInventory(owner: string, query: { source?: string; war
   // Normalized decimal strings sort exactly, including quantities beyond REAL precision.
   const sort = asc || desc ? `sign ${asc ? "ASC" : "DESC"}, CASE WHEN sign > 0 THEN instr(quantity || '.', '.') - 1 WHEN sign < 0 THEN 2 - instr(quantity || '.', '.') ELSE 0 END ${asc ? "ASC" : "DESC"}, CASE WHEN sign > 0 THEN quantity END COLLATE BINARY ${asc ? "ASC" : "DESC"}, CASE WHEN sign < 0 THEN substr(quantity, 2) END COLLATE BINARY ${asc ? "DESC" : "ASC"}, goods_no COLLATE BINARY ASC` : "goods_no COLLATE BINARY ASC";
   const result = await database().prepare(`SELECT * FROM stock_entries WHERE ${where} ORDER BY ${sort} LIMIT ? OFFSET ?`).bind(...parameters, pageSize, (page - 1) * pageSize).all<EntryRecord>();
-  const history = new Map<string, EntryRecord[]>();
-  if (result.results.length && daily.length) {
-    // Three bindings even with a 1,000-row page; D1 limits bound variables to 100.
-    const values = await database().prepare("SELECT e.goods_no, e.quantity, e.unit_name, s.date FROM stock_entries e JOIN stock_snapshots s ON s.id = e.snapshot_id WHERE s.owner = ? AND e.snapshot_id IN (SELECT value FROM json_each(?)) AND e.goods_no IN (SELECT value FROM json_each(?))").bind(owner, JSON.stringify(daily.map(s => s.id)), JSON.stringify(result.results.map(r => r.goods_no))).all<EntryRecord>();
-    for (const row of values.results) { const list = history.get(row.goods_no) || []; list.push(row); history.set(row.goods_no, list); }
-  }
-  return { ...base, snapshot: mapSnapshot(latest), snapshots: daily.map(mapSnapshot), salesDates, unavailableSkus:JSON.parse(latest.unavailable_skus || "[]"), rows: result.results.map(r => {
-    const values = history.get(r.goods_no) || [];
-    return { ...mapEntry(r), history: Object.fromEntries(values.map(v => [v.date!, v.quantity])), sales: dailySales(values.map(v => ({ date: v.date!, quantity: v.quantity, unitName: v.unit_name })), salesDates, r.unit_name) };
-  }), totalRows, goodsCount: latest.goods_count, page, totalsByUnit: JSON.parse(latest.totals), zeroCount: latest.zero_count, negativeCount: latest.negative_count };
+  // Three bindings even with a 1,000-row page; D1 limits bound variables to 100.
+  const history = await rowHistory(owner, daily.map(s => s.id), result.results.map(r => r.goods_no));
+  const inbound = await loadInboundReconciliations(owner, warehouse.code, daily.map(s => s.id), result.results.map(r => r.goods_no));
+  const currentInbound = await loadCurrentInboundReconciliations(owner, warehouse.code, latest.id, result.results.map(r => r.goods_no));
+  return { ...base, snapshot: mapSnapshot(latest), snapshots: daily.map(mapSnapshot), salesDates, unavailableSkus:JSON.parse(latest.unavailable_skus || "[]"), rows: result.results.map(r => analyzedEntry(r, history.get(r.goods_no) || [], latest.date, salesDates, inbound.get(r.goods_no), currentInbound.get(r.goods_no))), totalRows, goodsCount: latest.goods_count, page, totalsByUnit: JSON.parse(latest.totals), zeroCount: latest.zero_count, negativeCount: latest.negative_count };
 }
 
 export async function acquireRun(owner: string, code = WAREHOUSE_CODE, trigger = "manual", requestedId?: string): Promise<string> {
@@ -91,7 +104,7 @@ export async function acquireRun(owner: string, code = WAREHOUSE_CODE, trigger =
 export async function updateRun(id: string, pages: number, records: number, goods: number) {
   await database().prepare("UPDATE sync_runs SET page_count = ?, record_count = ?, goods_count = ?, last_progress_at = ?, message = ? WHERE id = ? AND status = 'running'").bind(pages, records, goods, new Date().toISOString(), goods ? `正在核验可购库存：${records} 个 SKU` : `正在读取 SKU 目录：${records} 个 SKU`, id).run();
 }
-export async function publishSnapshot(owner: string, id: string, rows: StockRow[], pageCount: number, recordCount: number, duplicateCount: number, scope: ScopeInfo, warehouse: { code: string; name: string; id: string; hash: string }, unavailable: UnavailableSku[] = []) {
+export async function publishSnapshot(owner: string, id: string, rows: StockRow[], pageCount: number, recordCount: number, duplicateCount: number, scope: ScopeInfo, warehouse: { code: string; name: string; id: string; hash: string }, unavailable: UnavailableSku[] = [], deferCompletion = false) {
   const db = database(), capturedDate = new Date(), captured = capturedDate.toISOString(), localTime = shanghaiTimestamp(capturedDate), date = localTime.slice(0,10), summary = summarizeRows(rows);
   await db.prepare("INSERT INTO stock_snapshots (id, owner, date, captured_at, status, page_count, record_count, goods_count, totals, zero_count, negative_count, scope_key, scope_label, scope_count, warehouse_code, warehouse_name, coverage, catalog_hash, unavailable_skus) VALUES (?, ?, ?, ?, 'staging', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto:v1', ?, ?)").bind(id, owner, date, captured, pageCount, recordCount, rows.length, JSON.stringify(summary.totalsByUnit), summary.zeroCount, summary.negativeCount, scope.key, scope.label, scope.count, warehouse.code, warehouse.name, warehouse.hash, JSON.stringify(unavailable)).run();
   for (let start = 0; start < rows.length; start += 500) {
@@ -100,8 +113,8 @@ export async function publishSnapshot(owner: string, id: string, rows: StockRow[
     await db.prepare("INSERT INTO stock_entries (snapshot_id, goods_no, goods_name, unit_name, quantity, sku_count, sign) SELECT ?, json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]'), json_extract(value, '$[4]'), json_extract(value, '$[5]') FROM json_each(?)").bind(id, payload).run();
   }
   const result = await db.batch([
-    db.prepare("UPDATE sync_runs SET status = 'complete', completed_at = ?, last_progress_at = ?, page_count = ?, record_count = ?, goods_count = ?, message = ? WHERE id = ? AND owner = ? AND warehouse_code = ? AND status = 'running'").bind(captured, captured, pageCount, recordCount, rows.length, `已核验 ${recordCount} 个规格、${rows.length} 个货品；${unavailable.length ? `${unavailable.length} 个规格未取得库存，已列出；` : ""}${duplicateCount ? `去重 ${duplicateCount} 条；` : ""}目录游标读取完成`, id, owner, warehouse.code),
-    db.prepare("UPDATE stock_snapshots SET status = 'complete' WHERE id = ? AND EXISTS (SELECT 1 FROM sync_runs WHERE id = ? AND status = 'complete' AND completed_at = ?)").bind(id, id, captured),
+    db.prepare("UPDATE sync_runs SET status = ?, completed_at = ?, last_progress_at = ?, page_count = ?, record_count = ?, goods_count = ?, message = ? WHERE id = ? AND owner = ? AND warehouse_code = ? AND status = 'running'").bind(deferCompletion ? 'running' : 'complete', deferCompletion ? null : captured, captured, pageCount, recordCount, rows.length, `已核验 ${recordCount} 个规格、${rows.length} 个货品；${unavailable.length ? `${unavailable.length} 个规格未取得库存，已列出；` : ""}${duplicateCount ? `去重 ${duplicateCount} 条；` : ""}目录游标读取完成`, id, owner, warehouse.code),
+    db.prepare("UPDATE stock_snapshots SET status = 'complete' WHERE id = ? AND EXISTS (SELECT 1 FROM sync_runs WHERE id = ? AND status = ? AND last_progress_at = ?)").bind(id, id, deferCompletion ? 'running' : 'complete', captured),
     db.prepare("UPDATE warehouses SET name = ?, warehouse_id = ? WHERE owner = ? AND code = ? AND EXISTS (SELECT 1 FROM stock_snapshots WHERE id = ? AND status = 'complete')").bind(warehouse.name, warehouse.id, owner, warehouse.code, id),
     // Immutable first successful capture after 08:00; later manual refreshes update current inventory only.
     db.prepare("INSERT OR IGNORE INTO daily_slots (owner, warehouse_code, date, snapshot_id) SELECT ?, ?, ?, ? WHERE ? >= '08:00:00' AND EXISTS (SELECT 1 FROM stock_snapshots WHERE id = ? AND status = 'complete')").bind(owner, warehouse.code, date, id, localTime.slice(11), id),
@@ -126,5 +139,21 @@ export async function allRows(owner: string, code = WAREHOUSE_CODE) {
   const view = await loadInventory(owner, { warehouseCode: code });
   if (!view.snapshot) throw new Error("该仓库暂无完整采集，请先采集库存");
   const result = await database().prepare("SELECT * FROM stock_entries WHERE snapshot_id = ? ORDER BY goods_no").bind(view.snapshot.id).all<EntryRecord>();
-  return { view, rows: result.results.map(mapEntry) };
+  const rows: InventoryView["rows"] = [];
+  // Enrich every export row, including those beyond the first webpage page.
+  for (let start = 0; start < result.results.length; start += 1000) {
+    const batch = result.results.slice(start, start + 1000);
+    const history = await rowHistory(owner, view.snapshots.map(s => s.id), batch.map(r => r.goods_no));
+    const inbound = await loadInboundReconciliations(owner, code, view.snapshots.map(s => s.id), batch.map(r => r.goods_no));
+    const currentInbound = await loadCurrentInboundReconciliations(owner, code, view.snapshot!.id, batch.map(r => r.goods_no));
+    rows.push(...batch.map(r => analyzedEntry(r, history.get(r.goods_no) || [], view.snapshot!.date, view.salesDates || [], inbound.get(r.goods_no), currentInbound.get(r.goods_no))));
+  }
+  return { view, rows };
+}
+export async function inboundRunProgress(id: string, done: number, total: number, requests = 0) {
+  await database().prepare("UPDATE sync_runs SET last_progress_at=?,message=? WHERE id=? AND status='running'").bind(new Date().toISOString(), `库存已保存；正在核验入库 ${done}/${total} 个采集区间，已请求 ${requests} 次`, id).run();
+}
+export async function completeInventoryRun(id: string, message: string) {
+  const now = new Date().toISOString();
+  await database().prepare("UPDATE sync_runs SET status='complete',completed_at=?,last_progress_at=?,message=? WHERE id=? AND status='running'").bind(now,now,message,id).run();
 }

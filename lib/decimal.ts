@@ -45,3 +45,22 @@ export function compareQuantity(left: string, right: string): number {
 export function subtractQuantity(left: string, right: string): string {
   return addQuantity(left, right.startsWith("-") ? right.slice(1) : "-" + right);
 }
+
+// Half-up rounding with integer arithmetic; do not lose large stock quantities.
+export function divideQuantity(left: string, right: string, precision = 2): string {
+  if (!Number.isInteger(precision) || precision < 0 || precision > 12) throw new Error("小数位数无效");
+  const a = parts(left), b = parts(right);
+  if (b.integer === 0n) throw new Error("不能除以零");
+  const negative = (a.integer < 0n) !== (b.integer < 0n);
+  const numerator = (a.integer < 0n ? -a.integer : a.integer) * 10n ** BigInt(b.scale + precision);
+  const denominator = (b.integer < 0n ? -b.integer : b.integer) * 10n ** BigInt(a.scale);
+  let result = numerator / denominator;
+  if ((numerator % denominator) * 2n >= denominator) result += 1n;
+  return format(negative ? -result : result, precision);
+}
+
+export function multiplyQuantityByInteger(value: string, multiplier: number): string {
+  if (!Number.isSafeInteger(multiplier)) throw new Error("倍数须为安全整数");
+  const parsed = parts(value);
+  return format(parsed.integer * BigInt(multiplier), parsed.scale);
+}

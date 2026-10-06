@@ -1,5 +1,13 @@
 import { subtractQuantity } from "./decimal";
+import type { InboundReconciliation } from "./inbound";
 export type DailyValue = { date: string; quantity: string; unitName: string };
+export function reconciledSales(raw: Record<string, string | null>, corrections: Record<string, InboundReconciliation>): Record<string, string | null> {
+  return Object.fromEntries(Object.entries(raw).map(([date, value]) => {
+    if (value == null) return [date, null];
+    const correction = corrections[date];
+    return [date, correction?.status === "verified" && correction.rawDifference === value ? correction.correctedQuantity : null];
+  }));
+}
 export function nextDate(date: string): string {
   const day = new Date(date + "T00:00:00Z"); day.setUTCDate(day.getUTCDate() + 1); return day.toISOString().slice(0,10);
 }
