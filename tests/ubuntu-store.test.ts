@@ -9,8 +9,39 @@ import { reconcileWarehouseInbound } from '../lib/inbound-store';
 import type { InboundQuery, InboundRecord } from '../lib/inbound';
 import { inventoryWorkbook } from '../lib/excel';
 import { addQuantity, compareQuantity } from '../lib/decimal';
+import { loadSalesCalendar } from '../lib/sales-calendar-store';
 mkdirSync('.sites-runtime/tests',{recursive:true});
 process.env.INVENTORY_DB_PATH=resolve(`.sites-runtime/tests/store-${Date.now()}.sqlite`);
+
+test('销量月历读取历史月份、月末闭合基准及用户隔离，不跨缺日计算',async()=>{
+  const db=sqlite(),owner='calendar-owner',code='CAL01';await addWarehouse(owner,code,'月历测试仓');
+  const snapshot=db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,1,1,'{}',0,0,?,'auto:v1')");
+  for(const [date,value,unit] of [['2026-09-30','30','Pcs'],['2026-10-01','28','Pcs'],['2026-10-02','527','Pcs'],['2026-10-04','512','Pcs'],['2026-10-05','512','箱'],['2026-10-31','40','Pcs'],['2026-11-01','35','Pcs'],['2026-12-01','99','Pcs']]) {
+    const id='calendar-'+date;snapshot.run(id,owner,date,date+'T00:00:23Z',code);
+    db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,id);
+    db.prepare('INSERT INTO stock_entries VALUES(?,?,?,?,?,1,1)').run(id,'CAL-GOODS','历史货品',unit,value);
+  }
+  snapshot.run('calendar-manual',owner,'2026-10-31','2026-10-31T10:00:00Z',code);
+  db.prepare("INSERT INTO stock_entries VALUES('calendar-manual','CAL-GOODS','历史货品','Pcs','999',1,1)").run();
+  for(const [date,next,opening,closing,inbound,sales] of [['2026-09-30','2026-10-01','30','28','0','2'],['2026-10-01','2026-10-02','28','527','500','1'],['2026-10-31','2026-11-01','40','35','0','5']]) {
+    db.prepare("INSERT INTO inbound_reconciliations (owner,warehouse_code,goods_no,date,before_snapshot_id,after_snapshot_id,unit_name,raw_difference,opening_quantity,closing_quantity,status,inbound_quantity,corrected_quantity,window_start,window_end,checked_at,query_scope) VALUES(?,?,'CAL-GOODS',?,?,?,'Pcs',?,?,?,'verified',?,?,?,?,?,'warehouse:v1')")
+      .run(owner,code,date,'calendar-'+date,'calendar-'+next,date==='2026-10-01'?'-499':sales,opening,closing,inbound,sales,date+'T00:00:23Z',next+'T00:00:23Z',next+'T00:00:23Z');
+  }
+  assert.equal((await loadInventory(owner,{warehouseCode:code})).salesDates!.includes('2026-10-01'),false,'主表只展示近期');
+  const october=await loadSalesCalendar(owner,code,'CAL-GOODS','2026-10');
+  assert.equal(october.days.length,31);assert.equal(october.firstMonth,'2026-09');assert.equal(october.lastMonth,'2026-12');
+  assert.equal(october.days[0].sales,'1');assert.equal(october.days[0].correction!.inboundQuantity,'500');
+  assert.equal(october.days[30].sales,'5');assert.equal(october.days[30].closingQuantity,'35');assert.equal(october.days[30].openingQuantity,'40','手动库存不替代固定基准');
+  assert.equal(october.days[1].sales,null,'缺10月3日不能跨日扣减');assert.equal(october.days[1].closingQuantity,null);
+  assert.equal(october.days[3].sales,null,'单位变化不强行计算');
+  assert.equal((await loadSalesCalendar(owner,code,'CAL-GOODS','2026-09')).days[29].sales,'2','月末使用下一月首日');
+  assert.equal((await loadSalesCalendar(owner,code,'CAL-GOODS','2028-02')).days.length,29,'闰年月历');
+  assert.equal((await loadSalesCalendar(owner,code,'MISSING','2026-10')).days.every(d=>d.sales===null && !d.correction),true);
+  await assert.rejects(()=>loadSalesCalendar('other-owner',code,'CAL-GOODS','2026-10'),/先增加/);
+  await addWarehouse('other-owner',code,'其他用户仓');assert.equal((await loadSalesCalendar('other-owner',code,'CAL-GOODS','2026-10')).days.every(d=>d.openingQuantity===null && !d.correction),true);
+  await assert.rejects(()=>loadSalesCalendar(owner,code,'CAL-GOODS','2026-13'),/有效月份/);
+  await assert.rejects(()=>loadSalesCalendar(owner,code,'CAL-GOODS',"2026-10' OR 1=1"),/有效月份/);
+});
 
 test('本地数据库迁移、事务回滚、队列去重与多仓库快照隔离',async()=>{
   const db=sqlite();

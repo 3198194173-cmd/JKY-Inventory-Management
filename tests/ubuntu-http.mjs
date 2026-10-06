@@ -23,6 +23,7 @@ try {
   let r=await fetch(url+'/',{redirect:'manual',headers:{'oai-authenticated-user-id':'forged','oai-authenticated-user-email':'fake@example.com'}});
   assert.equal(r.status,307);assert.equal(r.headers.get('location'),'/login');
   r=await fetch(url+'/api/inventory');assert.equal(r.ok,false);
+  r=await fetch(url+'/api/sales-calendar?warehouseCode=TEST02&goodsNo=TEST-GOODS&month=2026-10');assert.equal(r.ok,false,'月历需要登录');
   r=await fetch(url+'/api/session',{method:'POST',headers:{origin:'https://evil.example'},body:new URLSearchParams({username:'admin',password}),redirect:'manual'});assert.equal(r.ok,false);
   r=await fetch(url+'/api/session',{method:'POST',headers:{origin:url},body:new URLSearchParams({username:'admin',password}),redirect:'manual'});assert.equal(r.status,303);
   const cookie=r.headers.get('set-cookie').split(';')[0];assert.ok(r.headers.get('set-cookie').includes('HttpOnly'));
@@ -79,6 +80,11 @@ try {
   assert.equal(reconciled.rows[0].rawSales[previous],'-3');assert.equal(reconciled.rows[0].sales[previous],'1');
   assert.equal(reconciled.rows[0].inbound[previous].inboundQuantity,'4');assert.equal(reconciled.rows[0].inbound[previous].records[0].documentNo,'TEST-INBOUND-4');
   assert.equal(reconciled.rows[0].currentInbound.correctedQuantity,'0','手动区间不重复记入此前入库');
+  r=await fetch(url+'/api/sales-calendar?'+new URLSearchParams({warehouseCode:'TEST02',goodsNo:'TEST-GOODS',month:previous.slice(0,7)}),{headers:{cookie}});
+  assert.equal(r.ok,true);const calendar=await r.json(),calendarDay=calendar.days.find(d=>d.date===previous);
+  assert.equal(calendarDay.sales,'1');assert.equal(calendarDay.openingQuantity,'14.25');assert.equal(calendarDay.closingQuantity,'17.25');assert.equal(calendarDay.correction.inboundQuantity,'4');
+  assert.ok(calendar.days.length>=28 && calendar.days.length<=31);
+  r=await fetch(url+'/api/sales-calendar?warehouseCode=TEST02&goodsNo=TEST-GOODS&month=2026-13',{headers:{cookie}});assert.equal(r.status,400);
   r=await fetch(url+'/api/sync?warehouseCode=TEST02',{headers:{cookie}});assert.match((await r.json()).runs[0].message,/仓库入库核验 2 个区间、2 个货品区间：已核算 2/);
   {
     const db=new DatabaseSync(path);

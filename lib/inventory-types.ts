@@ -57,3 +57,19 @@ export type RunInfo = {
   message: string | null;
   warehouseCode?: string;
 };
+
+export type SalesCalendarDay = {
+  date: string;
+  sales: string | null;
+  openingQuantity: string | null;
+  closingQuantity: string | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  correction?: InboundReconciliation;
+};
+export type SalesCalendarMonth = {
+  month: string;
+  firstMonth: string;
+  lastMonth: string;
+  days: SalesCalendarDay[];
+};

@@ -13,6 +13,7 @@ import type { InventoryView, RunInfo, WarehouseInfo } from "@/lib/inventory-type
 import type { AlertSettings } from "@/lib/alerts-store";
 import type { InventoryMetrics } from "@/lib/inventory-metrics";
 import { compareQuantity } from "@/lib/decimal";
+import { SalesCalendar } from "@/components/sales-calendar";
 
 const quantity = (value: string) => { const [a,b] = value.split("."); return a.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (b ? "." + b : ""); };
 const time = (value: string) => new Date(value).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
@@ -31,19 +32,6 @@ function SalesValue({ row, date }: { row: InventoryView["rows"][number]; date: s
   const correction = row.inbound?.[date], value = row.sales?.[date];
   const pending = row.rawSales?.[date] != null && value == null;
   return <span className="compact-sales-value" title={correction?.error || (pending ? "该采集区间入库未核验；点击货品查看详情" : correction?.status === "verified" ? `原始差额 ${correction.rawDifference} + 入库 ${correction.inboundQuantity}；点击查看单据` : "库存差额估算")}>{value == null ? "—" : quantity(value)}{pending && <small className="compact-sales-note">待核验</small>}</span>;
-}
-function SalesDayDetail({ row, date, label }: { row: InventoryView["rows"][number]; date: string; label?: string }) {
-  const correction = row.inbound?.[date], raw = row.rawSales?.[date], pending = raw != null;
-  return <section className={`compact-sales-day ${hasInbound(row,date) ? "compact-inbound-day" : ""}`}><header><span>{label || date}</span><strong><SalesValue row={row} date={date}/></strong></header>
-    {correction ? <><p>原始库存差额：{quantity(correction.rawDifference)} · 入库合计：{correction.inboundQuantity == null ? "未取得" : quantity(correction.inboundQuantity)}</p>
-      <p className="compact-sales-window">核验区间（北京时间）：{time(correction.windowStart)} → {time(correction.windowEnd)}（前开后闭）</p>
-      {correction.status === "verified" && <p className="compact-sales-formula">{correction.openingQuantity} + {correction.inboundQuantity} − {correction.closingQuantity} = {correction.correctedQuantity}（入库修正后的消耗估算）</p>}
-      {correction.error && <p className="compact-negative">{correction.error}；本日不计入均值及周转。</p>}
-      {!!correction.records.length && <ul className="compact-inbound-list">{correction.records.map(record => <li key={record.recId}><div><strong>{record.typeName} {quantity(record.quantity)}</strong><time>{time(record.inOutDate)}</time></div><span>单号：{record.documentNo}</span>{record.createdAt && record.createdAt !== record.inOutDate && <span>创建时间：{time(record.createdAt)}</span>}</li>)}</ul>}
-      {correction.status === "unresolved" && !correction.records.length && <p>完整查询未返回此区间的入库记录；再次采集会重试。</p>}
-      {correction.status === "failed" && <p>再次采集库存时会重试此日期的入库核验。</p>}
-    </> : pending ? <p className="compact-negative">原始库存差额 {raw}；尚未核验入库。下次采集将按仓库区间补查近30天的入库。</p> : <p className="compact-sales-window">本日期缺少可比较的库存基准，不计算销量。</p>}
-  </section>;
 }
 async function apiJson<T>(response: Response): Promise<T> {
   const raw = await response.text();
@@ -206,6 +194,6 @@ export default function InventoryDashboard({ initial }: { initial: InventoryView
     <Dialog open={unavailableOpen} onOpenChange={setUnavailableOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 未取得库存的 SKU</DialogTitle><DialogDescription>已尝试条码或货品编码查询。以下记录不填零；含缺失规格的货品不展示部分合计、不参与销售差额。Excel 的采集说明也保留此清单。</DialogDescription></DialogHeader><div className="compact-records"><Table><TableHeader><TableRow><TableHead>货品编码 / 名称</TableHead><TableHead>SKU / 条码</TableHead><TableHead>原因</TableHead></TableRow></TableHeader><TableBody>{view.unavailableSkus?.map(row => <TableRow key={row.skuId}><TableCell>{row.goodsNo}<br/>{row.goodsName}</TableCell><TableCell>{row.skuId}<br/>{row.skuBarcode || "无条码"}</TableCell><TableCell>{row.reason}</TableCell></TableRow>)}</TableBody></Table></div></DialogContent></Dialog>
     <Dialog open={recordsOpen} onOpenChange={setRecordsOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 采集记录</DialogTitle><DialogDescription>仅显示当前仓库最近 20 次采集。</DialogDescription></DialogHeader><div className="compact-records">{runs.length ? runs.map(run => <div key={run.id}><strong>{run.status === "complete" ? "已完成" : run.status === "failed" ? "失败" : run.status === "queued" ? "排队中" : "采集中"}</strong><span>{time(run.startedAt)}</span><p>{run.message || `${run.pageCount} 页 · ${run.recordCount.toLocaleString()} 条记录`}</p></div>) : <p>暂无采集记录</p>}</div></DialogContent></Dialog>
     <Dialog open={alertsOpen} onOpenChange={setAlertsOpen}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>钉钉库存预警</DialogTitle><DialogDescription>完整采集后，低于或等于阈值的货品发送至已配置群。此设置适用于所有仓库。</DialogDescription></DialogHeader><div className="compact-alert-switch"><label htmlFor="alert-enabled">启用预警</label><Switch id="alert-enabled" checked={enabled} onCheckedChange={setEnabled} disabled={!alerts.robotConfigured}/></div><label htmlFor="alert-threshold">库存阈值</label><Input id="alert-threshold" value={threshold} onChange={e => setThreshold(e.target.value)}/>{!alerts.robotConfigured && <p>机器人尚未配置完整，预警暂未启用。</p>}{alerts.lastResult && <p>{alerts.lastResult}</p>}{error && <p className="compact-error" role="alert">{error}</p>}<Button onClick={saveAlerts} disabled={saving}>{saving ? "保存中…" : "保存设置"}</Button></DialogContent></Dialog>
-    <Dialog open={!!selected} onOpenChange={v => { if(!v) setSelected(null); }}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>{selected?.goodsNo}</DialogTitle><DialogDescription>{selected?.goodsName}</DialogDescription></DialogHeader>{selected && <><p>当前库存：<strong>{quantity(selected.quantity)}</strong></p><p>近7天均值（估算）：<MetricValue metrics={selected.metrics} field="average7"/></p><p>库存周转（天，估算）：<MetricValue metrics={selected.metrics} field="turnoverDays"/></p>{selected.currentInbound && <SalesDayDetail label="本次采集区间（不计入每日销量）" date={selected.currentInbound.date} row={{...selected,inbound:{[selected.currentInbound.date]:selected.currentInbound},rawSales:{[selected.currentInbound.date]:selected.currentInbound.rawDifference},sales:{[selected.currentInbound.date]:selected.currentInbound.status === "verified" ? selected.currentInbound.correctedQuantity : null}}}/>}<p>销售趋势（入库修正后的消耗估算）</p><Sparkline dates={dates} values={selected.sales || {}}/>{dates.length ? <div className="compact-detail-values">{dates.map(date => <SalesDayDetail key={date} row={selected} date={date}/>)}</div> : <p>连续两天采集后生成每日销售差额。</p>}</>}</DialogContent></Dialog>
+    <Dialog open={!!selected} onOpenChange={v => { if(!v) setSelected(null); }}><DialogContent className="compact-dialog sales-calendar-dialog"><DialogHeader><DialogTitle>{selected?.goodsNo}</DialogTitle><DialogDescription>{selected?.goodsName}</DialogDescription></DialogHeader>{selected && <SalesCalendar key={`${code}:${selected.goodsNo}`} warehouseCode={code} goodsNo={selected.goodsNo} initialMonth={(dates[0] || view.snapshot?.date || new Date().toISOString().slice(0,10)).slice(0,7)}/>}</DialogContent></Dialog>
   </main>;
 }
