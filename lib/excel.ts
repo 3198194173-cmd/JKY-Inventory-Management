@@ -6,7 +6,7 @@ import type { InboundReconciliation } from "./inbound";
 import type { InventoryMetrics } from "./inventory-metrics";
 import { recentSalesDates } from "./inventory-metrics";
 
-const headers=["物料编码","物料名称","库存现有","近7天均值（估算）","均值日期范围","库存周转（天·估算）","在途","建议补货库存数量（30天）"];
+const headers=["物料编码","物料名称","库存现有","近7天销量均值（估算）","均值日期范围","库存周转（天·估算）","在途","建议补货库存数量（30天）"];
 const escape=(value:string) => value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const cell=(address:string,value:string,style:number) => `<c r="${address}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${escape(value)}</t></is></c>`;
 function numericCell(address:string,value:string,style:number,textStyle:number) {
@@ -39,10 +39,10 @@ export function inventoryWorkbook(view:InventoryView,rows:(StockRow & {metrics?:
     ["采集日期",view.snapshot?.capturedAt||"未记录"],
     ["原始记录 / 汇总货品",`${view.snapshot?.recordCount||0} 条规格记录 / ${rows.length} 个货品；请求 ${view.snapshot?.pageCount||0} 页。`],
     ["库存口径","库存现有 = orderAbleQuantity（可订购量）；按 goodsNo 合并同单位规格，保留小数、负数与零。"],
-    ["网页销售口径","上次每日基准库存 + 两次采集区间内入库 − 本次每日基准库存，记在上次基准日期；按仓库和采集区间分页获取全部入库（含归档），按货品编码汇总；未核验或未解释的日期不算销量。"],
+    ["网页销售口径","上次每日基准库存 + 两次采集区间内入库 − 本次每日基准库存，记在上次基准日期；按仓库和采集区间分页获取全部入库（含归档），按货品编码汇总；负销量按退货/回补计入净销量；未完成入库核验的日期不算销量。"],
     ["单位合计",Object.entries(view.totalsByUnit).map(([u,q])=>`${q} ${u}`).join("；")],
-    ["近7天均值","固定为最近采集日期之前7个完整日期的入库核验后消耗估算总和÷7；缺日、缺货品、单位变化或入库未核验不计算。不随网页日期范围改变。"],
-    ["库存周转","当前库存÷近7天未四舍五入的均值；结果保留2位小数。均值为0、负库存、数据不足或待核验入库时为空。此值为预计库存可支撑天数。"],
+    ["近7天销量均值","固定为最近采集日期之前7个完整日期的净销量总和÷7，包含负值退货/回补；缺日、缺货品、单位变化或入库未核验不计算。不随网页日期范围改变。"],
+    ["库存周转","当前库存÷近7天未四舍五入的均值；结果保留2位小数。均值为零或负数、负库存、数据不足或待核验入库时为空。此值为预计库存可支撑天数。"],
     ["指标性质","均值和周转为库存消耗估算；全部可比较日期已核验区间实际入库。销售出库、退货、调拨及可订购量变动仍可能影响结果，不等同准确订单销量或销售金额。"],
     ["未接入的字段","在途及建议补货尚未接入；缺失数据不填成0。"],
     ["数值精度","数量超过 Excel 的 15 位有效数字限制时存为文本，以保留原始精度。"],

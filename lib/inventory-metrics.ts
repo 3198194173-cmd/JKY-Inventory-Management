@@ -7,7 +7,7 @@ export type InventoryMetrics = {
   turnoverDays: string | null;
   validDays: number;
   basis: "inventory_difference" | "inbound_adjusted_difference";
-  reason: "insufficient_data" | "inbound_unverified" | "no_consumption" | "negative_inventory" | null;
+  reason: "insufficient_data" | "inbound_unverified" | "no_consumption" | "net_returns" | "negative_inventory" | null;
 };
 
 // Always use the seven calendar days immediately before the latest capture date.
@@ -26,12 +26,11 @@ export function inventoryMetrics(values: DailyValue[], asOfDate: string, stock: 
   const result: InventoryMetrics = { average7: null, turnoverDays: null, validDays: valid.length, basis: dates.some(d => corrections[d]?.status === "verified") ? "inbound_adjusted_difference" : "inventory_difference", reason: "insufficient_data" };
   if (dates.some(d => raw[d] != null && sales[d] == null)) return { ...result, reason: "inbound_unverified" };
   if (valid.length !== 7) return result;
-  // A negative difference cannot be repaired by abs(), clipping or omitting that day.
-  // Preserve the original daily value and wait for actual inbound reconciliation.
-  if (valid.some(value => compareQuantity(value, "0") < 0)) return { ...result, reason: "inbound_unverified" };
+  // Keep returns/backfill signed; every verified day participates in the mean.
   const total = valid.reduce(addQuantity, "0");
   result.average7 = divideQuantity(total, "7");
   if (compareQuantity(total, "0") === 0) return { ...result, reason: "no_consumption" };
+  if (compareQuantity(total, "0") < 0) return { ...result, reason: "net_returns" };
   if (compareQuantity(stock, "0") < 0) return { ...result, reason: "negative_inventory" };
   // stock / (total / 7), using the unrounded total rather than the displayed mean.
   return { ...result, turnoverDays: divideQuantity(multiplyQuantityByInteger(stock, 7), total), reason: null };

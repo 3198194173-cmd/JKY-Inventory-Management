@@ -3,10 +3,35 @@ import test from "node:test";
 import { collectInbound, inboundTime, type InboundReconciliation } from "../lib/inbound";
 import { reconciledSales, dailySales } from "../lib/daily-sales";
 import { inventoryMetrics } from "../lib/inventory-metrics";
+import { reconciliationDiagnostic } from "../lib/reconciliation-diagnostics";
 
 const query = { warehouseCode: "CK031", goodsNo: "C.Q.CB.AP.00.0636", unitName: "Pcs", start: "2026-10-02T00:00:23.946Z", end: "2026-10-03T00:00:23.670Z" };
 const record = (id = "2267542", quantity = "500", date = "1790922543000") => ({ recId: id, docId: "1038047", goodsdocNo: "CRK202610022053", goodsNo: query.goodsNo, warehouseCode: query.warehouseCode, quantity, inOutDate: date, gmtCreate: date, skuBarcode: query.goodsNo, unitName: "Pcs", inouttypeName: "调拨入库" });
 const reply = (data: unknown) => Response.json({ code: 200, subCode: "0250000004", result: { data, noPrivilegeItem: null } });
+
+test("负库存与退货回补保留符号，完整入库核验后显示负净销量",()=>{
+  const base: InboundReconciliation={date:"2026-10-02",rawDifference:"-151",openingQuantity:"-4",closingQuantity:"147",inboundQuantity:"150",correctedQuantity:"-1",status:"verified",windowStart:query.start,windowEnd:query.end,records:[],error:"旧的笼统提示",checkedAt:query.end};
+  const result=reconciliationDiagnostic(base)!;
+  assert.equal(result.difference,"-1"); assert.equal(result.increase,"1");
+  assert.equal(result.kind,"net_return"); assert.match(result.message,/计入近7天销量均值/);
+  assert.doesNotMatch(result.message,/冲销/);
+  assert.equal(reconciledSales({[base.date]:"-151"},{[base.date]:base})[base.date],"-1");
+  const missing={...base,openingQuantity:"58",closingQuantity:"59",rawDifference:"-1",inboundQuantity:"0"};
+  assert.equal(reconciledSales({[base.date]:"-1"},{[base.date]:missing})[base.date],"-1");
+  const returned={...base,openingQuantity:"100",closingQuantity:"102",rawDifference:"-2",inboundQuantity:"0",correctedQuantity:"-2"};
+  assert.equal(reconciledSales({[base.date]:"-2"},{[base.date]:returned})[base.date],"-2");
+  const negative={...base,openingQuantity:"-3",closingQuantity:"-4",rawDifference:"1",inboundQuantity:"0",correctedQuantity:"1",status:"verified" as const};
+  assert.deepEqual(dailySales([{date:"2026-10-02",quantity:"-3",unitName:"Pcs"},{date:"2026-10-03",quantity:"-4",unitName:"Pcs"}],[base.date]),{[base.date]:"1"});
+  assert.equal(reconciledSales({[base.date]:"1"},{[base.date]:negative})[base.date],"1");
+  assert.equal(reconciliationDiagnostic(negative),null);
+  // Fully offset the -4 opening balance: -4 + 150 - 146 = 0.
+  assert.equal(reconciliationDiagnostic({...base,closingQuantity:"146",rawDifference:"-150",correctedQuantity:"0",status:"verified"}),null);
+  assert.equal(reconciliationDiagnostic({...base,status:"failed"}),null,"查询失败不能视为已核验回补");
+  assert.equal(reconciliationDiagnostic({...base,inboundQuantity:null}),null);
+  assert.equal(reconciliationDiagnostic({...base,rawDifference:"-150"}),null,"不使用与库存不匹配的结果");
+  assert.equal(reconciliationDiagnostic({...base,correctedQuantity:"0"}),null,"拒绝不一致核算");
+  assert.equal(reconciliationDiagnostic({...base,openingQuantity:"10",closingQuantity:"10",rawDifference:"0",inboundQuantity:"-2",correctedQuantity:"-2"})!.kind,"inbound_reversal");
+});
 
 test("真实响应的成功subCode不会抹掉500入库；查询归档、分页、去重和精确采集边界", async () => {
   const requests: Record<string, unknown>[] = [];

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { sqlite, localDatabase } from '../lib/sqlite.mjs';
 import { enqueue, enqueueDaily } from '../lib/local-jobs';
@@ -8,10 +8,80 @@ import { acquireRun, addWarehouse, allRows, completeInventoryRun, loadInventory,
 import { reconcileWarehouseInbound } from '../lib/inbound-store';
 import type { InboundQuery, InboundRecord } from '../lib/inbound';
 import { inventoryWorkbook } from '../lib/excel';
-import { addQuantity, compareQuantity } from '../lib/decimal';
+import { addQuantity, subtractQuantity, compareQuantity } from '../lib/decimal';
 import { loadSalesCalendar } from '../lib/sales-calendar-store';
 mkdirSync('.sites-runtime/tests',{recursive:true});
 process.env.INVENTORY_DB_PATH=resolve(`.sites-runtime/tests/store-${Date.now()}.sqlite`);
+
+test('负库存与无入库回补显示负净销量，不改写原始快照',async()=>{
+  const db=sqlite(),owner='negative-owner',code='NEG01';await addWarehouse(owner,code,'负库存核算测试');
+  for(const [date,values] of [['2026-10-02',['-4','58','-3']],['2026-10-03',['147','59','-4']]] as const){
+    const id=`negative-${date}`;
+    db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,3,3,'{}',0,1,?,'auto:v1')").run(id,owner,date,date+'T00:00:23.000Z',code);
+    db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,id);
+    for(let i=0;i<3;i++)db.prepare('INSERT INTO stock_entries (snapshot_id,goods_no,goods_name,unit_name,quantity,sku_count,sign) VALUES (?,?,?,\'Pcs\',?,1,?)').run(id,['NEGATIVE','NO-INBOUND','VALID-NEGATIVE'][i],'测试货品',values[i],compareQuantity(values[i],'0'));
+  }
+  await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[{recId:'negative-inbound',docId:'negative-doc',documentNo:'TEST-150',goodsNo:'NEGATIVE',warehouseCode:code,skuBarcode:'NEGATIVE',quantity:'150',unitName:'Pcs',inOutDate:'2026-10-02T06:29:03.000Z',createdAt:null,typeName:'调拨入库'}]}));
+  const calendar=await loadSalesCalendar(owner,code,'NEGATIVE','2026-10'),day=calendar.days[1];
+  assert.equal(day.sales,'-1');assert.equal(day.correction!.correctedQuantity,'-1');
+  assert.equal(day.correction!.error,null);assert.equal(day.correction!.status,'verified');
+  const noInbound=(await loadSalesCalendar(owner,code,'NO-INBOUND','2026-10')).days[1];
+  assert.equal(noInbound.sales,'-1');assert.equal(noInbound.correction!.error,null);
+  assert.equal((await loadSalesCalendar(owner,code,'VALID-NEGATIVE','2026-10')).days[1].sales,'1');
+  const view=await loadInventory(owner,{warehouseCode:code});
+  assert.equal(view.rows.find(r=>r.goodsNo==='NEGATIVE')!.metrics!.average7,null);
+  assert.equal(db.prepare("SELECT quantity FROM stock_entries WHERE snapshot_id='negative-2026-10-02' AND goods_no='NEGATIVE'").get()!.quantity,'-4');
+  assert.equal(db.prepare("SELECT error FROM inbound_reconciliations WHERE owner=? AND goods_no='NEGATIVE'").get(owner)!.error,null,'负净销量是已完成核验的结果');
+  assert.match(new TextDecoder().decode(inventoryWorkbook(view,view.rows)),/原始差额 -151 \| 入库 150 \| 修正 -1/);
+});
+
+test('主表/月历/导出共同使用负净销量及带符号7天均值',async()=>{
+  const db=sqlite(),owner='negative-owner',code='NET01';await addWarehouse(owner,code,'净销量均值测试');
+  const stocks={MIXED:['100','90','92','87','87','86','84','85'],RETURNS:['100','100','102','102','102','102','102','102'],ZERO:['100','98','100','100','100','100','100','100']};
+  for(let i=0;i<8;i++){
+    const date='2026-10-0'+(i+1),id='net-'+date;
+    db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,3,3,'{}',0,0,?,'auto:v1')").run(id,owner,date,date+'T00:00:23Z',code);
+    db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,id);
+    for(const [goods,values] of Object.entries(stocks))db.prepare("INSERT INTO stock_entries VALUES(?,?,?,'Pcs',?,1,1)").run(id,goods,goods==='RETURNS'?'退货回补样本':goods==='MIXED'?'正负销量混合样本':'净消耗为零样本',values[i]);
+  }
+  await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[]}));
+  const view=await loadInventory(owner,{warehouseCode:code});
+  const mixed=view.rows.find(r=>r.goodsNo==='MIXED')!,returned=view.rows.find(r=>r.goodsNo==='RETURNS')!,zero=view.rows.find(r=>r.goodsNo==='ZERO')!;
+  assert.equal(mixed.metrics!.average7,'2.14');assert.equal(mixed.metrics!.turnoverDays,'39.67');assert.equal(mixed.sales!['2026-10-02'],'-2');
+  assert.equal(returned.metrics!.average7,'-0.29');assert.equal(returned.metrics!.turnoverDays,null);assert.equal(returned.metrics!.validDays,7);
+  assert.equal(zero.metrics!.average7,'0');assert.equal(zero.metrics!.turnoverDays,null);
+  assert.equal((await loadSalesCalendar(owner,code,'RETURNS','2026-10')).days[1].sales,'-2');
+  const xml=new TextDecoder().decode(inventoryWorkbook(view,view.rows));
+  assert.match(xml,/近7天销量均值（估算）/);assert.match(xml,/<v>-0.29<\/v>/);assert.match(xml,/修正 -2/);
+});
+
+test('升级旧负净销量仅恢复完整全仓查询，失败/冲销/旧口径仍待核验且可重复执行',async()=>{
+  const db=sqlite(),owner='negative-owner',code='NEG01';
+  const oldError='入库冲销或其他库存变动尚未解释，仍需核对';
+  const cases=[
+    ['LEGACY-RETURN','unresolved','0','-1','warehouse:v1',oldError,'verified'],
+    ['LEGACY-RECEIPT','unresolved','150','-1','warehouse:v1',oldError,'verified'],
+    ['FAILED','failed',null,null,'warehouse:v1','分页失败','failed'],
+    ['REVERSAL','unresolved','-2','-3','warehouse:v1',oldError,'unresolved'],
+    ['OLD-SCOPE','unresolved','0','-1','goods:v1',oldError,'unresolved'],
+    ['OTHER-PENDING','unresolved','0','-1','warehouse:v1','其他错误','unresolved'],
+    ['POSITIVE-PENDING','unresolved','0','1','warehouse:v1',oldError,'unresolved'],
+  ];
+  for(const [goods,status,inbound,corrected,scope,error] of cases) {
+    const raw=inbound!=null && corrected!=null ? subtractQuantity(corrected,inbound) : '-1';
+    db.prepare("INSERT INTO inbound_reconciliations (owner,warehouse_code,goods_no,date,before_snapshot_id,after_snapshot_id,unit_name,raw_difference,opening_quantity,closing_quantity,status,inbound_quantity,corrected_quantity,window_start,window_end,error,checked_at,query_scope) VALUES(?,?,?,'2026-10-02','negative-2026-10-02','negative-2026-10-03','Pcs',?,?,'59',?,?,?,'2026-10-02T00:00:23Z','2026-10-03T00:00:23Z',?,'old',?)").run(owner,code,goods,raw,addQuantity('59',raw),status,inbound,corrected,error,scope);
+  }
+  const migration=readFileSync('drizzle/0007_net_sales_returns.sql','utf8');
+  for(let run=0;run<2;run++) {
+    db.exec(migration);
+    for(const [goods,,inbound,corrected,,,status] of cases) {
+      // Expected status is the last item; source numbers and timestamps stay intact.
+      const row=db.prepare('SELECT * FROM inbound_reconciliations WHERE owner=? AND goods_no=?').get(owner,goods)!;
+      assert.equal(row.status,status);assert.equal(row.corrected_quantity,corrected);assert.equal(row.raw_difference,inbound!=null && corrected!=null ? subtractQuantity(corrected,inbound) : '-1');assert.equal(row.checked_at,'old');
+      if(status==='verified')assert.equal(row.error,null);
+    }
+  }
+});
 
 test('销量月历读取历史月份、月末闭合基准及用户隔离，不跨缺日计算',async()=>{
   const db=sqlite(),owner='calendar-owner',code='CAL01';await addWarehouse(owner,code,'月历测试仓');
@@ -45,7 +115,7 @@ test('销量月历读取历史月份、月末闭合基准及用户隔离，不�
 
 test('本地数据库迁移、事务回滚、队列去重与多仓库快照隔离',async()=>{
   const db=sqlite();
-  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,7);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,8);
   await addWarehouse('test-owner','TEST01','测试仓');
   const first=enqueue('test-owner','TEST01'),second=enqueue('test-owner','TEST01');
   assert.equal(first.id,second.id);
@@ -86,7 +156,7 @@ test('仓库分页结果覆盖库存下降、持平、增加；重试与手动�
     return {quantity:'0',records};
   };
   const first=await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},collector);
-  assert.deepEqual(first,{checked:35,windows:7,verified:33,unresolved:1,failed:1});
+  assert.deepEqual(first,{checked:35,windows:7,verified:34,unresolved:0,failed:1});
   assert.equal(queries.length,7,'5商品×7天仅查询7个仓库区间');
   let view=await loadInventory(owner,{warehouseCode:code});
   const a=view.rows.find(r=>r.goodsNo==='A')!,b=view.rows.find(r=>r.goodsNo==='B')!,c=view.rows.find(r=>r.goodsNo==='C')!;
@@ -95,7 +165,8 @@ test('仓库分页结果覆盖库存下降、持平、增加；重试与手动�
   assert.equal(a.inbound!['2026-10-02'].records[0].quantity,'500');
   assert.equal(view.rows.find(r=>r.goodsNo==='D')!.sales!['2026-10-02'],'11');
   assert.equal(view.rows.find(r=>r.goodsNo==='E')!.sales!['2026-10-02'],'5');
-  assert.equal(b.sales!['2026-10-02'],null);assert.equal(b.inbound!['2026-10-02'].status,'unresolved');
+  assert.equal(b.sales!['2026-10-02'],'-4');assert.equal(b.inbound!['2026-10-02'].status,'verified');
+  assert.equal(b.metrics!.average7,'-0.57');assert.equal(b.metrics!.reason,'net_returns');assert.equal(b.metrics!.turnoverDays,null);
   assert.equal(c.sales!['2026-10-02'],null);assert.equal(c.inbound!['2026-10-02'].inboundQuantity,null);
   const verifiedAt=a.inbound!['2026-10-02'].checkedAt;
   assert.equal(db.prepare("SELECT quantity FROM stock_entries WHERE snapshot_id='inbound-day-3' AND goods_no='A'").get()!.quantity,'527');
@@ -103,7 +174,7 @@ test('仓库分页结果覆盖库存下降、持平、增加；重试与手动�
   for(const row of view.rows)entry.run('inbound-manual',row.goodsNo,row.goodsName,row.unitName,row.goodsNo==='A'?'523':row.quantity);
   badUnit=false;
   const second=await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},collector,'inbound-manual');
-  assert.deepEqual(second,{checked:7,windows:2,verified:6,unresolved:1,failed:0});
+  assert.deepEqual(second,{checked:6,windows:2,verified:6,unresolved:0,failed:0});
   view=await loadInventory(owner,{warehouseCode:code});
   const manual=view.rows.find(r=>r.goodsNo==='A')!;
   assert.equal(manual.inbound!['2026-10-02'].checkedAt,verifiedAt,'成功货品区间复用');
@@ -210,7 +281,7 @@ test('逐日期销量全仓精确排序后分页，入库修正/并列/未核验
   const expected:Record<string,string|null>={};
   for(let i=0;i<205;i++) {
     const goods='G'+String(i).padStart(3,'0');
-    const first=i===1?'9007199254740990.1':i===2?'9007199254740990.2':i===3?'10.02':i===4?'10.1':i>=203?'5':String(i%30);
+    const first=i===1?'9007199254740990.1':i===2?'9007199254740990.2':i===3?'10.02':i===4?'10.1':i>=5 && i<=13?['-100','-2','-0.5','-0.01','-9007199254740990.2','-9007199254740990.1','-10.1','-10.02','-2'][i-5]:i>=203?'5':String(i%30);
     const second=String(205-i);
     expected[goods]=i>=203?null:i===0?'1000':first;
     const quantities=[addQuantity(addQuantity('100',second),first),addQuantity('100',second),'100'];

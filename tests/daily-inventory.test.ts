@@ -12,7 +12,7 @@ import { divideQuantity } from "../lib/decimal";
 // These calculation fixtures explicitly model a completed warehouse query with no inbound.
 function inventoryMetrics(values: DailyValue[], asOf: string, stock: string, unit: string) {
   const raw=dailySales(values,recentSalesDates(asOf),unit);
-  const corrections=Object.fromEntries(Object.entries(raw).filter(([,q])=>q!=null && compareQuantity(q,"0")>=0).map(([date,q])=>[date,{date,rawDifference:q!,openingQuantity:"0",closingQuantity:"0",inboundQuantity:"0",correctedQuantity:q!,status:"verified" as const,windowStart:"",windowEnd:"",records:[],error:null,checkedAt:""}]));
+  const corrections=Object.fromEntries(Object.entries(raw).filter(([,q])=>q!=null).map(([date,q])=>[date,{date,rawDifference:q!,openingQuantity:"0",closingQuantity:"0",inboundQuantity:"0",correctedQuantity:q!,status:"verified" as const,windowStart:"",windowEnd:"",records:[],error:null,checkedAt:""}]));
   return calculateMetrics(values,asOf,stock,unit,corrections);
 }
 const catalogRow = (id = "1",code = "CK_ALT") => ({quantityId:id,skuId:id,skuBarcode:`b${id}`,goodsNo:`g${id}`,goodsName:`货品${id}`,unitName:"Pcs",ownerName:"货主",warehouseId:"9999999999999999999",warehouseCode:code,warehouseName:"测试仓"});
@@ -30,13 +30,13 @@ test("近7天均值固定除7，周转使用最新库存及未舍入均值", () 
   assert.throws(()=>divideQuantity("1","0"),/除以零/);
 });
 
-test("缺日、单位变化、负差额、零消耗和负库存不伪造周转", () => {
+test("缺日、单位变化、零消耗和负库存不伪造周转", () => {
   const values = Array.from({length:8},(_,i)=>({date:`2026-10-0${i+1}`,quantity:String(20-i),unitName:"Pcs"}));
   const missing = inventoryMetrics(values.filter((_,i)=>i!==3),"2026-10-08","10","Pcs");
   assert.equal(missing.average7,null); assert.equal(missing.reason,"insufficient_data"); assert.equal(missing.validDays,5);
   assert.equal(inventoryMetrics(values.map((v,i)=>i===3?{...v,unitName:"Box"}:v),"2026-10-08","10","Pcs").reason,"insufficient_data");
   const inbound = inventoryMetrics(values.map((v,i)=>i===3?{...v,quantity:"519"}:v),"2026-10-08","10","Pcs");
-  assert.equal(inbound.average7,null); assert.equal(inbound.turnoverDays,null); assert.equal(inbound.reason,"inbound_unverified");
+  assert.equal(inbound.average7,"1"); assert.equal(inbound.turnoverDays,"10"); assert.equal(inbound.validDays,7);
   const zero = inventoryMetrics(values.map(v=>({...v,quantity:"20"})),"2026-10-08","10","Pcs");
   assert.equal(zero.average7,"0"); assert.equal(zero.turnoverDays,null); assert.equal(zero.reason,"no_consumption");
   assert.equal(inventoryMetrics(values,"2026-10-08","0","Pcs").turnoverDays,"0");
@@ -46,6 +46,26 @@ test("昨日销量准确保留小数、负数、零和长数量精度", () => {
   assert.equal(subtractQuantity("9007199254740990.5","9007199254740989.2"),"1.3");
   const values = ["5.2","3.1","7.6","7.6"].map((q,i) => ({date:`2026-09-${26+i}`,quantity:q,unitName:"Pcs"}));
   assert.deepEqual(dailySales(values,["2026-09-26","2026-09-27","2026-09-28"]),{"2026-09-26":"2.1","2026-09-27":"-4.5","2026-09-28":"0"});
+});
+
+test("退货负净销量计入7天均值，非正均值不计算周转", () => {
+  function fixture(sales: string[]) {
+    let stock="100";
+    const values=[{date:"2026-10-01",quantity:stock,unitName:"Pcs"}];
+    for (let i=0;i<sales.length;i++) {
+      stock=subtractQuantity(stock,sales[i]);
+      values.push({date:`2026-10-0${i+2}`,quantity:stock,unitName:"Pcs"});
+    }
+    return values;
+  }
+  const mixed=inventoryMetrics(fixture(["10","-2","5","0","1","2","-1"]),"2026-10-08","100","Pcs");
+  assert.equal(mixed.average7,"2.14");assert.equal(mixed.turnoverDays,"46.67");assert.equal(mixed.validDays,7);
+  const negative=inventoryMetrics(fixture(["0","-2","0","0","0","0","0"]),"2026-10-08","102","Pcs");
+  assert.equal(negative.average7,"-0.29");assert.equal(negative.turnoverDays,null);assert.equal(negative.reason,"net_returns");
+  const zero=inventoryMetrics(fixture(["2","-2","0","0","0","0","0"]),"2026-10-08","100","Pcs");
+  assert.equal(zero.average7,"0");assert.equal(zero.turnoverDays,null);assert.equal(zero.reason,"no_consumption");
+  const tiny=inventoryMetrics(fixture(["-0.01","0","0","0","0","0","0"]),"2026-10-08","100","Pcs");
+  assert.equal(tiny.reason,"net_returns");assert.equal(tiny.turnoverDays,null,"使用未舍入的总量判断，不能因显示0计算周转");
 });
 test("无采集、首日、缺日期、新 SKU 和单位变化不会伪造销售", () => {
   assert.deepEqual(comparableDates([]),[]); assert.deepEqual(comparableDates(["2026-09-29"]),[]);

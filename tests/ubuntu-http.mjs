@@ -57,7 +57,7 @@ try {
   assert.equal(inventory.rows[0].metrics.average7,null);
   assert.equal(inventory.rows[0].metrics.reason,'insufficient_data');
   r=await fetch(url+'/',{headers:{cookie}});const pageHtml=await r.text();assert.equal(r.status,200);
-  assert.match(pageHtml,/>均值<span/);assert.match(pageHtml,/>库存周转<span/);
+  assert.match(pageHtml,/>销量均值<span/);assert.match(pageHtml,/>库存周转<span/);
   assert.doesNotMatch(pageHtml,/<th[^>]*>单位<\/th>/);
   // Seed a preceding fixed baseline, then let a real worker collection perform
   // its own signed (mock gateway) inbound lookup and persist the correction.

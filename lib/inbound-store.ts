@@ -1,11 +1,15 @@
 import { runtimeDatabase as db } from "./runtime";
 import { addQuantity, compareQuantity, subtractQuantity } from "./decimal";
 import { collectInbound, type InboundQuery, type InboundReconciliation } from "./inbound";
+import { reconciliationDiagnostic } from "./reconciliation-diagnostics";
 
 type Pair = { date: string; goods_no: string; unit_name: string; before_id: string; after_id: string; start: string; end: string; before_quantity: string; after_quantity: string };
 type Stored = { query_scope: string; goods_no: string; date: string; raw_difference: string; opening_quantity: string; closing_quantity: string; inbound_quantity: string | null; corrected_quantity: string | null; status: InboundReconciliation["status"]; window_start: string; window_end: string; records: string; error: string | null; checked_at: string };
 function mapStored(r: Stored): InboundReconciliation {
-  return { date: r.date, rawDifference: r.raw_difference, openingQuantity: r.opening_quantity, closingQuantity: r.closing_quantity, inboundQuantity: r.inbound_quantity, correctedQuantity: r.corrected_quantity, status: r.query_scope === "warehouse:v1" ? r.status : "failed", windowStart: r.window_start, windowEnd: r.window_end, records: JSON.parse(r.records), error: r.query_scope === "warehouse:v1" ? r.error : "旧记录仅核验单个货品，需重新进行仓库全量入库核验", checkedAt: r.checked_at };
+  const item: InboundReconciliation = { date: r.date, rawDifference: r.raw_difference, openingQuantity: r.opening_quantity, closingQuantity: r.closing_quantity, inboundQuantity: r.inbound_quantity, correctedQuantity: r.corrected_quantity, status: r.query_scope === "warehouse:v1" ? r.status : "failed", windowStart: r.window_start, windowEnd: r.window_end, records: JSON.parse(r.records), error: r.query_scope === "warehouse:v1" ? r.error : "旧记录仅核验单个货品，需重新进行仓库全量入库核验", checkedAt: r.checked_at };
+  // Derive the precise explanation for old rows too; no recollection is needed.
+  if (item.status !== "verified") item.error = reconciliationDiagnostic(item)?.message ?? item.error;
+  return item;
 }
 
 export async function loadInboundReconciliations(owner: string, code: string, snapshotIds: string[], goods: string[]) {
@@ -92,8 +96,9 @@ export async function reconcileWarehouseInbound(owner: string, code: string, app
         else {
           quantity = records.reduce((sum,r) => addQuantity(sum,r.quantity), "0");
           corrected = addQuantity(raw, quantity);
-          status = compareQuantity(quantity,"0") >= 0 && compareQuantity(corrected,"0") >= 0 ? "verified" : "unresolved";
-          if (status === "unresolved") error = "入库冲销或其他库存变动尚未解释，仍需核对";
+          // Net sales include signed returns/backfill once the inbound query is complete.
+          status = compareQuantity(quantity,"0") >= 0 ? "verified" : "unresolved";
+          if (status === "unresolved") error = "入库合计为负，存在入库冲销明细，仍需核对";
         }
       }
       statements.push(db.prepare(`INSERT INTO inbound_reconciliations

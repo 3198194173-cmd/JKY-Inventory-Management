@@ -50,6 +50,13 @@
       "when": 1791256514218,
       "tag": "0006_warehouse_inbound",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1791270000000,
+      "tag": "0007_net_sales_returns",
+      "breakpoints": true
     }
   ]
 }

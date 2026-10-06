@@ -99,8 +99,12 @@ export async function loadInventory(owner: string, query: { source?: string; war
         AND r.owner=? AND r.warehouse_code=? AND r.before_snapshot_id=? AND r.after_snapshot_id=?
         AND r.status='verified' AND r.query_scope='warehouse:v1'
     ) SELECT * FROM sortable WHERE ${where}
-      ORDER BY (sales_quantity IS NULL) ASC, instr(sales_quantity || '.', '.') ${direction},
-        sales_quantity COLLATE BINARY ${direction}, goods_no COLLATE BINARY ASC LIMIT ? OFFSET ?`)
+      ORDER BY (sales_quantity IS NULL) ASC,
+        CASE WHEN sales_quantity LIKE '-%' THEN -1 WHEN sales_quantity='0' THEN 0 ELSE 1 END ${direction},
+        CASE WHEN sales_quantity LIKE '-%' THEN 2-instr(sales_quantity || '.', '.') ELSE instr(sales_quantity || '.', '.')-1 END ${direction},
+        CASE WHEN sales_quantity NOT LIKE '-%' THEN sales_quantity END COLLATE BINARY ${direction},
+        CASE WHEN sales_quantity LIKE '-%' THEN substr(sales_quantity,2) END COLLATE BINARY ${direction === "ASC" ? "DESC" : "ASC"},
+        goods_no COLLATE BINARY ASC LIMIT ? OFFSET ?`)
       .bind(owner,warehouse.code,before.id,after.id,...parameters,pageSize,(page-1)*pageSize).all<EntryRecord>();
   } else {
     result = await database().prepare(`SELECT * FROM stock_entries WHERE ${where} ORDER BY ${sort} LIMIT ? OFFSET ?`).bind(...parameters, pageSize, (page - 1) * pageSize).all<EntryRecord>();
