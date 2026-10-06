@@ -2,6 +2,8 @@ import { sqlite } from '../lib/sqlite.mjs';
 import { enqueueDaily } from '../lib/local-jobs';
 import { syncWarehouse } from '../lib/sync-warehouse';
 import { acquireRun, failRun } from '../lib/inventory-store';
+import { syncRobotGroups, GROUP_SYNC_INTERVAL } from '../lib/dingtalk-groups-store';
+import { serverConfig } from '../lib/server-config';
 
 type Job = {id:string;owner:string;warehouse_code:string;trigger:string;run_id:string|null};
 const db = sqlite();
@@ -30,6 +32,16 @@ for (const job of db.prepare("SELECT * FROM local_jobs WHERE state='running'").a
 }
 heartbeat();
 const timer = setInterval(heartbeat,15000);
+const groupAbort = new AbortController();
+let groupSync: Promise<unknown> | undefined;
+function syncGroups() {
+  if (stopping || groupSync || !serverConfig().robotConfigured) return;
+  groupSync = syncRobotGroups(process.env.INVENTORY_OWNER_ID || 'admin', { signal: groupAbort.signal })
+    .catch(()=>console.error('钉钉群同步失败，请在网页预警设置中查看状态'))
+    .finally(()=>{groupSync=undefined;});
+}
+syncGroups();
+const groupTimer = setInterval(syncGroups,GROUP_SYNC_INTERVAL);
 process.on('SIGTERM',()=>{stopping=true;});
 process.on('SIGINT',()=>{stopping=true;});
 try {
@@ -49,4 +61,4 @@ try {
       active = undefined;
     } else await new Promise(r=>setTimeout(r,2000));
   }
-} finally { clearInterval(timer); db.prepare('DELETE FROM local_worker WHERE id=1').run(); }
+} finally { clearInterval(timer); clearInterval(groupTimer); groupAbort.abort(); await groupSync; db.prepare('DELETE FROM local_worker WHERE id=1').run(); }

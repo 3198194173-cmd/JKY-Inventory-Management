@@ -5,21 +5,32 @@ import { turnoverAlertMessage, turnoverAlertRows, sendRobotMessage } from "./din
 import { normalizeQuantity, compareQuantity } from "./decimal";
 import { shanghaiTimestamp } from "./jackyun";
 import { DEFAULT_TURNOVER_AVERAGE_THRESHOLD, normalizeTurnoverThreshold } from "./turnover-alert";
+import { groupState, robotScope, validateGroupSelection, type DingTalkGroupState } from "./dingtalk-groups-store";
+import { sqlite } from "./sqlite.mjs";
 
-export type AlertSettings = { enabled: boolean; threshold: string; turnoverAverageThreshold: string; lastSentAt: string | null; lastResult: string | null; robotConfigured: boolean };
+export type AlertSettings = { enabled: boolean; threshold: string; turnoverAverageThreshold: string; lastSentAt: string | null; lastResult: string | null; robotConfigured: boolean; groupState: DingTalkGroupState };
 type SettingsRecord = { enabled: number; threshold: string; turnover_average_threshold: string; last_digest: string | null; last_sent_at: string | null; last_result: string | null };
 
 export async function settings(owner: string): Promise<AlertSettings> {
   const record = await database().prepare("SELECT * FROM alert_settings WHERE owner = ?").bind(owner).first<SettingsRecord>();
-  return { enabled: !!record?.enabled, threshold: record?.threshold || "0", turnoverAverageThreshold: record?.turnover_average_threshold ?? DEFAULT_TURNOVER_AVERAGE_THRESHOLD, lastSentAt: record?.last_sent_at || null, lastResult: record?.last_result || null, robotConfigured: serverConfig().robotConfigured };
+  return { enabled: !!record?.enabled, threshold: record?.threshold || "0", turnoverAverageThreshold: record?.turnover_average_threshold ?? DEFAULT_TURNOVER_AVERAGE_THRESHOLD, lastSentAt: record?.last_sent_at || null, lastResult: record?.last_result || null, robotConfigured: serverConfig().robotConfigured, groupState: groupState(owner) };
 }
 
-export async function saveSettings(owner: string, enabled: boolean, threshold: unknown, turnoverAverageThreshold?: unknown) {
+export async function saveSettings(owner: string, enabled: boolean, threshold: unknown, turnoverAverageThreshold?: unknown, selectedGroupIds?: unknown) {
   const quantity = normalizeQuantity(threshold);
   if (compareQuantity(quantity, "0") < 0 || compareQuantity(quantity, "1000000") > 0) throw new Error("预警阈值须为 0 至 1000000 的数量");
-  if (enabled && !serverConfig().robotConfigured) throw new Error("先配置钉钉机器人应用凭证与目标群，再开启预警");
+  if (enabled && !serverConfig().robotConfigured) throw new Error("先配置钉钉机器人应用凭证，再开启预警");
   const turnoverThreshold = turnoverAverageThreshold === undefined ? null : normalizeTurnoverThreshold(turnoverAverageThreshold);
-  await database().prepare("INSERT INTO alert_settings (owner, enabled, threshold, turnover_average_threshold) VALUES (?, ?, ?, COALESCE(?, '3')) ON CONFLICT(owner) DO UPDATE SET enabled = excluded.enabled, threshold = excluded.threshold, turnover_average_threshold = COALESCE(?, alert_settings.turnover_average_threshold)").bind(owner, enabled ? 1 : 0, quantity, turnoverThreshold, turnoverThreshold).run();
+  const db = sqlite();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const ids = selectedGroupIds === undefined ? groupState(owner).groups.filter(g => g.enabled).map(g => g.id) : validateGroupSelection(owner, selectedGroupIds);
+    if (enabled && !ids.length) throw new Error("请先刷新群列表并勾选至少一个接收预警的群");
+    if (selectedGroupIds !== undefined) db.prepare(`UPDATE dingtalk_groups SET enabled=CASE WHEN active=1 AND open_conversation_id IN (SELECT value FROM json_each(?)) THEN 1 ELSE 0 END
+      WHERE owner=? AND client_id=? AND robot_code=?`).run(JSON.stringify(ids), ...robotScope(owner));
+    db.prepare("INSERT INTO alert_settings (owner, enabled, threshold, turnover_average_threshold) VALUES (?, ?, ?, COALESCE(?, '3')) ON CONFLICT(owner) DO UPDATE SET enabled = excluded.enabled, threshold = excluded.threshold, turnover_average_threshold = COALESCE(?, alert_settings.turnover_average_threshold)").run(owner, enabled ? 1 : 0, quantity, turnoverThreshold, turnoverThreshold);
+    db.exec("COMMIT");
+  } catch (error) { db.exec("ROLLBACK"); throw error; }
   return settings(owner);
 }
 
@@ -42,26 +53,35 @@ export async function notifyAfterSnapshot(owner: string, snapshotId: string, cod
     await database().prepare("UPDATE alert_settings SET last_result='本次没有符合周转预警条件的货品' WHERE owner=? AND enabled=1 AND turnover_average_threshold=?").bind(owner,current.turnoverAverageThreshold).run();
     return;
   }
-  // Claim before sending; uncertain responses must not cause duplicate messages.
-  const claimed = await database().prepare(`INSERT OR IGNORE INTO turnover_alert_deliveries
-    (owner,warehouse_code,date,snapshot_id,average_threshold,matching_count,state,attempted_at)
-    SELECT ?,?,?,?,?,?,'sending',? WHERE EXISTS
+  const scope = robotScope(owner);
+  const groups = current.groupState.groups.filter(g => g.enabled);
+  let acceptedCount = 0, uncertainCount = 0;
+  for (const group of groups) {
+  // Each selected group has its own daily claim; one failed group does not block other groups.
+  const claimed = await database().prepare(`INSERT OR IGNORE INTO turnover_group_deliveries
+    (owner,client_id,robot_code,open_conversation_id,warehouse_code,date,snapshot_id,average_threshold,matching_count,state,attempted_at)
+    SELECT ?,?,?,?,?,?,?,?,?,'sending',? WHERE EXISTS
       (SELECT 1 FROM alert_settings WHERE owner=? AND enabled=1 AND turnover_average_threshold=?)
+      AND EXISTS (SELECT 1 FROM dingtalk_groups WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND enabled=1 AND active=1)
+      AND NOT EXISTS (SELECT 1 FROM turnover_alert_deliveries WHERE owner=? AND warehouse_code=? AND date=?)
       AND NOT EXISTS (SELECT 1 FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND status='complete' AND coverage='auto:v1' AND captured_at>?)`)
-    .bind(owner,code,preview.date,snapshotId,current.turnoverAverageThreshold,preview.count,new Date().toISOString(),owner,current.turnoverAverageThreshold,owner,code,preview.capturedAt).run();
-  if (!claimed.meta.changes) return;
+    .bind(...scope,group.id,code,preview.date,snapshotId,current.turnoverAverageThreshold,preview.count,new Date().toISOString(),owner,current.turnoverAverageThreshold,...scope,group.id,owner,code,preview.date,owner,code,preview.capturedAt).run();
+  if (!claimed.meta.changes) continue;
   await database().prepare("UPDATE alert_settings SET last_result=? WHERE owner=?").bind(code+"：周转预警发送中",owner).run();
   try {
-    await sender({clientId:env.DINGTALK_CLIENT_ID!,clientSecret:env.DINGTALK_CLIENT_SECRET!,robotCode:env.DINGTALK_ROBOT_CODE!,openConversationId:env.DINGTALK_OPEN_CONVERSATION_ID!},preview.message);
+    await sender({clientId:scope[1],clientSecret:env.DINGTALK_CLIENT_SECRET!,robotCode:scope[2],openConversationId:group.id},preview.message);
     const accepted = new Date().toISOString();
     await database().batch([
-      database().prepare("UPDATE turnover_alert_deliveries SET state='accepted',accepted_at=? WHERE owner=? AND warehouse_code=? AND date=?").bind(accepted,owner,code,preview.date),
-      database().prepare("UPDATE alert_settings SET last_sent_at=?,last_result=? WHERE owner=?").bind(accepted,code+"：钉钉已受理 "+preview.count+" 款周转预警（每日一次）；以群内消息为准",owner)
+      database().prepare("UPDATE turnover_group_deliveries SET state='accepted',accepted_at=? WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND warehouse_code=? AND date=?").bind(accepted,...scope,group.id,code,preview.date),
+      database().prepare("UPDATE alert_settings SET last_sent_at=? WHERE owner=?").bind(accepted,owner)
     ]);
+    acceptedCount++;
   } catch {
     await database().batch([
-      database().prepare("UPDATE turnover_alert_deliveries SET state='unconfirmed' WHERE owner=? AND warehouse_code=? AND date=?").bind(owner,code,preview.date),
-      database().prepare("UPDATE alert_settings SET last_result=? WHERE owner=?").bind(code+"：发送未确认，请核对群消息和机器人配置；本仓库今天不自动重发",owner)
+      database().prepare("UPDATE turnover_group_deliveries SET state='unconfirmed' WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND warehouse_code=? AND date=?").bind(...scope,group.id,code,preview.date)
     ]);
+    uncertainCount++;
   }
+  }
+  if (acceptedCount || uncertainCount) await database().prepare("UPDATE alert_settings SET last_result=? WHERE owner=?").bind(`${code}：${preview.count} 款预警，钉钉已受理 ${acceptedCount} 个群${uncertainCount ? `，${uncertainCount} 个群发送未确认，请核对群消息；今天不自动重发` : "；每群每天一次，以群内消息为准"}`,owner).run();
 }

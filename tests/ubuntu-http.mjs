@@ -29,6 +29,9 @@ try {
   const cookie=r.headers.get('set-cookie').split(';')[0];assert.ok(r.headers.get('set-cookie').includes('HttpOnly'));
   const headers={cookie,origin:url,'content-type':'application/json'};
   r=await fetch(url+'/api/alerts');assert.equal(r.ok,false,'预警设置需要登录');
+  r=await fetch(url+'/api/alerts/groups',{method:'POST',headers:{origin:url}});assert.equal(r.ok,false,'群同步需要登录');
+  r=await fetch(url+'/api/alerts/groups',{method:'POST',headers:{...headers,origin:'https://evil.example'}});assert.equal(r.ok,false,'群同步拒绝跨来源调用');
+  r=await fetch(url+'/api/alerts/groups',{method:'POST',headers});assert.equal(r.ok,false,'未配置凭证不访问钉钉');
   r=await fetch(url+'/api/alerts/preview?warehouseCode=TEST02');assert.equal(r.ok,false,'通知预览需要登录');
   r=await fetch(url+'/api/alerts',{headers:{cookie}});assert.equal((await r.json()).turnoverAverageThreshold,'3');
   r=await fetch(url+'/api/alerts',{method:'POST',headers:{...headers,origin:'https://evil.example'},body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'9'})});assert.equal(r.ok,false,'拒绝跨来源更改预警');

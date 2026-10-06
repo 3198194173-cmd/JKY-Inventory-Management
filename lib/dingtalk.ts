@@ -40,7 +40,7 @@ async function responseJson(response: Response): Promise<Record<string,unknown>>
   try { return await response.json(); } catch { throw new Error("钉钉响应格式异常"); }
 }
 
-export async function sendRobotMessage(credentials: RobotCredentials, message: string, fetcher: typeof fetch = fetch): Promise<string> {
+export async function appAccessToken(credentials: Pick<RobotCredentials, "clientId" | "clientSecret">, fetcher: typeof fetch = fetch): Promise<string> {
   const secretDigest = createHash("sha256").update(credentials.clientSecret).digest("hex");
   const cached = tokenCache && tokenCache.clientId === credentials.clientId && tokenCache.secretDigest === secretDigest && tokenCache.expiresAt > Date.now() ? tokenCache : null;
   let token = cached?.token;
@@ -51,6 +51,11 @@ export async function sendRobotMessage(credentials: RobotCredentials, message: s
     token = data.accessToken;
     tokenCache = { clientId: credentials.clientId, secretDigest, token, expiresAt: Date.now() + Math.max(0, Number(data.expireIn) - 120) * 1000 };
   }
+  return token;
+}
+
+export async function sendRobotMessage(credentials: RobotCredentials, message: string, fetcher: typeof fetch = fetch): Promise<string> {
+  const token = await appAccessToken(credentials, fetcher);
   // No automatic retries: an uncertain response could already have sent a message.
   const response = await fetcher("https://api.dingtalk.com/v1.0/robot/groupMessages/send", { method: "POST", headers: { "Content-Type": "application/json", "x-acs-dingtalk-access-token": token }, body: JSON.stringify({ robotCode: credentials.robotCode, openConversationId: credentials.openConversationId, msgKey: "sampleText", msgParam: JSON.stringify({ content: message }) }), signal: AbortSignal.timeout(15_000) });
   const data = await responseJson(response);

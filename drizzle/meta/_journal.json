@@ -78,6 +78,13 @@
       "when": 1791270000003,
       "tag": "0010_inventory_read_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1791270000004,
+      "tag": "0011_dingtalk_groups",
+      "breakpoints": true
     }
   ]
 }

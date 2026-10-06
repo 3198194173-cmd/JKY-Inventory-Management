@@ -69,6 +69,44 @@ export const turnoverAlertDeliveries = sqliteTable("turnover_alert_deliveries", 
   acceptedAt: text("accepted_at"),
 }, t=>[primaryKey({columns:[t.owner,t.warehouseCode,t.date]})]);
 
+export const dingTalkGroups = sqliteTable("dingtalk_groups", {
+  owner: text("owner").notNull(),
+  clientId: text("client_id").notNull(),
+  robotCode: text("robot_code").notNull(),
+  openConversationId: text("open_conversation_id").notNull(),
+  name: text("name").notNull().default(""),
+  enabled: integer("enabled").notNull().default(0),
+  active: integer("active").notNull().default(1),
+  lastSeenAt: text("last_seen_at").notNull(),
+  nameCheckedAt: text("name_checked_at"),
+}, t=>[primaryKey({columns:[t.owner,t.clientId,t.robotCode,t.openConversationId]})]);
+
+export const dingTalkGroupSync = sqliteTable("dingtalk_group_sync", {
+  owner: text("owner").notNull(),
+  clientId: text("client_id").notNull(),
+  robotCode: text("robot_code").notNull(),
+  lastAttemptAt: text("last_attempt_at"),
+  lastSyncedAt: text("last_synced_at"),
+  error: text("error"),
+  lease: text("lease"),
+  leaseUntil: integer("lease_until").notNull().default(0),
+}, t=>[primaryKey({columns:[t.owner,t.clientId,t.robotCode]})]);
+
+export const turnoverGroupDeliveries = sqliteTable("turnover_group_deliveries", {
+  owner: text("owner").notNull(),
+  clientId: text("client_id").notNull(),
+  robotCode: text("robot_code").notNull(),
+  openConversationId: text("open_conversation_id").notNull(),
+  warehouseCode: text("warehouse_code").notNull(),
+  date: text("date").notNull(),
+  snapshotId: text("snapshot_id").notNull(),
+  averageThreshold: text("average_threshold").notNull(),
+  matchingCount: integer("matching_count").notNull(),
+  state: text("state").notNull(),
+  attemptedAt: text("attempted_at").notNull(),
+  acceptedAt: text("accepted_at"),
+}, t=>[primaryKey({columns:[t.owner,t.clientId,t.robotCode,t.openConversationId,t.warehouseCode,t.date]})]);
+
 export const stockScopes = sqliteTable("stock_scopes", {
   owner: text("owner").primaryKey(),
   barcodes: text("barcodes").notNull(),

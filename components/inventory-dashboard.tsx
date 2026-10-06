@@ -11,6 +11,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@
 import { Pagination } from "@/components/ui/pagination";
 import type { InventoryView, RunInfo, WarehouseInfo } from "@/lib/inventory-types";
 import type { AlertSettings } from "@/lib/alerts-store";
+import type { DingTalkGroupState } from "@/lib/dingtalk-groups-store";
 import type { InventoryMetrics } from "@/lib/inventory-metrics";
 import { compareQuantity } from "@/lib/decimal";
 import { SalesCalendar } from "@/components/sales-calendar";
@@ -97,6 +98,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
   const [unavailableOpen,setUnavailableOpen] = useState(false);
   const [selected,setSelected] = useState<InventoryView["rows"][number] | null>(null);
   const [alerts,setAlerts] = useState<AlertSettings>(initialAlerts);
+  const [groups,setGroups] = useState(initialAlerts.groupState), [selectedGroups,setSelectedGroups] = useState(initialAlerts.groupState.groups.filter(g=>g.enabled).map(g=>g.id)), [groupsLoading,setGroupsLoading] = useState(false);
   const [threshold,setThreshold] = useState(initialAlerts.threshold), [enabled,setEnabled] = useState(initialAlerts.enabled), [saving,setSaving] = useState(false);
   const [turnoverThreshold,setTurnoverThreshold] = useState(initialAlerts.turnoverAverageThreshold), [alertError,setAlertError] = useState(""), [alertsLoading,setAlertsLoading] = useState(false);
   const [alertPreview,setAlertPreview] = useState(""), [previewLoading,setPreviewLoading] = useState(false);
@@ -139,9 +141,17 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
   useEffect(() => {
     if (!alertsOpen) return;
     const controller = new AbortController();
-    fetch("/api/alerts", {signal:controller.signal}).then(r => apiJson<AlertSettings>(r)).then(d => { setAlerts(d); setThreshold(d.threshold); setEnabled(d.enabled); setTurnoverThreshold(d.turnoverAverageThreshold); }).catch(e => { if(e.name !== "AbortError") setAlertError(e.message); }).finally(() => { if(!controller.signal.aborted) setAlertsLoading(false); });
+    fetch("/api/alerts", {signal:controller.signal}).then(r => apiJson<AlertSettings>(r)).then(d => { setAlerts(d); setGroups(d.groupState); setSelectedGroups(d.groupState.groups.filter(g=>g.enabled).map(g=>g.id)); setThreshold(d.threshold); setEnabled(d.enabled); setTurnoverThreshold(d.turnoverAverageThreshold); }).catch(e => { if(e.name !== "AbortError") setAlertError(e.message); }).finally(() => { if(!controller.signal.aborted) setAlertsLoading(false); });
     return () => controller.abort();
   },[alertsOpen]);
+  useEffect(()=>{
+    if (!alertsOpen || !alerts.robotConfigured || groupsLoading) return;
+    const controller = new AbortController();
+    const timer = setTimeout(()=>{fetch("/api/alerts",{signal:controller.signal}).then(r=>apiJson<AlertSettings>(r)).then(d=>{
+      setGroups(d.groupState); setSelectedGroups(previous=>previous.filter(id=>d.groupState.groups.some(g=>g.id===id)));
+    }).catch(e=>{if(e.name!=="AbortError")setAlertError(e.message);});},groups.syncing ? 2000 : 15000);
+    return ()=>{clearTimeout(timer);controller.abort();};
+  },[alertsOpen,alerts.robotConfigured,groups,groupsLoading]);
   useEffect(() => {
     const modelContext = (document as Document & { modelContext?: { registerTool: (tool: unknown, options: {signal:AbortSignal}) => unknown } }).modelContext;
     if (!modelContext?.registerTool) return;
@@ -196,9 +206,17 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     } catch(e) { setError(e instanceof Error ? e.message : "导出失败"); } finally { setExporting(false); }
   }
   async function saveAlerts() {
-    if(saving || alertsLoading) return;
+    if(saving || alertsLoading || groupsLoading || groups.syncing) return;
     setSaving(true); setAlertError("");
-    try { const result = await apiJson<AlertSettings>(await fetch("/api/alerts", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled,threshold,turnoverAverageThreshold:turnoverThreshold})})); setAlerts(result); setTurnoverThreshold(result.turnoverAverageThreshold); setNotice("预警设置已保存"); setAlertsOpen(false); } catch(e) { setAlertError(e instanceof Error ? e.message : "保存失败"); } finally { setSaving(false); }
+    try { const result = await apiJson<AlertSettings>(await fetch("/api/alerts", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled,threshold,turnoverAverageThreshold:turnoverThreshold,selectedGroupIds:selectedGroups})})); setAlerts(result); setGroups(result.groupState); setTurnoverThreshold(result.turnoverAverageThreshold); setNotice("预警设置已保存"); setAlertsOpen(false); } catch(e) { setAlertError(e instanceof Error ? e.message : "保存失败"); } finally { setSaving(false); }
+  }
+  async function refreshGroups() {
+    setGroupsLoading(true); setAlertError("");
+    try {
+      const result=await apiJson<DingTalkGroupState>(await fetch("/api/alerts/groups",{method:"POST"}));
+      setGroups(result); setSelectedGroups(previous=>previous.filter(id=>result.groups.some(g=>g.id===id)));
+    } catch(e) {setAlertError(e instanceof Error ? e.message : "群同步失败");}
+    finally {setGroupsLoading(false);}
   }
   async function previewAlert() {
     setPreviewLoading(true); setAlertError(""); setAlertPreview("");
@@ -243,8 +261,14 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     <Dialog open={recordsOpen} onOpenChange={setRecordsOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 采集记录</DialogTitle><DialogDescription>仅显示当前仓库最近 20 次采集。</DialogDescription></DialogHeader><div className="compact-records">{runs.length ? runs.map(run => <div key={run.id}><strong>{run.status === "complete" ? "已完成" : run.status === "failed" ? "失败" : run.status === "queued" ? "排队中" : "采集中"}</strong><span>{time(run.startedAt)}</span><p>{run.message || `${run.pageCount} 页 · ${run.recordCount.toLocaleString()} 条记录`}</p></div>) : <p>暂无采集记录</p>}</div></DialogContent></Dialog>
     <Dialog open={alertsOpen} onOpenChange={changeAlertsOpen}><DialogContent className="compact-dialog compact-alert-dialog"><DialogHeader><DialogTitle>库存预警设置</DialogTitle><DialogDescription>页面预警保存后立即生效，适用于所有仓库。</DialogDescription></DialogHeader><form onSubmit={e => {e.preventDefault(); void saveAlerts();}}>
       <section aria-labelledby="turnover-alert-heading"><h3 id="turnover-alert-heading">库存周转预警</h3><label htmlFor="turnover-average-threshold">销量均值门槛</label><Input id="turnover-average-threshold" inputMode="decimal" maxLength={30} value={turnoverThreshold} onChange={e => setTurnoverThreshold(e.target.value)} disabled={saving || alertsLoading} required/><p>销量均值超过此门槛，且库存周转少于 {TURNOVER_ALERT_DAYS} 天时，周转数值标红。</p></section>
-      <section aria-labelledby="robot-alert-heading"><h3 id="robot-alert-heading">钉钉群通知</h3><div className="compact-alert-switch"><label htmlFor="alert-enabled">启用群通知</label><Switch id="alert-enabled" checked={enabled} onCheckedChange={setEnabled} disabled={!alerts.robotConfigured || saving || alertsLoading}/></div><p>与页面标红条件一致。完整采集并核算后，按仓库汇总通知；每仓每天最多一次，只列周转最短的5款。</p><Button type="button" variant="outline" onClick={() => void previewAlert()} disabled={previewLoading || saving || alertsLoading}>{previewLoading ? "生成中…" : "预览当前仓库通知"}</Button>{alertPreview && <pre className="compact-alert-preview">{alertPreview}</pre>}{!alerts.robotConfigured && <p>钉钉机器人未配置，群通知暂不可用。页面标红和通知预览仍可使用。</p>}{alerts.lastResult && <p>{alerts.lastResult}</p>}</section>
-      {alertError && <p className="compact-error" role="alert">{alertError}</p>}<Button type="submit" disabled={saving || alertsLoading}>{saving ? "保存中…" : alertsLoading ? "读取中…" : "保存设置"}</Button></form></DialogContent></Dialog>
+      <section aria-labelledby="robot-alert-heading"><h3 id="robot-alert-heading">钉钉群通知</h3><div className="compact-alert-switch"><label htmlFor="alert-enabled">启用群通知</label><Switch id="alert-enabled" checked={enabled} onCheckedChange={setEnabled} disabled={(!alerts.robotConfigured || !selectedGroups.length) && !enabled || saving || alertsLoading}/></div><p>与页面标红条件一致。只向勾选的群发送；每仓、每群每天最多一次，只列周转最短的5款。</p>
+      <div className="compact-group-heading"><strong>接收预警的群（已选 {selectedGroups.length}）</strong><Button type="button" variant="outline" onClick={()=>void refreshGroups()} disabled={!alerts.robotConfigured || saving || alertsLoading || groupsLoading || groups.syncing}>{groupsLoading || groups.syncing ? "同步中…" : "刷新群列表"}</Button></div>
+      <p>{groups.lastSyncedAt ? `上次同步：${time(groups.lastSyncedAt)}` : "尚未同步群列表"} · 云端每15分钟自动同步</p>
+      {groups.error && <p className="compact-error" role="alert">{groups.error}</p>}
+      <div className="compact-group-list">{groups.groups.map(group=><label className="compact-group-option" key={group.id}><input type="checkbox" checked={selectedGroups.includes(group.id)} disabled={saving || alertsLoading || groupsLoading || groups.syncing} onChange={e=>setSelectedGroups(previous=>e.target.checked ? [...previous,group.id] : previous.filter(id=>id!==group.id))}/><span><strong>{group.name || "群名称暂未获取"}</strong><small>{group.id}</small></span></label>)}</div>
+      {!groups.groups.length && <p>发布机器人并加入群后，点击“刷新群列表”，再勾选要接收预警的群。</p>}
+      <Button type="button" variant="outline" onClick={() => void previewAlert()} disabled={previewLoading || saving || alertsLoading}>{previewLoading ? "生成中…" : "预览当前仓库通知"}</Button>{alertPreview && <pre className="compact-alert-preview">{alertPreview}</pre>}{!alerts.robotConfigured && <p>请先在云端填写 ClientID、ClientSecret 和 RobotCode，无需填写群 ID。</p>}{alerts.lastResult && <p>{alerts.lastResult}</p>}</section>
+      {alertError && <p className="compact-error" role="alert">{alertError}</p>}<Button type="submit" disabled={saving || alertsLoading || groupsLoading || groups.syncing}>{saving ? "保存中…" : alertsLoading ? "读取中…" : "保存设置"}</Button></form></DialogContent></Dialog>
     <Dialog open={!!selected} onOpenChange={v => { if(!v) setSelected(null); }}><DialogContent className="compact-dialog sales-calendar-dialog"><DialogHeader><DialogTitle>{selected?.goodsNo}</DialogTitle><DialogDescription>{selected?.goodsName}</DialogDescription></DialogHeader>{selected && <SalesCalendar key={`${code}:${selected.goodsNo}`} warehouseCode={code} goodsNo={selected.goodsNo} initialMonth={(dates[0] || view.snapshot?.date || new Date().toISOString().slice(0,10)).slice(0,7)}/>}</DialogContent></Dialog>
   </main>;
 }

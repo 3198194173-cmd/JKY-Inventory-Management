@@ -154,4 +154,4 @@ npm run test:ubuntu
 
 ## 10. 钉钉云端 Stream 接入
 
-见[钉钉云端接入](./钉钉云端接入.md)。运行时镜像包含 `scripts/dingtalk-stream.mjs`：`--verify-events` 用于事件订阅页的连接验证；默认模式通过群内 @机器人 回调获取目标群 ID。机器人发布、加入群、加载发送配置后，库存 worker 使用 HTTP 接口主动发送汇总预警，无需长期运行临时 Stream 工具。
+见[钉钉云端接入](./钉钉云端接入.md)。填写 ClientID、ClientSecret、RobotCode 并重建容器后，worker 自动同步机器人所在群；网页“预警”中刷新群列表、勾选接收群、启用通知并保存，无需手填群 ID。运行时镜像仍包含 `scripts/dingtalk-stream.mjs --verify-events`，可用于事件订阅页连接验证；群发现及主动通知不依赖该工具持续运行。

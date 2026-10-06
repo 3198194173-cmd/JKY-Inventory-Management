@@ -9,4 +9,6 @@ const daily=spawnSync(process.execPath,["--test",".sites-runtime/tests/daily-inv
 await build({entryPoints:["tests/inbound.test.ts"],outfile:".sites-runtime/tests/inbound.test.mjs",bundle:true,platform:"node",format:"esm",target:"node22"});
 const inbound=spawnSync(process.execPath,["--test",".sites-runtime/tests/inbound.test.mjs"],{stdio:"inherit"});
 const stream=spawnSync(process.execPath,["--test","tests/dingtalk-stream.test.mjs"],{stdio:"inherit"});
-process.exitCode=result.status || daily.status || inbound.status || stream.status || 0;
+await build({entryPoints:["tests/dingtalk-groups.test.ts"],outfile:".sites-runtime/tests/dingtalk-groups.test.mjs",bundle:true,platform:"node",format:"esm",target:"node24"});
+const groups=spawnSync(process.execPath,["--test",".sites-runtime/tests/dingtalk-groups.test.mjs"],{stdio:"inherit"});
+process.exitCode=result.status || daily.status || inbound.status || stream.status || groups.status || 0;

@@ -12,6 +12,7 @@ import { addQuantity, subtractQuantity, compareQuantity } from '../lib/decimal';
 import { loadSalesCalendar } from '../lib/sales-calendar-store';
 import { settings, saveSettings, previewTurnoverAlert, notifyAfterSnapshot } from '../lib/alerts-store';
 import { turnoverAlert } from '../lib/turnover-alert';
+import { groupState, syncRobotGroups, robotScope } from '../lib/dingtalk-groups-store';
 mkdirSync('.sites-runtime/tests',{recursive:true});
 process.env.INVENTORY_DB_PATH=resolve(`.sites-runtime/tests/store-${Date.now()}.sqlite`);
 
@@ -52,6 +53,7 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
   const names=['DINGTALK_CLIENT_ID','DINGTALK_CLIENT_SECRET','DINGTALK_ROBOT_CODE','DINGTALK_OPEN_CONVERSATION_ID'];const old=names.map(n=>process.env[n]);names.forEach(n=>process.env[n]='isolated-fake');
   let sent=0;const sender=async()=>{sent++;return 'fake-accepted';};
   try {
+    db.prepare("INSERT INTO dingtalk_groups (owner,client_id,robot_code,open_conversation_id,last_seen_at,enabled) VALUES(?,?,?,'test-group',?,1)").run(...robotScope(owner),new Date().toISOString());
     await saveSettings(owner,true,'0','4');await notifyAfterSnapshot(owner,preview.snapshotId,code,sender);assert.equal(sent,0,'均值等于门槛不通知');
     await saveSettings(owner,true,'0','3');
     await notifyAfterSnapshot(owner,'stale-snapshot',code,sender);assert.equal(sent,0,'旧快照不通知');
@@ -59,7 +61,7 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
     db.prepare("UPDATE stock_snapshots SET unavailable_skus='[]' WHERE id=?").run(preview.snapshotId);
     await Promise.all([notifyAfterSnapshot(owner,preview.snapshotId,code,sender),notifyAfterSnapshot(owner,preview.snapshotId,code,sender)]);assert.equal(sent,1,'并发只发送一次');
     await saveSettings(owner,true,'0','0');await notifyAfterSnapshot(owner,preview.snapshotId,code,sender);assert.equal(sent,1,'改门槛不重复当天通知');
-    assert.equal(db.prepare('SELECT state FROM turnover_alert_deliveries WHERE owner=? AND warehouse_code=?').get(owner,code)!.state,'accepted');
+    assert.equal(db.prepare('SELECT state FROM turnover_group_deliveries WHERE owner=? AND warehouse_code=?').get(owner,code)!.state,'accepted');
     await addWarehouse(owner,'NOTICE02','另一通知仓');
     for(let i=0;i<8;i++) {
       const date='2026-10-0'+(i+1),id='other-notice-'+date;
@@ -76,8 +78,40 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
     await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[]}));
     const uncertain=async()=>{sent++;throw Error('timeout');};
     await notifyAfterSnapshot(owner,id,code,uncertain);await notifyAfterSnapshot(owner,id,code,sender);assert.equal(sent,3,'次日可发，发送未确认时不自动重试');
-    assert.equal(db.prepare("SELECT state FROM turnover_alert_deliveries WHERE owner=? AND date='2026-10-09'").get(owner)!.state,'unconfirmed');
-    await saveSettings(owner,false,'0','3');await notifyAfterSnapshot(owner,id,code,sender);assert.equal(sent,3);
+    assert.equal(db.prepare("SELECT state FROM turnover_group_deliveries WHERE owner=? AND date='2026-10-09'").get(owner)!.state,'unconfirmed');
+    db.prepare("INSERT INTO dingtalk_groups (owner,client_id,robot_code,open_conversation_id,last_seen_at) VALUES(?,?,?,'second-group',?)").run(...robotScope(owner),new Date().toISOString());
+    await saveSettings(owner,true,'0','3',['test-group','second-group']);
+    const targets: string[]=[];
+    await Promise.all([notifyAfterSnapshot(owner,id,code,async credentials=>{targets.push(credentials.openConversationId);sent++;return 'ok';}),notifyAfterSnapshot(owner,id,code,sender)]);
+    assert.equal(sent,4,'原群未确认不重发，新勾选群独立每日去重');assert.deepEqual(targets,['second-group']);
+    await saveSettings(owner,false,'0','3');await notifyAfterSnapshot(owner,id,code,sender);assert.equal(sent,4);
+  } finally {names.forEach((n,i)=>{if(old[i]===undefined)delete process.env[n];else process.env[n]=old[i];});}
+});
+
+test('同步群列表保存勾选，移出及重新加入需重选；失败不清空、凭证及用户隔离',async()=>{
+  const names=['DINGTALK_CLIENT_ID','DINGTALK_CLIENT_SECRET','DINGTALK_ROBOT_CODE'],old=names.map(n=>process.env[n]);
+  names.forEach(n=>process.env[n]='groups-store-fake');
+  const owner='group-sync-owner',db=sqlite();let ids=['cid-first','cid-second'];let failing=false;
+  const fetcher: typeof fetch=async(url,options)=>{
+    if(String(url).endsWith('/accessToken'))return Response.json({accessToken:'fake',expireIn:7200});
+    if(String(url).endsWith('/installed/groups/query'))return failing ? new Response('private',{status:403}) : Response.json({hasMore:false,openConversationIds:ids});
+    const body=JSON.parse(String(options?.body));
+    return body.openConversationId==='cid-first' ? Response.json({success:true,title:'库存预警测试群',openConversationId:'cid-first'}) : new Response('private',{status:403});
+  };
+  const refresh=async()=>{db.prepare('UPDATE dingtalk_group_sync SET last_attempt_at=NULL WHERE owner=?').run(owner);return syncRobotGroups(owner,{force:true,fetcher});};
+  try {
+    const initial=await refresh();assert.equal(initial.groups.length,2);assert.equal(initial.groups[0].enabled,false);assert.ok(initial.groups.some(g=>g.name==='库存预警测试群'));assert.ok(initial.groups.some(g=>g.id==='cid-second' && g.name===''));
+    await assert.rejects(()=>saveSettings(owner,true,'0','3',[]),/至少一个/);
+    await assert.rejects(()=>saveSettings(owner,true,'0','3',['arbitrary-id']),/群列表已变化/);
+    await saveSettings(owner,true,'0','3',['cid-first']);assert.equal(groupState(owner).groups.find(g=>g.id==='cid-first')!.enabled,true);
+    await refresh();assert.equal(groupState(owner).groups.find(g=>g.id==='cid-first')!.enabled,true,'仍在群中保留勾选');
+    failing=true;const failed=await refresh();assert.match(failed.error!,/HTTP 403/);assert.equal(failed.groups.length,2);assert.equal(failed.groups.find(g=>g.id==='cid-first')!.enabled,true,'同步失败保留已有选择');
+    failing=false;ids=['cid-second'];await refresh();assert.equal(groupState(owner).groups.length,1);assert.equal(db.prepare("SELECT enabled FROM dingtalk_groups WHERE owner=? AND open_conversation_id='cid-first'").get(owner)!.enabled,0);
+    ids=['cid-first','cid-second'];await refresh();assert.equal(groupState(owner).groups.find(g=>g.id==='cid-first')!.enabled,false,'重新加入不自动启用');
+    await saveSettings(owner,false,'0','3',['cid-second']);assert.equal(groupState(owner).groups.find(g=>g.id==='cid-second')!.enabled,true,'群名称不可用时仍可按核实后的群ID选择');
+    assert.equal(groupState('another-owner').groups.length,0);
+    process.env.DINGTALK_ROBOT_CODE='other-robot';assert.equal(groupState(owner).groups.length,0);await assert.rejects(()=>saveSettings(owner,true,'0','3',['cid-second']),/群列表已变化/);
+    process.env.DINGTALK_ROBOT_CODE='groups-store-fake';ids=[];await refresh();assert.equal(groupState(owner).groups.length,0);await assert.rejects(()=>saveSettings(owner,true,'0','3'),/至少一个/);
   } finally {names.forEach((n,i)=>{if(old[i]===undefined)delete process.env[n];else process.env[n]=old[i];});}
 });
 
@@ -184,7 +218,7 @@ test('销量月历读取历史月份、月末闭合基准及用户隔离，不�
 
 test('本地数据库迁移、事务回滚、队列去重与多仓库快照隔离',async()=>{
   const db=sqlite();
-  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,11);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,12);
   const plan=db.prepare("EXPLAIN QUERY PLAN SELECT id FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND coverage='auto:v1' AND status='complete' ORDER BY captured_at DESC,id DESC LIMIT 1").all('test-owner','TEST01');
   assert.ok(plan.some((r:{detail:string})=>r.detail.includes('idx_snapshots_warehouse_latest')));assert.ok(plan.every((r:{detail:string})=>!r.detail.includes('TEMP B-TREE')));
   await addWarehouse('test-owner','TEST01','测试仓');
