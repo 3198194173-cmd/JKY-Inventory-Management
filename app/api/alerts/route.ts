@@ -8,8 +8,8 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
-    const owner = await currentOwner(), body = await request.json() as { enabled?: unknown; threshold?: unknown };
+    const owner = await currentOwner(), body = await request.json() as { enabled?: unknown; threshold?: unknown; turnoverAverageThreshold?: unknown };
     if (typeof body.enabled !== "boolean") throw new Error("预警开关参数无效");
-    return Response.json(await saveSettings(owner, body.enabled, body.threshold));
+    return Response.json(await saveSettings(owner, body.enabled, body.threshold, body.turnoverAverageThreshold));
   } catch (error) { return errorResponse(error); }
 }

@@ -8,6 +8,7 @@ import { addQuantity, subtractQuantity, compareQuantity } from "../lib/decimal";
 import { createAccumulator, accumulatePage } from "../lib/stock-aggregation";
 import { inventoryMetrics as calculateMetrics, recentSalesDates } from "../lib/inventory-metrics";
 import { divideQuantity } from "../lib/decimal";
+import { turnoverAlert, normalizeTurnoverThreshold } from "../lib/turnover-alert";
 
 // These calculation fixtures explicitly model a completed warehouse query with no inbound.
 function inventoryMetrics(values: DailyValue[], asOf: string, stock: string, unit: string) {
@@ -46,6 +47,30 @@ test("昨日销量准确保留小数、负数、零和长数量精度", () => {
   assert.equal(subtractQuantity("9007199254740990.5","9007199254740989.2"),"1.3");
   const values = ["5.2","3.1","7.6","7.6"].map((q,i) => ({date:`2026-09-${26+i}`,quantity:q,unitName:"Pcs"}));
   assert.deepEqual(dailySales(values,["2026-09-26","2026-09-27","2026-09-28"]),{"2026-09-26":"2.1","2026-09-27":"-4.5","2026-09-28":"0"});
+});
+
+test("周转预警同时满足严格门槛，使用未舍入值且不将无效指标标红", () => {
+  function metric(total: string, stock: string) {
+    const values=Array.from({length:8},(_,i)=>({date:`2026-10-0${i+1}`,quantity:i===0 ? addQuantity("1000",total) : "1000",unitName:"Pcs"}));
+    return inventoryMetrics(values,"2026-10-08",stock,"Pcs");
+  }
+  assert.equal(turnoverAlert(metric("28","80"),"80","3"),true);
+  assert.equal(turnoverAlert(metric("21","80"),"80","3"),false,"均值等于3不触发");
+  assert.equal(turnoverAlert(metric("28","120"),"120","3"),false,"周转等于30不触发");
+  assert.equal(turnoverAlert(metric("28","121"),"121","3"),false);
+  assert.equal(turnoverAlert(metric("28","80"),"80","4"),false,"更改门槛后立即重新判断");
+  const tinyMean=metric("21.001","60");assert.equal(tinyMean.average7,"3");
+  assert.equal(turnoverAlert(tinyMean,"60","3"),true,"均值未舍入时大于3");
+  const tinyDays=metric("28","119.999");assert.equal(tinyDays.turnoverDays,"30");
+  assert.equal(turnoverAlert(tinyDays,"119.999","3"),true,"周转未舍入时小于30");
+  assert.equal(turnoverAlert(metric("28","0"),"0","3"),true,"有日均消耗但库存为0需预警");
+  for (const total of ["0","-2"])assert.equal(turnoverAlert(metric(total,"80"),"80","0"),false);
+  assert.equal(turnoverAlert(metric("28","-1"),"-1","3"),false);
+  assert.equal(turnoverAlert(undefined,"80","3"),false);
+  assert.equal(turnoverAlert({...metric("28","80"),reason:"inbound_unverified",total7:null},"80","3"),false);
+  assert.equal(turnoverAlert({...metric("28","80"),validDays:6},"80","3"),false);
+  assert.equal(normalizeTurnoverThreshold("03.500"),"3.5");assert.equal(normalizeTurnoverThreshold("0"),"0");
+  for(const value of ["-1","1000001","","abc",null,true,"3".repeat(31)])assert.throws(()=>normalizeTurnoverThreshold(value),/销量均值门槛/);
 });
 
 test("退货负净销量计入7天均值，非正均值不计算周转", () => {

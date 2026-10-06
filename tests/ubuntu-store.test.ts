@@ -10,8 +10,25 @@ import type { InboundQuery, InboundRecord } from '../lib/inbound';
 import { inventoryWorkbook } from '../lib/excel';
 import { addQuantity, subtractQuantity, compareQuantity } from '../lib/decimal';
 import { loadSalesCalendar } from '../lib/sales-calendar-store';
+import { settings, saveSettings } from '../lib/alerts-store';
+import { turnoverAlert } from '../lib/turnover-alert';
 mkdirSync('.sites-runtime/tests',{recursive:true});
 process.env.INVENTORY_DB_PATH=resolve(`.sites-runtime/tests/store-${Date.now()}.sqlite`);
+
+test('周转均值门槛默认3，独立保存、旧调用保留设置且按用户隔离',async()=>{
+  const owner='turnover-alert-owner',db=sqlite();
+  assert.equal((await settings(owner)).turnoverAverageThreshold,'3');
+  const saved=await saveSettings(owner,false,'2','04.500');
+  assert.equal(saved.turnoverAverageThreshold,'4.5');assert.equal(saved.enabled,false);assert.equal(saved.threshold,'2');
+  db.prepare("UPDATE alert_settings SET last_digest='previous-digest',last_result='previous-result' WHERE owner=?").run(owner);
+  await saveSettings(owner,false,'5');
+  assert.equal((await settings(owner)).turnoverAverageThreshold,'4.5','未传新字段的旧API不会重置门槛');
+  assert.equal((await settings('other-turnover-owner')).turnoverAverageThreshold,'3');
+  for(const invalid of ['-1','1000001','abc','',null])await assert.rejects(()=>saveSettings(owner,false,'0',invalid),/销量均值门槛/);
+  const unchanged=await settings(owner);assert.equal(unchanged.threshold,'5');assert.equal(unchanged.turnoverAverageThreshold,'4.5');assert.equal(unchanged.lastResult,'previous-result');
+  assert.equal(db.prepare('SELECT last_digest FROM alert_settings WHERE owner=?').get(owner)!.last_digest,'previous-digest');
+  assert.equal((await saveSettings(owner,false,'5','0')).turnoverAverageThreshold,'0','允许门槛0');
+});
 
 test('负库存与无入库回补显示负净销量，不改写原始快照',async()=>{
   const db=sqlite(),owner='negative-owner',code='NEG01';await addWarehouse(owner,code,'负库存核算测试');
@@ -37,16 +54,17 @@ test('负库存与无入库回补显示负净销量，不改写原始快照',asy
 
 test('主表/月历/导出共同使用负净销量及带符号7天均值',async()=>{
   const db=sqlite(),owner='negative-owner',code='NET01';await addWarehouse(owner,code,'净销量均值测试');
-  const stocks={MIXED:['100','90','92','87','87','86','84','85'],RETURNS:['100','100','102','102','102','102','102','102'],ZERO:['100','98','100','100','100','100','100','100']};
+  const stocks={FAST:['100','96','92','88','84','80','76','72'],MIXED:['100','90','92','87','87','86','84','85'],RETURNS:['100','100','102','102','102','102','102','102'],ZERO:['100','98','100','100','100','100','100','100']};
   for(let i=0;i<8;i++){
     const date='2026-10-0'+(i+1),id='net-'+date;
-    db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,3,3,'{}',0,0,?,'auto:v1')").run(id,owner,date,date+'T00:00:23Z',code);
+    db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,4,4,'{}',0,0,?,'auto:v1')").run(id,owner,date,date+'T00:00:23Z',code);
     db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,id);
-    for(const [goods,values] of Object.entries(stocks))db.prepare("INSERT INTO stock_entries VALUES(?,?,?,'Pcs',?,1,1)").run(id,goods,goods==='RETURNS'?'退货回补样本':goods==='MIXED'?'正负销量混合样本':'净消耗为零样本',values[i]);
+    for(const [goods,values] of Object.entries(stocks))db.prepare("INSERT INTO stock_entries VALUES(?,?,?,'Pcs',?,1,1)").run(id,goods,goods==='RETURNS'?'退货回补样本':goods==='MIXED'?'正负销量混合样本':goods==='FAST'?'周转预警样本':'净消耗为零样本',values[i]);
   }
   await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[]}));
   const view=await loadInventory(owner,{warehouseCode:code});
   const mixed=view.rows.find(r=>r.goodsNo==='MIXED')!,returned=view.rows.find(r=>r.goodsNo==='RETURNS')!,zero=view.rows.find(r=>r.goodsNo==='ZERO')!;
+  const fast=view.rows.find(r=>r.goodsNo==='FAST')!;assert.equal(fast.metrics!.total7,'28');assert.equal(fast.metrics!.average7,'4');assert.equal(fast.metrics!.turnoverDays,'18');assert.equal(turnoverAlert(fast.metrics,fast.quantity,'3'),true);assert.equal(turnoverAlert(fast.metrics,fast.quantity,'4'),false);
   assert.equal(mixed.metrics!.average7,'2.14');assert.equal(mixed.metrics!.turnoverDays,'39.67');assert.equal(mixed.sales!['2026-10-02'],'-2');
   assert.equal(returned.metrics!.average7,'-0.29');assert.equal(returned.metrics!.turnoverDays,null);assert.equal(returned.metrics!.validDays,7);
   assert.equal(zero.metrics!.average7,'0');assert.equal(zero.metrics!.turnoverDays,null);
@@ -115,7 +133,7 @@ test('销量月历读取历史月份、月末闭合基准及用户隔离，不�
 
 test('本地数据库迁移、事务回滚、队列去重与多仓库快照隔离',async()=>{
   const db=sqlite();
-  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,8);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,9);
   await addWarehouse('test-owner','TEST01','测试仓');
   const first=enqueue('test-owner','TEST01'),second=enqueue('test-owner','TEST01');
   assert.equal(first.id,second.id);

@@ -51,6 +51,7 @@ export const alertSettings = sqliteTable("alert_settings", {
   owner: text("owner").primaryKey(),
   enabled: integer("enabled").notNull().default(0),
   threshold: text("threshold").notNull().default("0"),
+  turnoverAverageThreshold: text("turnover_average_threshold").notNull().default("3"),
   lastDigest: text("last_digest"),
   lastSentAt: text("last_sent_at"),
   lastResult: text("last_result"),

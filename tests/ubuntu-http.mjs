@@ -28,10 +28,17 @@ try {
   r=await fetch(url+'/api/session',{method:'POST',headers:{origin:url},body:new URLSearchParams({username:'admin',password}),redirect:'manual'});assert.equal(r.status,303);
   const cookie=r.headers.get('set-cookie').split(';')[0];assert.ok(r.headers.get('set-cookie').includes('HttpOnly'));
   const headers={cookie,origin:url,'content-type':'application/json'};
+  r=await fetch(url+'/api/alerts');assert.equal(r.ok,false,'预警设置需要登录');
+  r=await fetch(url+'/api/alerts',{headers:{cookie}});assert.equal((await r.json()).turnoverAverageThreshold,'3');
+  r=await fetch(url+'/api/alerts',{method:'POST',headers:{...headers,origin:'https://evil.example'},body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'9'})});assert.equal(r.ok,false,'拒绝跨来源更改预警');
+  r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'4.500'})});assert.equal(r.ok,true);assert.equal((await r.json()).turnoverAverageThreshold,'4.5');
+  r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'-1'})});assert.equal(r.ok,false);
+  r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({enabled:false,threshold:'0'})});assert.equal((await r.json()).turnoverAverageThreshold,'4.5','旧调用保留设置');
   r=await fetch(url+'/api/warehouses',{method:'POST',headers,body:JSON.stringify({code:'TEST02',name:'测试持久化仓库'})});assert.equal(r.ok,true);
   r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});assert.equal(r.status,202);const queued=await r.json();
   r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});assert.equal((await r.json()).job.id,queued.job.id);
   await stop(server);start();await ready();
+  r=await fetch(url+'/api/alerts',{headers:{cookie}});assert.equal((await r.json()).turnoverAverageThreshold,'4.5','重启后保留预警门槛');
   r=await fetch(url+'/api/inventory?warehouseCode=TEST02',{headers:{cookie}});assert.equal((await r.json()).warehouseCode,'TEST02');
   worker=spawn(process.execPath,['build-node/worker.mjs'],{env,stdio:['ignore','pipe','pipe']});worker.stderr.on('data',d=>output+=d);
   let state;
@@ -57,7 +64,7 @@ try {
   assert.equal(inventory.rows[0].metrics.average7,null);
   assert.equal(inventory.rows[0].metrics.reason,'insufficient_data');
   r=await fetch(url+'/',{headers:{cookie}});const pageHtml=await r.text();assert.equal(r.status,200);
-  assert.match(pageHtml,/>销量均值<span/);assert.match(pageHtml,/>库存周转<span/);
+  assert.match(pageHtml,/>销量均值<\/th>/);assert.match(pageHtml,/>库存周转<\/th>/);assert.doesNotMatch(pageHtml,/<span>近7天 · 估算<\/span>|<span>天 · 估算<\/span>|<span>销售量<\/span>/);
   assert.doesNotMatch(pageHtml,/<th[^>]*>单位<\/th>/);
   // Seed a preceding fixed baseline, then let a real worker collection perform
   // its own signed (mock gateway) inbound lookup and persist the correction.

@@ -3,6 +3,7 @@ import { dailySales, reconciledSales, type DailyValue } from "./daily-sales";
 import type { InboundReconciliation } from "./inbound";
 
 export type InventoryMetrics = {
+  total7: string | null;
   average7: string | null;
   turnoverDays: string | null;
   validDays: number;
@@ -23,11 +24,12 @@ export function recentSalesDates(asOfDate: string): string[] {
 export function inventoryMetrics(values: DailyValue[], asOfDate: string, stock: string, unitName: string, corrections: Record<string, InboundReconciliation> = {}): InventoryMetrics {
   const dates = recentSalesDates(asOfDate), raw = dailySales(values, dates, unitName), sales = reconciledSales(raw, corrections);
   const valid = dates.flatMap(date => sales[date] == null ? [] : [sales[date]!]);
-  const result: InventoryMetrics = { average7: null, turnoverDays: null, validDays: valid.length, basis: dates.some(d => corrections[d]?.status === "verified") ? "inbound_adjusted_difference" : "inventory_difference", reason: "insufficient_data" };
+  const result: InventoryMetrics = { total7: null, average7: null, turnoverDays: null, validDays: valid.length, basis: dates.some(d => corrections[d]?.status === "verified") ? "inbound_adjusted_difference" : "inventory_difference", reason: "insufficient_data" };
   if (dates.some(d => raw[d] != null && sales[d] == null)) return { ...result, reason: "inbound_unverified" };
   if (valid.length !== 7) return result;
   // Keep returns/backfill signed; every verified day participates in the mean.
   const total = valid.reduce(addQuantity, "0");
+  result.total7 = total;
   result.average7 = divideQuantity(total, "7");
   if (compareQuantity(total, "0") === 0) return { ...result, reason: "no_consumption" };
   if (compareQuantity(total, "0") < 0) return { ...result, reason: "net_returns" };
