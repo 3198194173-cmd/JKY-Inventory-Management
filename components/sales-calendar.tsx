@@ -73,6 +73,6 @@ export function SalesCalendar({ warehouseCode, goodsNo, initialMonth }: { wareho
     </div>
     <p className="sales-calendar-hint"><span className="compact-inbound-legend"/> 有入库　— 暂无有效数据　点击日期查看计算</p>
     </div><div className="sales-calendar-analysis-pane">{day ? <DayAnalysis key={day.date} day={day}/> : <div className="sales-calendar-select-hint"><strong>选择一个日期</strong><p>查看当天的库存与入库核算</p></div>}</div></div>
-    <p className="sales-calendar-caption">日期沿用主表的采集区间起始日，通常为当日08:00至次日08:00；净销量为库存消耗估算，包含负值退货/回补。</p>
+    <p className="sales-calendar-caption">日期沿用主表的采集区间起始日，区间按仓库每日采集时间确定；净销量为库存消耗估算，包含负值退货/回补。</p>
   </div>;
 }

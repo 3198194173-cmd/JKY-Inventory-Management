@@ -13,17 +13,17 @@ function authorized(request: Request): boolean {
   const digest = (value: string) => createHash("sha256").update(value).digest();
   return timingSafeEqual(digest(supplied), digest(`Bearer ${secret}`));
 }
-type Target = { owner: string; code: string };
+type Target = { owner: string; code: string; daily_time: string };
 async function targets(): Promise<Target[]> {
-  return (await database().prepare("SELECT owner, code FROM warehouses WHERE schedule_enabled = 1 ORDER BY owner, code").all<Target>()).results;
+  return (await database().prepare("SELECT owner, code, daily_time FROM warehouses WHERE schedule_enabled = 1 ORDER BY owner, code").all<Target>()).results;
 }
 export async function POST(request: Request) {
   if (!authorized(request)) return errorResponse(new Error("自动采集认证失败"), 401);
   try {
     const now = shanghaiTimestamp(), date = now.slice(0,10);
-    if (now.slice(11) < "08:00:00") return Response.json({date, skipped:true, reason:"尚未到北京时间08:00"});
     const results = [];
     for (const target of await targets()) {
+      if (now.slice(11,16) < target.daily_time) { results.push({warehouseCode:target.code,status:"not_due"}); continue; }
       // Registered owners/warehouses are server-side data; callers cannot choose another user's identity.
       const done = await database().prepare("SELECT snapshot_id FROM daily_slots WHERE owner = ? AND warehouse_code = ? AND date = ?").bind(target.owner,target.code,date).first();
       if (done) { results.push({warehouseCode:target.code, status:"already_complete"}); continue; }

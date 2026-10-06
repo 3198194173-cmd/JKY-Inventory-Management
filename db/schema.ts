@@ -52,6 +52,7 @@ export const alertSettings = sqliteTable("alert_settings", {
   enabled: integer("enabled").notNull().default(0),
   threshold: text("threshold").notNull().default("0"),
   turnoverAverageThreshold: text("turnover_average_threshold").notNull().default("3"),
+  notifyTime: text("notify_time").notNull().default("08:30"),
   lastDigest: text("last_digest"),
   lastSentAt: text("last_sent_at"),
   lastResult: text("last_result"),
@@ -106,6 +107,23 @@ export const turnoverGroupDeliveries = sqliteTable("turnover_group_deliveries", 
   attemptedAt: text("attempted_at").notNull(),
   acceptedAt: text("accepted_at"),
 }, t=>[primaryKey({columns:[t.owner,t.clientId,t.robotCode,t.openConversationId,t.warehouseCode,t.date]})]);
+
+export const manualAlertDeliveries = sqliteTable("manual_alert_deliveries", {
+  owner: text("owner").notNull(),
+  clientId: text("client_id").notNull(),
+  robotCode: text("robot_code").notNull(),
+  requestId: text("request_id").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  warehouseCode: text("warehouse_code").notNull(),
+  state: text("state").notNull(),
+  result: text("result").notNull(),
+  attemptedAt: integer("attempted_at").notNull(),
+}, t=>[primaryKey({columns:[t.owner,t.clientId,t.robotCode,t.requestId]}),index("idx_manual_alert_cooldown").on(t.owner,t.clientId,t.robotCode,t.attemptedAt)]);
+
+export const scheduledAlertChecks = sqliteTable("scheduled_alert_checks", {
+  owner: text("owner").notNull(), warehouseCode: text("warehouse_code").notNull(), date: text("date").notNull(),
+  fingerprint: text("fingerprint").notNull(),
+}, t=>[primaryKey({columns:[t.owner,t.warehouseCode,t.date]})]);
 
 export const stockScopes = sqliteTable("stock_scopes", {
   owner: text("owner").primaryKey(),

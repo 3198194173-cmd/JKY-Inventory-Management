@@ -85,6 +85,13 @@
       "when": 1791270000004,
       "tag": "0011_dingtalk_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1791270000005,
+      "tag": "0012_manual_alerts",
+      "breakpoints": true
     }
   ]
 }

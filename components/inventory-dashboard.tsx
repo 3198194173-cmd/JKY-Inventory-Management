@@ -6,12 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Switch } from "@/components/ui/switch";
+import { AlertSettingsDialog } from "@/components/alert-settings-dialog";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { Pagination } from "@/components/ui/pagination";
 import type { InventoryView, RunInfo, WarehouseInfo } from "@/lib/inventory-types";
 import type { AlertSettings } from "@/lib/alerts-store";
-import type { DingTalkGroupState } from "@/lib/dingtalk-groups-store";
 import type { InventoryMetrics } from "@/lib/inventory-metrics";
 import { compareQuantity } from "@/lib/decimal";
 import { SalesCalendar } from "@/components/sales-calendar";
@@ -98,10 +97,6 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
   const [unavailableOpen,setUnavailableOpen] = useState(false);
   const [selected,setSelected] = useState<InventoryView["rows"][number] | null>(null);
   const [alerts,setAlerts] = useState<AlertSettings>(initialAlerts);
-  const [groups,setGroups] = useState(initialAlerts.groupState), [selectedGroups,setSelectedGroups] = useState(initialAlerts.groupState.groups.filter(g=>g.enabled).map(g=>g.id)), [groupsLoading,setGroupsLoading] = useState(false);
-  const [threshold,setThreshold] = useState(initialAlerts.threshold), [enabled,setEnabled] = useState(initialAlerts.enabled), [saving,setSaving] = useState(false);
-  const [turnoverThreshold,setTurnoverThreshold] = useState(initialAlerts.turnoverAverageThreshold), [alertError,setAlertError] = useState(""), [alertsLoading,setAlertsLoading] = useState(false);
-  const [alertPreview,setAlertPreview] = useState(""), [previewLoading,setPreviewLoading] = useState(false);
   const tableWrap = useRef<HTMLDivElement>(null);
   const appliedPaging = useRef({page:initial.page,pageSize:initial.pageSize});
   const skipInitialLoad = useRef(true), previousRun = useRef<RunInfo | null>(null);
@@ -139,20 +134,6 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     return () => { stopped = true; window.clearInterval(timer); };
   },[code,running]);
   useEffect(() => {
-    if (!alertsOpen) return;
-    const controller = new AbortController();
-    fetch("/api/alerts", {signal:controller.signal}).then(r => apiJson<AlertSettings>(r)).then(d => { setAlerts(d); setGroups(d.groupState); setSelectedGroups(d.groupState.groups.filter(g=>g.enabled).map(g=>g.id)); setThreshold(d.threshold); setEnabled(d.enabled); setTurnoverThreshold(d.turnoverAverageThreshold); }).catch(e => { if(e.name !== "AbortError") setAlertError(e.message); }).finally(() => { if(!controller.signal.aborted) setAlertsLoading(false); });
-    return () => controller.abort();
-  },[alertsOpen]);
-  useEffect(()=>{
-    if (!alertsOpen || !alerts.robotConfigured || groupsLoading) return;
-    const controller = new AbortController();
-    const timer = setTimeout(()=>{fetch("/api/alerts",{signal:controller.signal}).then(r=>apiJson<AlertSettings>(r)).then(d=>{
-      setGroups(d.groupState); setSelectedGroups(previous=>previous.filter(id=>d.groupState.groups.some(g=>g.id===id)));
-    }).catch(e=>{if(e.name!=="AbortError")setAlertError(e.message);});},groups.syncing ? 2000 : 15000);
-    return ()=>{clearTimeout(timer);controller.abort();};
-  },[alertsOpen,alerts.robotConfigured,groups,groupsLoading]);
-  useEffect(() => {
     const modelContext = (document as Document & { modelContext?: { registerTool: (tool: unknown, options: {signal:AbortSignal}) => unknown } }).modelContext;
     if (!modelContext?.registerTool) return;
     const lifecycle = new AbortController();
@@ -164,10 +145,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     } }, {signal:lifecycle.signal})).catch(() => {}); } catch { /* Visible controls work without WebMCP. */ }
     return () => lifecycle.abort();
   },[code]);
-  function changeAlertsOpen(open: boolean) {
-    if (open) { setAlertsLoading(true); setAlertError(""); setAlertPreview(""); }
-    setAlertsOpen(open);
-  }
+  function changeAlertsOpen(open: boolean) { setAlertsOpen(open); }
   function changeWarehouse(next: string) {
     if (next === code) return;
     setCode(next); if (sort.startsWith("sales_")) { setSort("code"); setSortDate(""); } setPage(1); setSearch(""); setQuery(""); setSelected(null); setNotice(""); setError(""); setRuns([]); previousRun.current = null;
@@ -205,26 +183,6 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
       const url = URL.createObjectURL(await response.blob()), link = document.createElement("a"); link.href = url; link.download = `${code}_${view.snapshot?.date}.xlsx`; link.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
     } catch(e) { setError(e instanceof Error ? e.message : "导出失败"); } finally { setExporting(false); }
   }
-  async function saveAlerts() {
-    if(saving || alertsLoading || groupsLoading || groups.syncing) return;
-    setSaving(true); setAlertError("");
-    try { const result = await apiJson<AlertSettings>(await fetch("/api/alerts", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled,threshold,turnoverAverageThreshold:turnoverThreshold,selectedGroupIds:selectedGroups})})); setAlerts(result); setGroups(result.groupState); setTurnoverThreshold(result.turnoverAverageThreshold); setNotice("预警设置已保存"); setAlertsOpen(false); } catch(e) { setAlertError(e instanceof Error ? e.message : "保存失败"); } finally { setSaving(false); }
-  }
-  async function refreshGroups() {
-    setGroupsLoading(true); setAlertError("");
-    try {
-      const result=await apiJson<DingTalkGroupState>(await fetch("/api/alerts/groups",{method:"POST"}));
-      setGroups(result); setSelectedGroups(previous=>previous.filter(id=>result.groups.some(g=>g.id===id)));
-    } catch(e) {setAlertError(e instanceof Error ? e.message : "群同步失败");}
-    finally {setGroupsLoading(false);}
-  }
-  async function previewAlert() {
-    setPreviewLoading(true); setAlertError(""); setAlertPreview("");
-    try {
-      const data=await apiJson<{message:string;incomplete:boolean}>(await fetch(`/api/alerts/preview?${new URLSearchParams({warehouseCode:code,averageThreshold:turnoverThreshold})}`));
-      setAlertPreview((data.incomplete ? "本次库存采集不完整，自动通知将跳过。\n\n" : "")+data.message);
-    } catch(e) { setAlertError(e instanceof Error ? e.message : "预览失败"); } finally { setPreviewLoading(false); }
-  }
   function sortSales(date: string) {
     setSortDate(date); setSort(sortDate === date && sort === "sales_desc" ? "sales_asc" : "sales_desc"); setPage(1);
   }
@@ -240,7 +198,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
         <Select value={days} onValueChange={v => { if(v) { setDays(v); if (sort.startsWith("sales_")) { setSort("code"); setSortDate(""); } setPage(1); } }}><SelectTrigger className="compact-days" aria-label="销售日期范围"><SelectValue>近 {days} 天</SelectValue></SelectTrigger><SelectContent><SelectItem value="7">近 7 天</SelectItem><SelectItem value="14">近 14 天</SelectItem><SelectItem value="30">近 30 天</SelectItem></SelectContent></Select>
         <div className="compact-actions"><Button variant="outline" onClick={download} disabled={exporting || !view.snapshot || loading}>{exporting ? <LoaderCircle className="animate-spin"/> : <ArrowDownToLine/>}导出 Excel</Button><Button onClick={sync} disabled={running || !view.configured || loading}>{running ? <LoaderCircle className="animate-spin"/> : <RefreshCw/>}{running ? "采集中" : "采集库存"}</Button></div>
       </div>
-      <div className="compact-status"><span>{view.snapshot ? `更新于 ${time(view.snapshot.capturedAt)}` : "暂无完整采集"}{loading && <LoaderCircle size={13} className="animate-spin"/>}</span><button type="button" onClick={() => setHelp(true)}>每天 08:00 · {view.scheduleActive ? "云端定时已启用" : "云端定时未运行"}</button></div>
+      <div className="compact-status"><span>{view.snapshot ? `更新于 ${time(view.snapshot.capturedAt)}` : "暂无完整采集"}{loading && <LoaderCircle size={13} className="animate-spin"/>}</span><button type="button" onClick={() => setAlertsOpen(true)} title="编辑每日采集和预警时间">每天 {view.dailyTime || "08:00"} · {view.scheduleActive ? "云端定时已启用" : "云端定时未运行"}</button></div>
       {(latestRun?.status === "running" || latestRun?.status === "queued") && <p className="compact-feedback" role="status"><LoaderCircle size={14} className="animate-spin"/> {latestRun.message || "正在采集"} · 已处理 {latestRun.pageCount} 页。采集中可查看最近已保存的库存，入库核验结束后自动刷新统计。</p>}
       {latestRun?.status === "failed" && !error && <p className="compact-feedback compact-error" role="alert">最近一次采集失败：{latestRun.message || "请重试"}。当前展示上次成功库存。</p>}
       {error && !addOpen && <p className="compact-feedback compact-error" role="alert">{error}</p>}{notice && <p className="compact-feedback" role="status">{notice}</p>}
@@ -256,19 +214,10 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     </section>
     <p className="compact-footnote"><span className="compact-inbound-legend"/> 黄色表示该采集区间有入库，点击货品查看单据。点击日期列可切换销量升序/降序。销量为库存消耗估算：所有可比较商品按“上次库存 + 区间内实际入库 − 本次库存”核算。负值按退货/回补计入净销量。销量均值 = 近7天净销量总和 ÷ 7；周转 = 当前库存 ÷ 均值。均值为零或负数时不计算周转；缺日或入库未核验时不计算均值。</p>
     <Dialog open={addOpen} onOpenChange={setAddOpen}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>增加仓库</DialogTitle><DialogDescription>填入吉客云仓库编码。首次采集后自动识别仓库名称和 SKU。</DialogDescription></DialogHeader><form onSubmit={e => { e.preventDefault(); void add(); }}><label htmlFor="new-code">仓库编码</label><Input id="new-code" placeholder="例如 CK031" value={newCode} onChange={e => setNewCode(e.target.value)} required maxLength={50}/><label htmlFor="new-name">显示名称（可选）</label><Input id="new-name" placeholder="首次采集后同步官方名称" value={newName} onChange={e => setNewName(e.target.value)} maxLength={80}/><p>默认每日北京时间 08:00 采集。服务器启用定时任务后自动执行。</p>{error && <p role="alert" className="compact-error">{error}</p>}<Button type="submit" disabled={savingWarehouse}>{savingWarehouse ? "保存中…" : "增加仓库"}</Button></form></DialogContent></Dialog>
-    <Dialog open={help} onOpenChange={setHelp}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>数据口径与自动采集</DialogTitle><DialogDescription>库存来自吉客云实时接口，销售量按你指定的库存差额计算。</DialogDescription></DialogHeader><div className="compact-help"><p><strong>采集流程</strong><br/>仓库编码 → erp.stockquantity.get 游标取得 SKU → erp-stock.stock.skulist 查询可购数量。无条码或条码查询未返回时，改用货品编码查询，再按 SKU 身份核验。</p><p><strong>当前库存</strong><br/>显示最近采集的已核验 orderAbleQuantity。未取得库存的规格保留清单、不填零；含缺失规格的货品不展示部分合计、不参与销售差额。接口失败时保留上次成功数据。</p><p><strong>每日销售</strong><br/>上次基准库存 + 区间内实际入库 − 本次基准库存，记在上次基准日期。按仓库及两次采集时间分页查询 erp-busiorder.goodsdocin.search（含归档记录），再按货品编码汇总，核验时间和单位。库存下降、持平或增加都核算入库。完整入库查询后允许销量为负，按退货/回补计入净销量及7天均值。查询失败、单位不匹配或入库合计为负需核对冲销时仍显示待核验，原始差额和单据保留在详情。每天08:00后第一次成功采集为固定基准；手动刷新更新当前库存并核验本次采集区间，补查近30天未完成核验的每日区间。缺日不跨天计算。所有可比较日期均核验入库，仍属于消耗估算，不等同实际订单销量。</p><p><strong>每天 08:00（北京时间）</strong><br/>仓库已保存默认采集时间。定时状态依据服务器后台心跳显示；未运行时请检查后台进程和定时配置。无需浏览器一直打开。</p></div></DialogContent></Dialog>
+    <Dialog open={help} onOpenChange={setHelp}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>数据口径与自动采集</DialogTitle><DialogDescription>库存来自吉客云实时接口，销售量按你指定的库存差额计算。</DialogDescription></DialogHeader><div className="compact-help"><p><strong>采集流程</strong><br/>仓库编码 → erp.stockquantity.get 游标取得 SKU → erp-stock.stock.skulist 查询可购数量。无条码或条码查询未返回时，改用货品编码查询，再按 SKU 身份核验。</p><p><strong>当前库存</strong><br/>显示最近采集的已核验 orderAbleQuantity。未取得库存的规格保留清单、不填零；含缺失规格的货品不展示部分合计、不参与销售差额。接口失败时保留上次成功数据。</p><p><strong>每日销售</strong><br/>上次基准库存 + 区间内实际入库 − 本次基准库存，记在上次基准日期。按仓库及两次采集时间分页查询 erp-busiorder.goodsdocin.search（含归档记录），再按货品编码汇总，核验时间和单位。库存下降、持平或增加都核算入库。完整入库查询后允许销量为负，按退货/回补计入净销量及7天均值。查询失败、单位不匹配或入库合计为负需核对冲销时仍显示待核验，原始差额和单据保留在详情。每天设定时间后第一次成功采集为固定基准；手动刷新更新当前库存并核验本次采集区间，补查近30天未完成核验的每日区间。缺日不跨天计算。所有可比较日期均核验入库，仍属于消耗估算，不等同实际订单销量。</p><p><strong>每日自动采集（北京时间）</strong><br/>可在预警设置中修改当前仓库采集时间和每日通知时间。定时状态依据服务器后台心跳显示；未运行时请检查后台进程和定时配置。无需浏览器一直打开。</p></div></DialogContent></Dialog>
     <Dialog open={unavailableOpen} onOpenChange={setUnavailableOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 未取得库存的 SKU</DialogTitle><DialogDescription>已尝试条码或货品编码查询。以下记录不填零；含缺失规格的货品不展示部分合计、不参与销售差额。Excel 的采集说明也保留此清单。</DialogDescription></DialogHeader><div className="compact-records"><Table><TableHeader><TableRow><TableHead>货品编码 / 名称</TableHead><TableHead>SKU / 条码</TableHead><TableHead>原因</TableHead></TableRow></TableHeader><TableBody>{view.unavailableSkus?.map(row => <TableRow key={row.skuId}><TableCell>{row.goodsNo}<br/>{row.goodsName}</TableCell><TableCell>{row.skuId}<br/>{row.skuBarcode || "无条码"}</TableCell><TableCell>{row.reason}</TableCell></TableRow>)}</TableBody></Table></div></DialogContent></Dialog>
     <Dialog open={recordsOpen} onOpenChange={setRecordsOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 采集记录</DialogTitle><DialogDescription>仅显示当前仓库最近 20 次采集。</DialogDescription></DialogHeader><div className="compact-records">{runs.length ? runs.map(run => <div key={run.id}><strong>{run.status === "complete" ? "已完成" : run.status === "failed" ? "失败" : run.status === "queued" ? "排队中" : "采集中"}</strong><span>{time(run.startedAt)}</span><p>{run.message || `${run.pageCount} 页 · ${run.recordCount.toLocaleString()} 条记录`}</p></div>) : <p>暂无采集记录</p>}</div></DialogContent></Dialog>
-    <Dialog open={alertsOpen} onOpenChange={changeAlertsOpen}><DialogContent className="compact-dialog compact-alert-dialog"><DialogHeader><DialogTitle>库存预警设置</DialogTitle><DialogDescription>页面预警保存后立即生效，适用于所有仓库。</DialogDescription></DialogHeader><form onSubmit={e => {e.preventDefault(); void saveAlerts();}}>
-      <section aria-labelledby="turnover-alert-heading"><h3 id="turnover-alert-heading">库存周转预警</h3><label htmlFor="turnover-average-threshold">销量均值门槛</label><Input id="turnover-average-threshold" inputMode="decimal" maxLength={30} value={turnoverThreshold} onChange={e => setTurnoverThreshold(e.target.value)} disabled={saving || alertsLoading} required/><p>销量均值超过此门槛，且库存周转少于 {TURNOVER_ALERT_DAYS} 天时，周转数值标红。</p></section>
-      <section aria-labelledby="robot-alert-heading"><h3 id="robot-alert-heading">钉钉群通知</h3><div className="compact-alert-switch"><label htmlFor="alert-enabled">启用群通知</label><Switch id="alert-enabled" checked={enabled} onCheckedChange={setEnabled} disabled={(!alerts.robotConfigured || !selectedGroups.length) && !enabled || saving || alertsLoading}/></div><p>与页面标红条件一致。只向勾选的群发送；每仓、每群每天最多一次，只列周转最短的5款。</p>
-      <div className="compact-group-heading"><strong>接收预警的群（已选 {selectedGroups.length}）</strong><Button type="button" variant="outline" onClick={()=>void refreshGroups()} disabled={!alerts.robotConfigured || saving || alertsLoading || groupsLoading || groups.syncing}>{groupsLoading || groups.syncing ? "同步中…" : "刷新群列表"}</Button></div>
-      <p>{groups.lastSyncedAt ? `上次同步：${time(groups.lastSyncedAt)}` : "尚未同步群列表"} · 云端每15分钟自动同步</p>
-      {groups.error && <p className="compact-error" role="alert">{groups.error}</p>}
-      <div className="compact-group-list">{groups.groups.map(group=><label className="compact-group-option" key={group.id}><input type="checkbox" checked={selectedGroups.includes(group.id)} disabled={saving || alertsLoading || groupsLoading || groups.syncing} onChange={e=>setSelectedGroups(previous=>e.target.checked ? [...previous,group.id] : previous.filter(id=>id!==group.id))}/><span><strong>{group.name || "群名称暂未获取"}</strong><small>{group.id}</small></span></label>)}</div>
-      {!groups.groups.length && <p>发布机器人并加入群后，点击“刷新群列表”，再勾选要接收预警的群。</p>}
-      <Button type="button" variant="outline" onClick={() => void previewAlert()} disabled={previewLoading || saving || alertsLoading}>{previewLoading ? "生成中…" : "预览当前仓库通知"}</Button>{alertPreview && <pre className="compact-alert-preview">{alertPreview}</pre>}{!alerts.robotConfigured && <p>请先在云端填写 ClientID、ClientSecret 和 RobotCode，无需填写群 ID。</p>}{alerts.lastResult && <p>{alerts.lastResult}</p>}</section>
-      {alertError && <p className="compact-error" role="alert">{alertError}</p>}<Button type="submit" disabled={saving || alertsLoading || groupsLoading || groups.syncing}>{saving ? "保存中…" : alertsLoading ? "读取中…" : "保存设置"}</Button></form></DialogContent></Dialog>
+    <AlertSettingsDialog open={alertsOpen} onOpenChange={setAlertsOpen} initial={alerts} warehouseCode={code} warehouseName={active?.name || code} dailyTime={active?.dailyTime || view.dailyTime || "08:00"} scheduleActive={!!view.scheduleActive} onSaved={data=>{setAlerts(data); if(data.warehouseSchedule) { const schedule=data.warehouseSchedule; setWarehouses(previous=>previous.map(w=>w.code===schedule.code?{...w,dailyTime:schedule.dailyTime}:w)); setView(previous=>({...previous,dailyTime:schedule.dailyTime})); }}}/>
     <Dialog open={!!selected} onOpenChange={v => { if(!v) setSelected(null); }}><DialogContent className="compact-dialog sales-calendar-dialog"><DialogHeader><DialogTitle>{selected?.goodsNo}</DialogTitle><DialogDescription>{selected?.goodsName}</DialogDescription></DialogHeader>{selected && <SalesCalendar key={`${code}:${selected.goodsNo}`} warehouseCode={code} goodsNo={selected.goodsNo} initialMonth={(dates[0] || view.snapshot?.date || new Date().toISOString().slice(0,10)).slice(0,7)}/>}</DialogContent></Dialog>
   </main>;
 }

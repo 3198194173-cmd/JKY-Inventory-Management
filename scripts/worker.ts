@@ -2,8 +2,7 @@ import { sqlite } from '../lib/sqlite.mjs';
 import { enqueueDaily } from '../lib/local-jobs';
 import { syncWarehouse } from '../lib/sync-warehouse';
 import { acquireRun, failRun } from '../lib/inventory-store';
-import { syncRobotGroups, GROUP_SYNC_INTERVAL } from '../lib/dingtalk-groups-store';
-import { serverConfig } from '../lib/server-config';
+import { sendDueAlerts } from '../lib/scheduled-alerts';
 
 type Job = {id:string;owner:string;warehouse_code:string;trigger:string;run_id:string|null};
 const db = sqlite();
@@ -32,21 +31,18 @@ for (const job of db.prepare("SELECT * FROM local_jobs WHERE state='running'").a
 }
 heartbeat();
 const timer = setInterval(heartbeat,15000);
-const groupAbort = new AbortController();
-let groupSync: Promise<unknown> | undefined;
-function syncGroups() {
-  if (stopping || groupSync || !serverConfig().robotConfigured) return;
-  groupSync = syncRobotGroups(process.env.INVENTORY_OWNER_ID || 'admin', { signal: groupAbort.signal })
-    .catch(()=>console.error('钉钉群同步失败，请在网页预警设置中查看状态'))
-    .finally(()=>{groupSync=undefined;});
+let alertTask: Promise<void> | undefined, lastAlertCheck = 0;
+function checkAlerts() {
+  if (!scheduled || stopping || alertTask || Date.now()-lastAlertCheck<30_000) return;
+  lastAlertCheck=Date.now();
+  alertTask=sendDueAlerts().catch(()=>console.error('自动预警检查失败，请在网页查看通知状态')).finally(()=>{alertTask=undefined;});
 }
-syncGroups();
-const groupTimer = setInterval(syncGroups,GROUP_SYNC_INTERVAL);
 process.on('SIGTERM',()=>{stopping=true;});
 process.on('SIGINT',()=>{stopping=true;});
 try {
   while (!stopping) {
     if (scheduled && process.env.JACKYUN_APP_SECRET) enqueueDaily();
+    checkAlerts();
     active = db.prepare("UPDATE local_jobs SET state='running',updated_at=? WHERE id=(SELECT id FROM local_jobs WHERE state='queued' ORDER BY created_at LIMIT 1) RETURNING *").get(now()) as Job | undefined;
     if (active) {
       try {
@@ -61,4 +57,4 @@ try {
       active = undefined;
     } else await new Promise(r=>setTimeout(r,2000));
   }
-} finally { clearInterval(timer); clearInterval(groupTimer); groupAbort.abort(); await groupSync; db.prepare('DELETE FROM local_worker WHERE id=1').run(); }
+} finally { clearInterval(timer); await alertTask; db.prepare('DELETE FROM local_worker WHERE id=1').run(); }

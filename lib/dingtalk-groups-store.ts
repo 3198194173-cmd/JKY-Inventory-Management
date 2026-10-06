@@ -5,7 +5,6 @@ import { queryRobotGroups, queryRobotGroupName, GroupQueryError } from "./dingta
 
 export type DingTalkGroup = { id: string; name: string; enabled: boolean };
 export type DingTalkGroupState = { groups: DingTalkGroup[]; lastSyncedAt: string | null; error: string | null; syncing: boolean };
-export const GROUP_SYNC_INTERVAL = 15 * 60_000;
 export function robotScope(owner: string): [string, string, string] { return [owner, process.env.DINGTALK_CLIENT_ID || "", process.env.DINGTALK_ROBOT_CODE || ""]; }
 
 export function groupState(owner: string): DingTalkGroupState {
@@ -20,7 +19,7 @@ export async function syncRobotGroups(owner: string, options: { force?: boolean;
   if (!serverConfig().robotConfigured) throw new Error("请先在云端配置钉钉 ClientID、ClientSecret 和 RobotCode");
   const db = sqlite(), scope = robotScope(owner), lease = randomUUID(), now = Date.now();
   const state = db.prepare("SELECT * FROM dingtalk_group_sync WHERE owner=? AND client_id=? AND robot_code=?").get(...scope);
-  if (state?.last_attempt_at && now - Date.parse(String(state.last_attempt_at)) < (options.force ? 10_000 : GROUP_SYNC_INTERVAL)) return groupState(owner);
+  if (state?.last_attempt_at && now - Date.parse(String(state.last_attempt_at)) < 10_000) return groupState(owner);
   const claimed = db.prepare(`INSERT INTO dingtalk_group_sync (owner,client_id,robot_code,lease,lease_until,last_attempt_at) VALUES (?,?,?,?,?,?)
     ON CONFLICT(owner,client_id,robot_code) DO UPDATE SET lease=excluded.lease,lease_until=excluded.lease_until,last_attempt_at=excluded.last_attempt_at
     WHERE dingtalk_group_sync.lease_until<=?`).run(...scope, lease, now + 120_000, new Date(now).toISOString(), now);

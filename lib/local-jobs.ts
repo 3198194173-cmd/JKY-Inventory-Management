@@ -13,9 +13,9 @@ export function workerActive() {
   return !!row && row.schedule_enabled === 1 && Date.now() - Date.parse(String(row.heartbeat)) < 90000;
 }
 export function enqueueDaily(local = shanghaiTimestamp()) {
-  if (local.slice(11) < '08:00:00') return;
   const db=sqlite(),date=local.slice(0,10);
-  for (const t of db.prepare('SELECT owner,code FROM warehouses WHERE schedule_enabled=1').all()) {
+  for (const t of db.prepare('SELECT owner,code,daily_time FROM warehouses WHERE schedule_enabled=1').all()) {
+    if (local.slice(11,16) < String(t.daily_time)) continue;
     const done=db.prepare('SELECT 1 FROM daily_slots WHERE owner=? AND warehouse_code=? AND date=?').get(t.owner,t.code,date);
     const attempts=db.prepare('SELECT COUNT(*) AS n,MAX(updated_at) AS last FROM local_jobs WHERE owner=? AND warehouse_code=? AND trigger=?').get(t.owner,t.code,`daily:${date}`)!;
     if (!done && Number(attempts.n)<3 && (!attempts.last || Date.now()-Date.parse(String(attempts.last))>300000)) enqueue(String(t.owner),String(t.code),`daily:${date}`);

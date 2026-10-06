@@ -2,7 +2,6 @@ import { acquireRun, completeInventoryRun, failRun, inboundRunProgress, publishS
 import { reconcileWarehouseInbound } from "./inbound-store";
 import { collectWarehouseStock } from "./warehouse-collector";
 import { serverConfig } from "./server-config";
-import { notifyAfterSnapshot } from "./alerts-store";
 
 export async function syncWarehouse(owner: string, code: string, trigger = "manual", existingRunId?: string) {
   const registered = await requireWarehouse(owner, code);
@@ -20,7 +19,6 @@ export async function syncWarehouse(owner: string, code: string, trigger = "manu
     } catch { inboundMessage = "库存已保存；入库核验未完成，请再次采集重试，未核验日期不计算销量"; }
     const message = `已核验 ${result.recordCount} 个规格、${result.rows.length} 个货品；${result.unavailable.length ? `${result.unavailable.length} 个规格未取得库存，已列出；` : ""}${inboundMessage}`;
     await completeInventoryRun(id,message);
-    if (!result.unavailable.length) { try { await notifyAfterSnapshot(owner, id, code); } catch { /* Saved inventory remains valid if alert delivery fails. */ } }
     return { id, capturedAt: captured, warehouseCode: code, goodsCount: result.rows.length, skuCount: result.catalog.rows.length, recordCount: result.recordCount, pageCount: result.pageCount, unavailableCount:result.unavailable.length, message };
   } catch (error) {
     await failRun(id, error instanceof Error ? error.message : "采集失败"); throw error;

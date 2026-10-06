@@ -28,11 +28,29 @@ export function turnoverAlertRows(rows: InventoryView["rows"], threshold: string
 }
 const cleanLine = (value: string, length: number) => Array.from(value.replace(/[\r\n\t]+/g," ")).slice(0,length).join("");
 export function turnoverAlertMessage(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string) {
+  return turnoverAlertMessages(rows,threshold,warehouse,capturedAt).join("\n\n");
+}
+export function turnoverAlertMessages(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string) {
   const time = new Date(capturedAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false});
-  return [`【库存周转预警】${cleanLine(warehouse,80)}`,`${time} · 共 ${rows.length} 款`,
-    `销量均值 > ${threshold}，周转 < ${TURNOVER_ALERT_DAYS} 天`,
-    ...rows.slice(0,5).map(r=>`${cleanLine(r.goodsNo,60)} ${cleanLine(r.goodsName,16)}｜库存 ${r.quantity} · ${r.metrics!.turnoverDays}天`),
-    ...(rows.length>5?[`其余 ${rows.length-5} 款请查看库存页标红项。`]:[]),"按库存净消耗估算。"].join("\n");
+  const header = [`【库存周转预警】${cleanLine(warehouse,80)}`,`${time} · 共 ${rows.length} 款`, `均值 > ${threshold}，周转 < ${TURNOVER_ALERT_DAYS}天`].join("\n");
+  const parts: string[][] = []; let lines: string[] = [], bytes = Buffer.byteLength(header)+100;
+  rows.forEach((r,i)=>{
+    const line=`${i+1}. ${cleanLine(r.goodsNo,60)}｜库存${r.quantity}｜${r.metrics!.turnoverDays}天`;
+    const size=Buffer.byteLength(line)+1;
+    // Keep each part conservatively small; retain every row and its global number.
+    if (lines.length && bytes+size>3500) {parts.push(lines);lines=[];bytes=Buffer.byteLength(header)+100;}
+    lines.push(line);bytes+=size;
+  });
+  if(lines.length)parts.push(lines);
+  return parts.map((part,i)=>[header,...(parts.length>1?[`第${i+1}/${parts.length}部分`]:[]),...part,"库存净消耗估算"].join("\n"));
+}
+export async function sendTurnoverReport(credentials: RobotCredentials, messages: string[], sender = sendRobotMessage, onAccepted?: (parts: number) => void) {
+  for (let i=0;i<messages.length;i++) {
+    // Pace real multi-part reports; tests inject a sender and never contact DingTalk.
+    if (i && sender === sendRobotMessage) await new Promise(resolve=>setTimeout(resolve,1000));
+    await sender(credentials,messages[i]);
+    onAccepted?.(i+1);
+  }
 }
 
 async function responseJson(response: Response): Promise<Record<string,unknown>> {

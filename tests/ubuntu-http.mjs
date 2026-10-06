@@ -32,6 +32,10 @@ try {
   r=await fetch(url+'/api/alerts/groups',{method:'POST',headers:{origin:url}});assert.equal(r.ok,false,'群同步需要登录');
   r=await fetch(url+'/api/alerts/groups',{method:'POST',headers:{...headers,origin:'https://evil.example'}});assert.equal(r.ok,false,'群同步拒绝跨来源调用');
   r=await fetch(url+'/api/alerts/groups',{method:'POST',headers});assert.equal(r.ok,false,'未配置凭证不访问钉钉');
+  r=await fetch(url+'/api/alerts/send',{method:'POST',headers:{origin:url},body:'{}'});assert.equal(r.ok,false,'主动通知需要登录');
+  r=await fetch(url+'/api/alerts/send',{method:'POST',headers:{...headers,origin:'https://evil.example'},body:'{}'});assert.equal(r.ok,false,'主动通知拒绝跨来源调用');
+  r=await fetch(url+'/api/alerts/send',{method:'POST',headers,body:'{}'});assert.equal(r.status,400,'主动通知拒绝无效参数');
+  r=await fetch(url+'/api/alerts/send',{method:'POST',headers,body:JSON.stringify({requestId:'abcd1234-abcd-4abc-8abc-abcd12345678',warehouseCode:'TEST02',snapshotId:'unavailable',averageThreshold:'3',groupIds:['unavailable']})});assert.equal(r.status,400);assert.match((await r.json()).error,/配置钉钉/);
   r=await fetch(url+'/api/alerts/preview?warehouseCode=TEST02');assert.equal(r.ok,false,'通知预览需要登录');
   r=await fetch(url+'/api/alerts',{headers:{cookie}});assert.equal((await r.json()).turnoverAverageThreshold,'3');
   r=await fetch(url+'/api/alerts',{method:'POST',headers:{...headers,origin:'https://evil.example'},body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'9'})});assert.equal(r.ok,false,'拒绝跨来源更改预警');
@@ -39,6 +43,8 @@ try {
   r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'-1'})});assert.equal(r.ok,false);
   r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({enabled:false,threshold:'0'})});assert.equal((await r.json()).turnoverAverageThreshold,'4.5','旧调用保留设置');
   r=await fetch(url+'/api/warehouses',{method:'POST',headers,body:JSON.stringify({code:'TEST02',name:'测试持久化仓库'})});assert.equal(r.ok,true);
+  r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'4.5',notifyTime:'09:15',warehouseCode:'TEST02',dailyTime:'00:00'})});assert.equal(r.ok,true);const scheduledSettings=await r.json();assert.equal(scheduledSettings.notifyTime,'09:15');assert.equal(scheduledSettings.warehouseSchedule.dailyTime,'00:00');
+  r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({enabled:false,threshold:'0',notifyTime:'26:00'})});assert.equal(r.status,400,'非法自动预警时间不保存');
   r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});assert.equal(r.status,202);const queued=await r.json();
   r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});assert.equal((await r.json()).job.id,queued.job.id);
   await stop(server);start();await ready();

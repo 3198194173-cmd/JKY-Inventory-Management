@@ -82,7 +82,7 @@ export async function loadInventory(owner: string, query: { source?: string; war
   const days = [7,14,30].includes(query.days || 0) ? query.days! : 14;
   const requestedPage = Math.max(1, Math.floor(query.page || 1)), pageSize = [100,200,500,1000].includes(query.pageSize || 0) ? query.pageSize! : 100;
   const latest = await database().prepare("SELECT * FROM stock_snapshots WHERE owner = ? AND warehouse_code = ? AND coverage = 'auto:v1' AND status = 'complete' ORDER BY captured_at DESC, id DESC LIMIT 1").bind(owner, warehouse.code).first<SnapshotRecord>();
-  const base = { warehouseCode: warehouse.code, warehouseName: warehouse.name, warehouses, source: "live" as const, configured: config.configured, robotConfigured: config.robotConfigured, scheduleActive: workerActive(), dailyTime: "08:00", pageSize };
+  const base = { warehouseCode: warehouse.code, warehouseName: warehouse.name, warehouses, source: "live" as const, configured: config.configured, robotConfigured: config.robotConfigured, scheduleActive: workerActive(), dailyTime: warehouse.dailyTime, pageSize };
   if (!latest) return { ...base, snapshot: null, snapshots: [], salesDates: [], rows: [], totalRows: 0, goodsCount: 0, page: 1, totalsByUnit: {}, zeroCount: 0, negativeCount: 0 };
   const records = await database().prepare("SELECT s.* FROM daily_slots d JOIN stock_snapshots s ON s.id = d.snapshot_id WHERE d.owner = ? AND d.warehouse_code = ? AND s.coverage = 'auto:v1' AND s.status = 'complete' ORDER BY d.date DESC LIMIT 31").bind(owner, warehouse.code).all<SnapshotRecord>();
   const lower = new Date(latest.date + "T00:00:00Z"); lower.setUTCDate(lower.getUTCDate() - days);
@@ -154,8 +154,8 @@ export async function publishSnapshot(owner: string, id: string, rows: StockRow[
     db.prepare("UPDATE sync_runs SET status = ?, completed_at = ?, last_progress_at = ?, page_count = ?, record_count = ?, goods_count = ?, message = ? WHERE id = ? AND owner = ? AND warehouse_code = ? AND status = 'running'").bind(deferCompletion ? 'running' : 'complete', deferCompletion ? null : captured, captured, pageCount, recordCount, rows.length, `已核验 ${recordCount} 个规格、${rows.length} 个货品；${unavailable.length ? `${unavailable.length} 个规格未取得库存，已列出；` : ""}${duplicateCount ? `去重 ${duplicateCount} 条；` : ""}目录游标读取完成`, id, owner, warehouse.code),
     db.prepare("UPDATE stock_snapshots SET status = 'complete' WHERE id = ? AND EXISTS (SELECT 1 FROM sync_runs WHERE id = ? AND status = ? AND last_progress_at = ?)").bind(id, id, deferCompletion ? 'running' : 'complete', captured),
     db.prepare("UPDATE warehouses SET name = ?, warehouse_id = ? WHERE owner = ? AND code = ? AND EXISTS (SELECT 1 FROM stock_snapshots WHERE id = ? AND status = 'complete')").bind(warehouse.name, warehouse.id, owner, warehouse.code, id),
-    // Immutable first successful capture after 08:00; later manual refreshes update current inventory only.
-    db.prepare("INSERT OR IGNORE INTO daily_slots (owner, warehouse_code, date, snapshot_id) SELECT ?, ?, ?, ? WHERE ? >= '08:00:00' AND EXISTS (SELECT 1 FROM stock_snapshots WHERE id = ? AND status = 'complete')").bind(owner, warehouse.code, date, id, localTime.slice(11), id),
+    // Keep the first daily baseline at/after the configured time immutable.
+    db.prepare("INSERT OR IGNORE INTO daily_slots (owner, warehouse_code, date, snapshot_id) SELECT ?, ?, ?, ? WHERE ? >= (SELECT daily_time || ':00' FROM warehouses WHERE owner=? AND code=?) AND EXISTS (SELECT 1 FROM stock_snapshots WHERE id = ? AND status = 'complete')").bind(owner, warehouse.code, date, id, localTime.slice(11), owner, warehouse.code, id),
   ]);
   if (!result[0].meta.changes) throw new Error("采集已失效，未发布本次数据");
   return captured;
