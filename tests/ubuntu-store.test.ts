@@ -10,7 +10,7 @@ import type { InboundQuery, InboundRecord } from '../lib/inbound';
 import { inventoryWorkbook } from '../lib/excel';
 import { addQuantity, subtractQuantity, compareQuantity } from '../lib/decimal';
 import { loadSalesCalendar } from '../lib/sales-calendar-store';
-import { settings, saveSettings } from '../lib/alerts-store';
+import { settings, saveSettings, previewTurnoverAlert, notifyAfterSnapshot } from '../lib/alerts-store';
 import { turnoverAlert } from '../lib/turnover-alert';
 mkdirSync('.sites-runtime/tests',{recursive:true});
 process.env.INVENTORY_DB_PATH=resolve(`.sites-runtime/tests/store-${Date.now()}.sqlite`);
@@ -28,6 +28,57 @@ test('周转均值门槛默认3，独立保存、旧调用保留设置且按用�
   const unchanged=await settings(owner);assert.equal(unchanged.threshold,'5');assert.equal(unchanged.turnoverAverageThreshold,'4.5');assert.equal(unchanged.lastResult,'previous-result');
   assert.equal(db.prepare('SELECT last_digest FROM alert_settings WHERE owner=?').get(owner)!.last_digest,'previous-digest');
   assert.equal((await saveSettings(owner,false,'5','0')).turnoverAverageThreshold,'0','允许门槛0');
+});
+
+test('周转群通知汇总全仓超过1000款，短消息、预览不发送及每天原子去重',async()=>{
+  const db=sqlite(),owner='notification-owner',code='NOTICE01';
+  await addWarehouse(owner,code,'通知分页测试仓');
+  for(let i=0;i<8;i++) {
+    const date='2026-10-0'+(i+1),id='notice-'+date;
+    db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,1205,1205,'{}',0,0,?,'auto:v1')").run(id,owner,date,date+'T00:00:23Z',code);
+    db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,id);
+    const rows=Array.from({length:1205},(_,n)=>['G'+String(n).padStart(4,'0'),'预警测试货品','Pcs',String(n===0?100-3*i:n===1?28-4*i:100-4*i),1,1]).filter(r=>!(i===1 && r[0]==='G0002'));
+    db.prepare("INSERT INTO stock_entries SELECT ?,json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]'),json_extract(value,'$[3]'),json_extract(value,'$[4]'),json_extract(value,'$[5]') FROM json_each(?)").run(id,JSON.stringify(rows));
+  }
+  await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[]}));
+  const preview=await previewTurnoverAlert(owner,code,'3');assert.equal(preview.count,1203);assert.match(preview.message,/共 1203 款/);assert.match(preview.message,/其余 1198 款/);assert.ok(preview.message.length<1000);assert.match(preview.message,/G0001.*0天/);
+  await assert.rejects(()=>previewTurnoverAlert('another-notification-owner',code),/仓库尚未添加/);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM turnover_alert_deliveries').get()!.n,0,'预览不产生发送记录');
+  for(const size of [100,200,500,1000]) {
+    const view=await loadInventory(owner,{warehouseCode:code,pageSize:size,compact:true});assert.equal(view.rows.length,size);assert.equal(view.pageSize,size);assert.equal(view.totalRows,1205);
+    assert.deepEqual(view.rows[0].history,{});assert.equal(view.rows[0].inbound,undefined);assert.equal(view.rows[0].rawSales,undefined);assert.deepEqual(view.rows[0].salesHints,{});
+  }
+  const next=await loadInventory(owner,{warehouseCode:code,pageSize:1000,page:2,compact:true});assert.equal(next.rows.length,205);assert.equal(next.rows[0].goodsNo,'G1000');assert.equal(next.rows[204].goodsNo,'G1204');
+  const names=['DINGTALK_CLIENT_ID','DINGTALK_CLIENT_SECRET','DINGTALK_ROBOT_CODE','DINGTALK_OPEN_CONVERSATION_ID'];const old=names.map(n=>process.env[n]);names.forEach(n=>process.env[n]='isolated-fake');
+  let sent=0;const sender=async()=>{sent++;return 'fake-accepted';};
+  try {
+    await saveSettings(owner,true,'0','4');await notifyAfterSnapshot(owner,preview.snapshotId,code,sender);assert.equal(sent,0,'均值等于门槛不通知');
+    await saveSettings(owner,true,'0','3');
+    await notifyAfterSnapshot(owner,'stale-snapshot',code,sender);assert.equal(sent,0,'旧快照不通知');
+    db.prepare("UPDATE stock_snapshots SET unavailable_skus='[{}]' WHERE id=?").run(preview.snapshotId);await notifyAfterSnapshot(owner,preview.snapshotId,code,sender);assert.equal(sent,0,'库存不完整不通知');
+    db.prepare("UPDATE stock_snapshots SET unavailable_skus='[]' WHERE id=?").run(preview.snapshotId);
+    await Promise.all([notifyAfterSnapshot(owner,preview.snapshotId,code,sender),notifyAfterSnapshot(owner,preview.snapshotId,code,sender)]);assert.equal(sent,1,'并发只发送一次');
+    await saveSettings(owner,true,'0','0');await notifyAfterSnapshot(owner,preview.snapshotId,code,sender);assert.equal(sent,1,'改门槛不重复当天通知');
+    assert.equal(db.prepare('SELECT state FROM turnover_alert_deliveries WHERE owner=? AND warehouse_code=?').get(owner,code)!.state,'accepted');
+    await addWarehouse(owner,'NOTICE02','另一通知仓');
+    for(let i=0;i<8;i++) {
+      const date='2026-10-0'+(i+1),id='other-notice-'+date;
+      db.prepare("INSERT INTO stock_snapshots SELECT ?,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,scope_key,scope_label,scope_count,'NOTICE02',warehouse_name,coverage,catalog_hash,unavailable_skus FROM stock_snapshots WHERE id=?").run(id,'notice-'+date);
+      db.prepare("INSERT INTO stock_entries SELECT ?,goods_no,goods_name,unit_name,quantity,sku_count,sign FROM stock_entries WHERE snapshot_id=? AND goods_no='G0003'").run(id,'notice-'+date);
+      db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,'NOTICE02',date,id);
+    }
+    await reconcileWarehouseInbound(owner,'NOTICE02','k','s',async()=>{},async()=>({quantity:'0',records:[]}));
+    await notifyAfterSnapshot(owner,'other-notice-2026-10-08','NOTICE02',sender);assert.equal(sent,2,'同用户不同仓库独立每日通知');
+    const id='notice-2026-10-09';
+    db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,'2026-10-09','2026-10-09T00:00:23Z','complete',1,1205,1205,'{}',0,0,?,'auto:v1')").run(id,owner,code);
+    db.prepare('INSERT INTO stock_entries SELECT ?,goods_no,goods_name,unit_name,quantity,sku_count,sign FROM stock_entries WHERE snapshot_id=?').run(id,preview.snapshotId);
+    db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,'2026-10-09',id);
+    await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[]}));
+    const uncertain=async()=>{sent++;throw Error('timeout');};
+    await notifyAfterSnapshot(owner,id,code,uncertain);await notifyAfterSnapshot(owner,id,code,sender);assert.equal(sent,3,'次日可发，发送未确认时不自动重试');
+    assert.equal(db.prepare("SELECT state FROM turnover_alert_deliveries WHERE owner=? AND date='2026-10-09'").get(owner)!.state,'unconfirmed');
+    await saveSettings(owner,false,'0','3');await notifyAfterSnapshot(owner,id,code,sender);assert.equal(sent,3);
+  } finally {names.forEach((n,i)=>{if(old[i]===undefined)delete process.env[n];else process.env[n]=old[i];});}
 });
 
 test('负库存与无入库回补显示负净销量，不改写原始快照',async()=>{
@@ -133,7 +184,9 @@ test('销量月历读取历史月份、月末闭合基准及用户隔离，不�
 
 test('本地数据库迁移、事务回滚、队列去重与多仓库快照隔离',async()=>{
   const db=sqlite();
-  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,9);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,11);
+  const plan=db.prepare("EXPLAIN QUERY PLAN SELECT id FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND coverage='auto:v1' AND status='complete' ORDER BY captured_at DESC,id DESC LIMIT 1").all('test-owner','TEST01');
+  assert.ok(plan.some((r:{detail:string})=>r.detail.includes('idx_snapshots_warehouse_latest')));assert.ok(plan.every((r:{detail:string})=>!r.detail.includes('TEMP B-TREE')));
   await addWarehouse('test-owner','TEST01','测试仓');
   const first=enqueue('test-owner','TEST01'),second=enqueue('test-owner','TEST01');
   assert.equal(first.id,second.id);
@@ -186,6 +239,11 @@ test('仓库分页结果覆盖库存下降、持平、增加；重试与手动�
   assert.equal(b.sales!['2026-10-02'],'-4');assert.equal(b.inbound!['2026-10-02'].status,'verified');
   assert.equal(b.metrics!.average7,'-0.57');assert.equal(b.metrics!.reason,'net_returns');assert.equal(b.metrics!.turnoverDays,null);
   assert.equal(c.sales!['2026-10-02'],null);assert.equal(c.inbound!['2026-10-02'].inboundQuantity,null);
+  const compact=await loadInventory(owner,{warehouseCode:code,compact:true});
+  for(const row of compact.rows) { const full=view.rows.find(r=>r.goodsNo===row.goodsNo)!;assert.deepEqual(row.sales,full.sales);assert.deepEqual(row.metrics,full.metrics);assert.equal(row.inbound,undefined);assert.equal(row.rawSales,undefined); }
+  assert.equal(compact.rows.find(r=>r.goodsNo==='A')!.salesHints!['2026-10-02'].hasInbound,true);
+  assert.match(compact.rows.find(r=>r.goodsNo==='B')!.salesHints!['2026-10-02'].title,/负销量/);
+  assert.equal(compact.rows.find(r=>r.goodsNo==='C')!.salesHints!['2026-10-02'].pendingLabel,'待核验');
   const verifiedAt=a.inbound!['2026-10-02'].checkedAt;
   assert.equal(db.prepare("SELECT quantity FROM stock_entries WHERE snapshot_id='inbound-day-3' AND goods_no='A'").get()!.quantity,'527');
   snapshot.run('inbound-manual',owner,'2026-10-08','2026-10-08T01:00:00Z',code);

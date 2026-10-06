@@ -12,6 +12,7 @@ export type InboundReconciliation = {
   openingQuantity: string; closingQuantity: string;
   status: "verified" | "unresolved" | "failed";
   windowStart: string; windowEnd: string; records: InboundRecord[]; error: string | null; checkedAt: string;
+  hasPositiveInbound?: boolean;
 };
 export type InboundQuery = { warehouseCode: string; goodsNo?: string; unitName?: string; start: string; end: string };
 const COLS = "recId,docId,goodsdocNo,goodsNo,skuBarcode,warehouseCode,inOutDate,gmtCreate,quantity,unitName,inouttypeName";

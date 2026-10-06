@@ -2,6 +2,7 @@ import { runtimeDatabase as db } from "./runtime";
 import { addQuantity, compareQuantity, subtractQuantity } from "./decimal";
 import { collectInbound, type InboundQuery, type InboundReconciliation } from "./inbound";
 import { reconciliationDiagnostic } from "./reconciliation-diagnostics";
+import { nextDate } from "./daily-sales";
 
 type Pair = { date: string; goods_no: string; unit_name: string; before_id: string; after_id: string; start: string; end: string; before_quantity: string; after_quantity: string };
 type Stored = { query_scope: string; goods_no: string; date: string; raw_difference: string; opening_quantity: string; closing_quantity: string; inbound_quantity: string | null; corrected_quantity: string | null; status: InboundReconciliation["status"]; window_start: string; window_end: string; records: string; error: string | null; checked_at: string };
@@ -12,11 +13,17 @@ function mapStored(r: Stored): InboundReconciliation {
   return item;
 }
 
-export async function loadInboundReconciliations(owner: string, code: string, snapshotIds: string[], goods: string[]) {
+export async function loadInboundReconciliations(owner: string, code: string, snapshots: {id:string;date:string}[], goods: string[]) {
   const grouped = new Map<string, Record<string, InboundReconciliation>>();
-  if (!snapshotIds.length || !goods.length) return grouped;
-  const result = await db.prepare("SELECT * FROM inbound_reconciliations WHERE owner=? AND warehouse_code=? AND before_snapshot_id IN (SELECT value FROM json_each(?)) AND after_snapshot_id IN (SELECT value FROM json_each(?)) AND goods_no IN (SELECT value FROM json_each(?))")
-    .bind(owner, code, JSON.stringify(snapshotIds), JSON.stringify(snapshotIds), JSON.stringify(goods)).all<Stored>();
+  const byDate = new Map(snapshots.map(s => [s.date,s.id]));
+  const pairs = snapshots.flatMap(s => { const after=byDate.get(nextDate(s.date)); return after ? [[s.id,after]] : []; });
+  if (!pairs.length || !goods.length) return grouped;
+  // Look up only adjacent baseline pairs, rather than every before/after
+  // combination (31 × 31 per product). CROSS JOIN fixes the bounded probe order.
+  const result = await db.prepare(`SELECT r.* FROM json_each(?) g CROSS JOIN json_each(?) p
+    CROSS JOIN inbound_reconciliations r ON r.owner=? AND r.warehouse_code=? AND r.goods_no=g.value
+      AND r.before_snapshot_id=json_extract(p.value,'$[0]') AND r.after_snapshot_id=json_extract(p.value,'$[1]')`)
+    .bind(JSON.stringify(goods),JSON.stringify(pairs),owner,code).all<Stored>();
   for (const r of result.results) {
     const dates = grouped.get(r.goods_no) || {};
     dates[r.date] = mapStored(r);

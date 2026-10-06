@@ -8,6 +8,7 @@ import { comparableDates, dailySales, reconciledSales } from "./daily-sales";
 import { loadCurrentInboundReconciliations, loadInboundReconciliations } from "./inbound-store";
 import type { InboundReconciliation } from "./inbound";
 import { inventoryMetrics } from "./inventory-metrics";
+import { reconciliationDiagnostic } from "./reconciliation-diagnostics";
 import type { InventoryView, RunInfo, SnapshotInfo, StockRow, WarehouseInfo, UnavailableSku } from "./inventory-types";
 import type { ScopeInfo } from "./stock-scope";
 
@@ -55,13 +56,26 @@ async function rowHistory(owner: string, snapshots: string[], goods: string[]) {
   return history;
 }
 
-function analyzedEntry(row: EntryRecord, values: EntryRecord[], date: string, salesDates: string[], inbound: Record<string, InboundReconciliation> = {}, currentInbound?: InboundReconciliation) {
+function analyzedEntry(row: EntryRecord, values: EntryRecord[], date: string, salesDates: string[], inbound: Record<string, InboundReconciliation> = {}, currentInbound?: InboundReconciliation, compact = false): InventoryView["rows"][number] {
   const dailyValues = values.map(v => ({ date: v.date!, quantity: v.quantity, unitName: v.unit_name }));
   const rawSales = dailySales(dailyValues, salesDates, row.unit_name);
-  return { ...mapEntry(row), history: Object.fromEntries(values.map(v => [v.date!, v.quantity])), rawSales, sales: reconciledSales(rawSales, inbound), inbound, currentInbound, metrics: inventoryMetrics(dailyValues, date, row.quantity, row.unit_name, inbound) };
+  const sales = reconciledSales(rawSales, inbound);
+  const result = { ...mapEntry(row), history: compact ? {} : Object.fromEntries(values.map(v => [v.date!, v.quantity])), sales, metrics: inventoryMetrics(dailyValues, date, row.quantity, row.unit_name, inbound) };
+  if (!compact) return {...result,rawSales,inbound,currentInbound};
+  // Main table needs numbers and exceptional-cell hints, not thirty copies of
+  // snapshot quantities, timestamps and receipts per product. Calendar owns details.
+  const salesHints: NonNullable<InventoryView["rows"][number]["salesHints"]> = {};
+  for (const day of salesDates) {
+    const r = inbound[day], pending = rawSales[day] != null && sales[day] == null;
+    const hasInbound = !!r && (r.records.some(item=>compareQuantity(item.quantity,"0")>0) || (r.inboundQuantity != null && compareQuantity(r.inboundQuantity,"0")>0));
+    if (!pending && !hasInbound && !(sales[day]?.startsWith("-"))) continue;
+    const diagnostic = reconciliationDiagnostic(r);
+    salesHints[day] = {hasInbound,title:diagnostic?.message || r?.error || (pending ? "该采集区间入库未核验；点击货品查看详情" : `原始差额 ${r.rawDifference} + 入库 ${r.inboundQuantity}；点击查看单据`), ...(pending ? {pendingLabel:diagnostic?.increase ? `回补 ${diagnostic.increase} · 待核对` : "待核验"} : {})};
+  }
+  return {...result,salesHints};
 }
 
-export async function loadInventory(owner: string, query: { source?: string; warehouseCode?: string; q?: string; filter?: string; days?: number; page?: number; pageSize?: number; sort?: string; sortDate?: string } = {}): Promise<InventoryView> {
+export async function loadInventory(owner: string, query: { source?: string; warehouseCode?: string; q?: string; filter?: string; days?: number; page?: number; pageSize?: number; sort?: string; sortDate?: string; compact?: boolean } = {}): Promise<InventoryView> {
   const config = serverConfig(), warehouses = await loadWarehouses(owner);
   const warehouse = warehouses.find(w => w.code === (query.warehouseCode || WAREHOUSE_CODE));
   if (!warehouse) throw new Error("仓库尚未添加");
@@ -111,9 +125,10 @@ export async function loadInventory(owner: string, query: { source?: string; war
   }
   // Three bindings even with a 1,000-row page; D1 limits bound variables to 100.
   const history = await rowHistory(owner, daily.map(s => s.id), result.results.map(r => r.goods_no));
-  const inbound = await loadInboundReconciliations(owner, warehouse.code, daily.map(s => s.id), result.results.map(r => r.goods_no));
-  const currentInbound = await loadCurrentInboundReconciliations(owner, warehouse.code, latest.id, result.results.map(r => r.goods_no));
-  return { ...base, snapshot: mapSnapshot(latest), snapshots: daily.map(mapSnapshot), salesDates, unavailableSkus:JSON.parse(latest.unavailable_skus || "[]"), rows: result.results.map(r => analyzedEntry(r, history.get(r.goods_no) || [], latest.date, salesDates, inbound.get(r.goods_no), currentInbound.get(r.goods_no))), totalRows, goodsCount: latest.goods_count, page, totalsByUnit: JSON.parse(latest.totals), zeroCount: latest.zero_count, negativeCount: latest.negative_count };
+  const inbound = await loadInboundReconciliations(owner, warehouse.code, daily, result.results.map(r => r.goods_no));
+  const currentInbound = query.compact ? new Map<string,InboundReconciliation>() : await loadCurrentInboundReconciliations(owner, warehouse.code, latest.id, result.results.map(r => r.goods_no));
+  const snapshotInfo = (s:SnapshotRecord) => query.compact ? {...mapSnapshot({...s,unavailable_skus:"[]"}),unavailableSkus:undefined} : mapSnapshot(s);
+  return { ...base, snapshot: snapshotInfo(latest), snapshots: daily.map(snapshotInfo), salesDates, unavailableSkus:JSON.parse(latest.unavailable_skus || "[]"), rows: result.results.map(r => analyzedEntry(r, history.get(r.goods_no) || [], latest.date, salesDates, inbound.get(r.goods_no), currentInbound.get(r.goods_no),query.compact)), totalRows, goodsCount: latest.goods_count, page, totalsByUnit: JSON.parse(latest.totals), zeroCount: latest.zero_count, negativeCount: latest.negative_count };
 }
 
 export async function acquireRun(owner: string, code = WAREHOUSE_CODE, trigger = "manual", requestedId?: string): Promise<string> {
@@ -158,8 +173,8 @@ export async function loadRuns(owner: string, code = WAREHOUSE_CODE): Promise<Ru
   const result = await database().prepare("SELECT id, status, started_at AS startedAt, last_progress_at AS lastProgressAt, completed_at AS completedAt, page_count AS pageCount, record_count AS recordCount, goods_count AS goodsCount, message, warehouse_code AS warehouseCode FROM sync_runs WHERE owner = ? AND warehouse_code = ? ORDER BY started_at DESC LIMIT 20").bind(owner, code).all<RunInfo>();
   return result.results;
 }
-export async function allRows(owner: string, code = WAREHOUSE_CODE) {
-  const view = await loadInventory(owner, { warehouseCode: code });
+export async function allRows(owner: string, code = WAREHOUSE_CODE, days = 14, compact = false) {
+  const view = await loadInventory(owner, { warehouseCode: code, days, compact });
   if (!view.snapshot) throw new Error("该仓库暂无完整采集，请先采集库存");
   const result = await database().prepare("SELECT * FROM stock_entries WHERE snapshot_id = ? ORDER BY goods_no").bind(view.snapshot.id).all<EntryRecord>();
   const rows: InventoryView["rows"] = [];
@@ -167,9 +182,9 @@ export async function allRows(owner: string, code = WAREHOUSE_CODE) {
   for (let start = 0; start < result.results.length; start += 1000) {
     const batch = result.results.slice(start, start + 1000);
     const history = await rowHistory(owner, view.snapshots.map(s => s.id), batch.map(r => r.goods_no));
-    const inbound = await loadInboundReconciliations(owner, code, view.snapshots.map(s => s.id), batch.map(r => r.goods_no));
-    const currentInbound = await loadCurrentInboundReconciliations(owner, code, view.snapshot!.id, batch.map(r => r.goods_no));
-    rows.push(...batch.map(r => analyzedEntry(r, history.get(r.goods_no) || [], view.snapshot!.date, view.salesDates || [], inbound.get(r.goods_no), currentInbound.get(r.goods_no))));
+    const inbound = await loadInboundReconciliations(owner, code, view.snapshots, batch.map(r => r.goods_no));
+    const currentInbound = compact ? new Map<string,InboundReconciliation>() : await loadCurrentInboundReconciliations(owner, code, view.snapshot!.id, batch.map(r => r.goods_no));
+    rows.push(...batch.map(r => analyzedEntry(r, history.get(r.goods_no) || [], view.snapshot!.date, view.salesDates || [], inbound.get(r.goods_no), currentInbound.get(r.goods_no),compact)));
   }
   return { view, rows };
 }

@@ -28,7 +28,7 @@ export type InventoryView = {
   source: "live" | "sample";
   snapshot: SnapshotInfo | null;
   snapshots: SnapshotInfo[];
-  rows: (StockRow & { history: Record<string, string | null>; sales?: Record<string, string | null>; rawSales?: Record<string, string | null>; inbound?: Record<string, InboundReconciliation>; currentInbound?: InboundReconciliation; metrics?: InventoryMetrics })[];
+  rows: (StockRow & { history: Record<string, string | null>; sales?: Record<string, string | null>; rawSales?: Record<string, string | null>; inbound?: Record<string, InboundReconciliation>; salesHints?: Record<string, { hasInbound: boolean; title: string; pendingLabel?: string }>; currentInbound?: InboundReconciliation; metrics?: InventoryMetrics })[];
   warehouses?: WarehouseInfo[];
   salesDates?: string[];
   scheduleActive?: boolean;

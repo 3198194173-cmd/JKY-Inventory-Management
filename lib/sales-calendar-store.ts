@@ -25,7 +25,7 @@ export async function loadSalesCalendar(owner: string, code: string, goodsNo: st
   const dates:string[] = [];
   for (let date=start;date<end;date=nextDate(date)) dates.push(date);
   const values=slots.results.flatMap(s=>s.quantity != null && s.unit_name != null ? [{date:s.date,quantity:s.quantity,unitName:s.unit_name}] : []);
-  const raw = dailySales(values,dates), inbound = (await loadInboundReconciliations(owner,code,slots.results.map(s=>s.id),[goodsNo])).get(goodsNo) || {};
+  const raw = dailySales(values,dates), inbound = (await loadInboundReconciliations(owner,code,slots.results,[goodsNo])).get(goodsNo) || {};
   const sales = reconciledSales(raw,inbound), byDate=new Map(slots.results.map(s=>[s.date,s]));
   return {month, firstMonth:bounds?.first_date?.slice(0,7) || month, lastMonth:bounds?.last_date?.slice(0,7) || month,
     days:dates.map(date=>{

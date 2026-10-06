@@ -29,6 +29,7 @@ try {
   const cookie=r.headers.get('set-cookie').split(';')[0];assert.ok(r.headers.get('set-cookie').includes('HttpOnly'));
   const headers={cookie,origin:url,'content-type':'application/json'};
   r=await fetch(url+'/api/alerts');assert.equal(r.ok,false,'预警设置需要登录');
+  r=await fetch(url+'/api/alerts/preview?warehouseCode=TEST02');assert.equal(r.ok,false,'通知预览需要登录');
   r=await fetch(url+'/api/alerts',{headers:{cookie}});assert.equal((await r.json()).turnoverAverageThreshold,'3');
   r=await fetch(url+'/api/alerts',{method:'POST',headers:{...headers,origin:'https://evil.example'},body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'9'})});assert.equal(r.ok,false,'拒绝跨来源更改预警');
   r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'4.500'})});assert.equal(r.ok,true);assert.equal((await r.json()).turnoverAverageThreshold,'4.5');
@@ -84,12 +85,17 @@ try {
   }
   assert.equal(state,'complete',output);
   r=await fetch(url+'/api/inventory?warehouseCode=TEST02',{headers:{cookie}});const reconciled=await r.json();
-  assert.equal(reconciled.rows[0].rawSales[previous],'-3');assert.equal(reconciled.rows[0].sales[previous],'1');
-  assert.equal(reconciled.rows[0].inbound[previous].inboundQuantity,'4');assert.equal(reconciled.rows[0].inbound[previous].records[0].documentNo,'TEST-INBOUND-4');
-  assert.equal(reconciled.rows[0].currentInbound.correctedQuantity,'0','手动区间不重复记入此前入库');
+  assert.equal(reconciled.rows[0].rawSales,undefined);assert.equal(reconciled.rows[0].sales[previous],'1');
+  assert.equal(reconciled.rows[0].inbound,undefined);assert.equal(reconciled.rows[0].salesHints[previous].hasInbound,true,'主表保留入库黄色标识而不加载单据详情');assert.match(reconciled.rows[0].salesHints[previous].title,/原始差额 -3 \+ 入库 4/);
+  assert.equal(reconciled.rows[0].currentInbound,undefined,'主表省略手动区间详情');
+  {
+    const db=new DatabaseSync(path);
+    assert.equal(db.prepare("SELECT corrected_quantity FROM inbound_reconciliations WHERE owner='http-test' AND warehouse_code='TEST02' AND goods_no='TEST-GOODS' AND before_snapshot_id=? AND after_snapshot_id=?").get(inventory.snapshot.id,reconciled.snapshot.id).corrected_quantity,'0','手动区间仍保存且不重复记入此前入库');db.close();
+  }
   r=await fetch(url+'/api/sales-calendar?'+new URLSearchParams({warehouseCode:'TEST02',goodsNo:'TEST-GOODS',month:previous.slice(0,7)}),{headers:{cookie}});
   assert.equal(r.ok,true);const calendar=await r.json(),calendarDay=calendar.days.find(d=>d.date===previous);
   assert.equal(calendarDay.sales,'1');assert.equal(calendarDay.openingQuantity,'14.25');assert.equal(calendarDay.closingQuantity,'17.25');assert.equal(calendarDay.correction.inboundQuantity,'4');
+  assert.equal(calendarDay.correction.records[0].documentNo,'TEST-INBOUND-4','日历按需加载真实单据详情');
   assert.ok(calendar.days.length>=28 && calendar.days.length<=31);
   r=await fetch(url+'/api/sales-calendar?warehouseCode=TEST02&goodsNo=TEST-GOODS&month=2026-13',{headers:{cookie}});assert.equal(r.status,400);
   r=await fetch(url+'/api/sync?warehouseCode=TEST02',{headers:{cookie}});assert.match((await r.json()).runs[0].message,/仓库入库核验 2 个区间、2 个货品区间：已核算 2/);
@@ -103,6 +109,18 @@ try {
   for(const [sort,order] of [['sales_desc',['Z-SALE','TEST-GOODS','M-PENDING']],['sales_asc',['TEST-GOODS','Z-SALE','M-PENDING']]]) {
     r=await fetch(url+'/api/inventory?'+new URLSearchParams({warehouseCode:'TEST02',sort,sortDate:previous}),{headers:{cookie}});
     assert.deepEqual((await r.json()).rows.map(row=>row.goodsNo),order,'HTTP传递指定日期并按真实核算值排序');
+  }
+  r=await fetch(url+'/api/alerts/preview?warehouseCode=TEST02&averageThreshold=-1',{headers:{cookie}});assert.equal(r.status,400);
+  r=await fetch(url+'/api/alerts/preview?warehouseCode=TEST02',{headers:{cookie}});assert.equal(r.ok,true);assert.equal((await r.json()).count,0);
+  r=await fetch(url+'/api/alerts/preview?warehouseCode=PRIVATE-WAREHOUSE',{headers:{cookie}});assert.equal(r.ok,false,'不能预览未授权仓库');
+  {
+    const db=new DatabaseSync(path);
+    const rows=Array.from({length:1205},(_,i)=>['P'+String(i).padStart(4,'0'),'大页测试货品','Pcs',String(i),1,1]);
+    db.prepare("INSERT INTO stock_entries SELECT ?,json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]'),json_extract(value,'$[3]'),json_extract(value,'$[4]'),json_extract(value,'$[5]') FROM json_each(?)").run(reconciled.snapshot.id,JSON.stringify(rows));db.close();
+    for(const [size,page,length] of [[100,1,100],[200,1,200],[500,1,500],[1000,1,1000],[1000,2,208],[100,1,100]]) {
+      r=await fetch(url+'/api/inventory?'+new URLSearchParams({warehouseCode:'TEST02',pageSize:String(size),page:String(page)}),{headers:{cookie}});
+      assert.equal(r.ok,true);const data=await r.json();assert.equal(data.pageSize,size);assert.equal(data.page,page);assert.equal(data.rows.length,length);assert.equal(data.totalRows,1208);assert.deepEqual(data.rows[0].history,{});
+    }
   }
   r=await fetch(url+'/',{headers:{cookie}});const sortedHtml=await r.text();
   // Root defaults to CK031, so verify the controls through a warehouse-specific

@@ -13,7 +13,7 @@ export const runs = sqliteTable("sync_runs", {
   message: text("message"),
   warehouseCode: text("warehouse_code").notNull().default("CK031"),
   trigger: text("trigger").notNull().default("manual"),
-}, t => [index("idx_runs_owner_time").on(t.owner, t.startedAt)]);
+}, t => [index("idx_runs_owner_time").on(t.owner, t.startedAt),index("idx_runs_warehouse_time").on(t.owner,t.warehouseCode,t.startedAt)]);
 
 export const snapshots = sqliteTable("stock_snapshots", {
   id: text("id").primaryKey(),
@@ -35,7 +35,7 @@ export const snapshots = sqliteTable("stock_snapshots", {
   coverage: text("coverage").notNull().default("legacy-partial"),
   catalogHash: text("catalog_hash").notNull().default(""),
   unavailableSkus: text("unavailable_skus").notNull().default("[]"),
-}, t => [index("idx_snapshots_owner_date").on(t.owner, t.status, t.date, t.capturedAt)]);
+}, t => [index("idx_snapshots_owner_date").on(t.owner, t.status, t.date, t.capturedAt),index("idx_snapshots_warehouse_latest").on(t.owner,t.warehouseCode,t.coverage,t.status,t.capturedAt,t.id)]);
 
 export const entries = sqliteTable("stock_entries", {
   snapshotId: text("snapshot_id").notNull().references(() => snapshots.id),
@@ -56,6 +56,18 @@ export const alertSettings = sqliteTable("alert_settings", {
   lastSentAt: text("last_sent_at"),
   lastResult: text("last_result"),
 });
+
+export const turnoverAlertDeliveries = sqliteTable("turnover_alert_deliveries", {
+  owner: text("owner").notNull(),
+  warehouseCode: text("warehouse_code").notNull(),
+  date: text("date").notNull(),
+  snapshotId: text("snapshot_id").notNull(),
+  averageThreshold: text("average_threshold").notNull(),
+  matchingCount: integer("matching_count").notNull(),
+  state: text("state").notNull(),
+  attemptedAt: text("attempted_at").notNull(),
+  acceptedAt: text("accepted_at"),
+}, t=>[primaryKey({columns:[t.owner,t.warehouseCode,t.date]})]);
 
 export const stockScopes = sqliteTable("stock_scopes", {
   owner: text("owner").primaryKey(),

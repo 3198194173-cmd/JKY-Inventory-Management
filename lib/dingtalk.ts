@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { compareQuantity, normalizeQuantity } from "./decimal";
 import type { StockRow } from "./inventory-types";
 import { WAREHOUSE_NAME } from "./jackyun";
+import type { InventoryView } from "./inventory-types";
+import { turnoverAlert, TURNOVER_ALERT_DAYS } from "./turnover-alert";
 
 export type RobotCredentials = { clientId: string; clientSecret: string; robotCode: string; openConversationId: string };
 let tokenCache: { clientId: string; secretDigest: string; token: string; expiresAt: number } | null = null;
@@ -18,6 +20,19 @@ export function alertDigest(rows: StockRow[], threshold: string) {
 export function alertMessage(rows: StockRow[], threshold: string, capturedAt: string) {
   const lines = rows.slice(0, 20).map(r => `${r.goodsNo} · ${r.goodsName.slice(0,48)}：${r.quantity} ${r.unitName}`);
   return [`【仓库库存预警】${WAREHOUSE_NAME}`, `采集时间：${capturedAt}`, `可订购量 ≤ ${threshold}：${rows.length} 个货品`, ...lines, ...(rows.length > 20 ? [`另有 ${rows.length - 20} 个货品，请打开库存分析网页查看。`] : []), "口径：完整库存采集后的可订购量；未接入在途数量。"].join("\n");
+}
+
+export function turnoverAlertRows(rows: InventoryView["rows"], threshold: string) {
+  return rows.filter(row=>turnoverAlert(row.metrics,row.quantity,threshold))
+    .sort((a,b)=>compareQuantity(a.metrics!.turnoverDays!,b.metrics!.turnoverDays!) || a.goodsNo.localeCompare(b.goodsNo));
+}
+const cleanLine = (value: string, length: number) => Array.from(value.replace(/[\r\n\t]+/g," ")).slice(0,length).join("");
+export function turnoverAlertMessage(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string) {
+  const time = new Date(capturedAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false});
+  return [`【库存周转预警】${cleanLine(warehouse,80)}`,`${time} · 共 ${rows.length} 款`,
+    `销量均值 > ${threshold}，周转 < ${TURNOVER_ALERT_DAYS} 天`,
+    ...rows.slice(0,5).map(r=>`${cleanLine(r.goodsNo,60)} ${cleanLine(r.goodsName,16)}｜库存 ${r.quantity} · ${r.metrics!.turnoverDays}天`),
+    ...(rows.length>5?[`其余 ${rows.length-5} 款请查看库存页标红项。`]:[]),"按库存净消耗估算。"].join("\n");
 }
 
 async function responseJson(response: Response): Promise<Record<string,unknown>> {

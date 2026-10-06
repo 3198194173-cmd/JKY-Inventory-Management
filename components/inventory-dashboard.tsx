@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type RefObject } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDownToLine, ArrowDownUp, ArrowLeft, ArrowRight, BellRing, CircleHelp, Clock3, LoaderCircle, Plus, RefreshCw, Search, Warehouse } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -27,10 +27,15 @@ function MetricValue({ metrics, field, warningTitle }: { metrics?: InventoryMetr
   return <span className="compact-metric-empty" title={reason === "insufficient_data" || !metrics ? `最近7天仅有 ${metrics?.validDays || 0} 天可计算；缺日、缺货品或单位变化不补零` : label}><span className="compact-muted">—</span><small>{label}</small></span>;
 }
 function hasInbound(row: InventoryView["rows"][number], date: string) {
+  if (row.salesHints) return !!row.salesHints[date]?.hasInbound;
   const correction=row.inbound?.[date];
-  return !!correction && (correction.records.some(r=>compareQuantity(r.quantity,"0")>0) || (correction.inboundQuantity != null && compareQuantity(correction.inboundQuantity,"0")>0));
+  return !!correction && (correction.hasPositiveInbound || correction.records.some(r=>compareQuantity(r.quantity,"0")>0) || (correction.inboundQuantity != null && compareQuantity(correction.inboundQuantity,"0")>0));
 }
 function SalesValue({ row, date }: { row: InventoryView["rows"][number]; date: string }) {
+  if (row.salesHints) {
+    const hint=row.salesHints[date],value=row.sales?.[date];
+    return <span className="compact-sales-value" title={hint?.title || "库存消耗估算；点击货品查看核算与单据"}>{value == null ? "—" : quantity(value)}{hint?.pendingLabel && <small className="compact-sales-note">{hint.pendingLabel}</small>}</span>;
+  }
   const correction = row.inbound?.[date], value = row.sales?.[date];
   const diagnostic = reconciliationDiagnostic(correction);
   const pending = row.rawSales?.[date] != null && value == null;
@@ -58,6 +63,27 @@ function Sparkline({ dates, values }: { dates: string[]; values: Record<string, 
   });
   return <svg width="134" height="34" viewBox="0 0 134 34" role="img" aria-label={`${present.length} 天销售库存差额趋势`}><path d="M5 30H129" stroke="#e5eaf3" strokeDasharray="3 3"/><path d={path} fill="none" stroke="#4371eb" strokeWidth="1.7"/>{points.map((p,i) => p.n === null || !Number.isFinite(p.n) ? null : <circle key={p.date} cx={xy(p.n,i)[0]} cy={xy(p.n,i)[1]} r={present.length === 1 ? 3 : 1.7} fill="#4371eb"/>)}</svg>;
 }
+const ROW_HEIGHT = 57, OVERSCAN = 8;
+const InventoryDataRow = memo(function InventoryDataRow({row,index,dates,threshold,onSelect}:{row:InventoryView["rows"][number];index:number;dates:string[];threshold:string;onSelect:(row:InventoryView["rows"][number])=>void}) {
+  return <TableRow aria-rowindex={index+2} onClick={() => onSelect(row)} className="compact-data-row"><TableCell className="compact-index">{index+1}</TableCell><TableCell className="compact-goods"><button type="button" onClick={e => { e.stopPropagation(); onSelect(row); }} title={row.goodsName}><strong>{row.goodsNo}</strong><span>{row.goodsName}</span></button></TableCell><TableCell className="compact-current"><strong>{quantity(row.quantity)}</strong></TableCell><TableCell className="compact-metric"><MetricValue metrics={row.metrics} field="average7"/></TableCell><TableCell className="compact-trend"><Sparkline dates={dates} values={row.sales || {}}/></TableCell>{dates.map(date => <TableCell key={date} className={`compact-date ${hasInbound(row,date) ? "compact-inbound-day" : ""}`}><SalesValue row={row} date={date}/></TableCell>)}<TableCell className="compact-turnover"><MetricValue metrics={row.metrics} field="turnoverDays" warningTitle={turnoverAlert(row.metrics,row.quantity,threshold) ? `周转预警：销量均值 > ${threshold} 且库存周转 < ${TURNOVER_ALERT_DAYS}天；按未舍入值判断` : undefined}/></TableCell></TableRow>;
+});
+const InventoryRows = memo(function InventoryRows({view,dates,threshold,onSelect,scrollRef}:{view:InventoryView;dates:string[];threshold:string;onSelect:(row:InventoryView["rows"][number])=>void;scrollRef:RefObject<HTMLDivElement|null>}) {
+  const [viewport,setViewport]=useState({top:0,height:600});
+  useEffect(() => {
+    const element=scrollRef.current;
+    if (!element) return;
+    let frame=0;
+    const measure=()=> { frame=0; const top=Math.max(0,element.scrollTop-49),height=element.clientHeight; setViewport(previous=>previous.top===top && previous.height===height ? previous : {top,height}); };
+    const schedule=()=> { if(!frame) frame=requestAnimationFrame(measure); };
+    const observer=new ResizeObserver(schedule); observer.observe(element);
+    element.addEventListener("scroll",schedule,{passive:true});schedule();
+    return ()=> {element.removeEventListener("scroll",schedule);observer.disconnect();cancelAnimationFrame(frame);};
+  },[scrollRef,view.rows]);
+  const virtual=view.rows.length>30;
+  const start=virtual ? Math.min(Math.max(0,view.rows.length-1),Math.max(0,Math.floor(viewport.top/ROW_HEIGHT)-OVERSCAN)) : 0;
+  const end=virtual ? Math.min(view.rows.length,Math.ceil((viewport.top+viewport.height)/ROW_HEIGHT)+OVERSCAN) : view.rows.length;
+  return <>{start>0 && <TableRow aria-hidden="true" className="compact-spacer"><TableCell colSpan={6+dates.length} style={{height:start*ROW_HEIGHT}}/></TableRow>}{view.rows.slice(start,end).map((row,i)=><InventoryDataRow key={row.goodsNo} row={row} index={(view.page-1)*view.pageSize+start+i} dates={dates} threshold={threshold} onSelect={onSelect}/>)}{end<view.rows.length && <TableRow aria-hidden="true" className="compact-spacer"><TableCell colSpan={6+dates.length} style={{height:(view.rows.length-end)*ROW_HEIGHT}}/></TableRow>}</>;
+});
 export default function InventoryDashboard({ initial, initialAlerts }: { initial: InventoryView; initialAlerts: AlertSettings }) {
   const router = useRouter();
   const [view,setView] = useState(initial), [code,setCode] = useState(initial.warehouseCode);
@@ -73,6 +99,9 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
   const [alerts,setAlerts] = useState<AlertSettings>(initialAlerts);
   const [threshold,setThreshold] = useState(initialAlerts.threshold), [enabled,setEnabled] = useState(initialAlerts.enabled), [saving,setSaving] = useState(false);
   const [turnoverThreshold,setTurnoverThreshold] = useState(initialAlerts.turnoverAverageThreshold), [alertError,setAlertError] = useState(""), [alertsLoading,setAlertsLoading] = useState(false);
+  const [alertPreview,setAlertPreview] = useState(""), [previewLoading,setPreviewLoading] = useState(false);
+  const tableWrap = useRef<HTMLDivElement>(null);
+  const appliedPaging = useRef({page:initial.page,pageSize:initial.pageSize});
   const skipInitialLoad = useRef(true), previousRun = useRef<RunInfo | null>(null);
   const dates = view.salesDates || [], active = warehouses.find(w => w.code === code), latestRun = runs[0], running = syncing || (latestRun?.status === "running" || latestRun?.status === "queued");
   function receiveRuns(next: RunInfo[]) {
@@ -87,8 +116,8 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     if (skipInitialLoad.current) { skipInitialLoad.current = false; return; }
     const controller = new AbortController(); setLoading(true);
     fetch(`/api/inventory?${new URLSearchParams({ warehouseCode:code, q:query, days, page:String(page), pageSize, sort, sortDate })}`, { signal:controller.signal })
-      .then(r => apiJson<InventoryView>(r)).then(d => { setView(d); setWarehouses(d.warehouses || []); setError(""); })
-      .catch(e => { if (e.name !== "AbortError") setError(e.message); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+      .then(r => apiJson<InventoryView>(r)).then(d => { if(controller.signal.aborted) return; appliedPaging.current={page:d.page,pageSize:d.pageSize}; setView(d); setWarehouses(d.warehouses || []); setError(""); if(tableWrap.current) tableWrap.current.scrollTop=0; })
+      .catch(e => { if (!controller.signal.aborted && e.name !== "AbortError") { setError(e.message); setPageSize(String(appliedPaging.current.pageSize)); setPage(appliedPaging.current.page); } }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   },[code,query,days,page,pageSize,sort,sortDate,refresh]);
   useEffect(() => {
@@ -126,7 +155,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     return () => lifecycle.abort();
   },[code]);
   function changeAlertsOpen(open: boolean) {
-    if (open) { setAlertsLoading(true); setAlertError(""); }
+    if (open) { setAlertsLoading(true); setAlertError(""); setAlertPreview(""); }
     setAlertsOpen(open);
   }
   function changeWarehouse(next: string) {
@@ -171,6 +200,13 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     setSaving(true); setAlertError("");
     try { const result = await apiJson<AlertSettings>(await fetch("/api/alerts", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled,threshold,turnoverAverageThreshold:turnoverThreshold})})); setAlerts(result); setTurnoverThreshold(result.turnoverAverageThreshold); setNotice("预警设置已保存"); setAlertsOpen(false); } catch(e) { setAlertError(e instanceof Error ? e.message : "保存失败"); } finally { setSaving(false); }
   }
+  async function previewAlert() {
+    setPreviewLoading(true); setAlertError(""); setAlertPreview("");
+    try {
+      const data=await apiJson<{message:string;incomplete:boolean}>(await fetch(`/api/alerts/preview?${new URLSearchParams({warehouseCode:code,averageThreshold:turnoverThreshold})}`));
+      setAlertPreview((data.incomplete ? "本次库存采集不完整，自动通知将跳过。\n\n" : "")+data.message);
+    } catch(e) { setAlertError(e instanceof Error ? e.message : "预览失败"); } finally { setPreviewLoading(false); }
+  }
   function sortSales(date: string) {
     setSortDate(date); setSort(sortDate === date && sort === "sales_desc" ? "sales_asc" : "sales_desc"); setPage(1);
   }
@@ -191,13 +227,14 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
       {latestRun?.status === "failed" && !error && <p className="compact-feedback compact-error" role="alert">最近一次采集失败：{latestRun.message || "请重试"}。当前展示上次成功库存。</p>}
       {error && !addOpen && <p className="compact-feedback compact-error" role="alert">{error}</p>}{notice && <p className="compact-feedback" role="status">{notice}</p>}
       {!!view.unavailableSkus?.length && <div className="compact-feedback" role="status"><span>{view.unavailableSkus.length.toLocaleString()} 个 SKU 未取得可购库存，未计入库存及销售差额。</span><Button variant="link" onClick={() => setUnavailableOpen(true)}>查看未取得库存清单</Button></div>}
-      <div className="compact-table-wrap" aria-busy={loading}>
-        <Table className="compact-table" style={{minWidth: `${1032 + dates.length * 92}px`}}><TableHeader><TableRow><TableHead className="compact-index">#</TableHead><TableHead className="compact-goods">货品编码 / 名称</TableHead><TableHead className="compact-current"><button type="button" onClick={() => { setSort(sort === "quantity_desc" ? "quantity_asc" : "quantity_desc"); setPage(1); }}>当前库存 {sort === "quantity_desc" ? "↓" : sort === "quantity_asc" ? "↑" : "↕"}</button></TableHead><TableHead className="compact-metric" title="最近7个完整日期的净销量总和÷7，包含负销量；所有可比较日期按实际入库量修正">销量均值</TableHead><TableHead className="compact-trend">销售趋势</TableHead>{dates.map(date => <TableHead key={date} className="compact-date" aria-sort={sortDate === date && sort.startsWith("sales_") ? sort === "sales_desc" ? "descending" : "ascending" : "none"}><button type="button" className="compact-sales-sort" onClick={() => sortSales(date)} aria-label={`${date}销量，点击按${sortDate === date && sort === "sales_desc" ? "从小到大" : "从大到小"}排序`} title="点击切换此日期销量升序/降序">{date.slice(5)} {sortDate === date && sort.startsWith("sales_") ? sort === "sales_desc" ? "↓" : "↑" : "↕"}</button></TableHead>)}<TableHead className="compact-turnover" title="当前库存÷近7天未四舍五入的均值；估算库存可支撑天数">库存周转</TableHead></TableRow></TableHeader>
-        <TableBody>{view.rows.map((row,i) => <TableRow key={row.goodsNo} onClick={() => setSelected(row)} className="compact-data-row"><TableCell className="compact-index">{(view.page - 1) * view.pageSize + i + 1}</TableCell><TableCell className="compact-goods"><button type="button" onClick={e => { e.stopPropagation(); setSelected(row); }} title={row.goodsName}><strong>{row.goodsNo}</strong><span>{row.goodsName}</span></button></TableCell><TableCell className="compact-current"><strong>{quantity(row.quantity)}</strong></TableCell><TableCell className="compact-metric"><MetricValue metrics={row.metrics} field="average7"/></TableCell><TableCell className="compact-trend"><Sparkline dates={dates} values={row.sales || {}}/></TableCell>{dates.map(date => <TableCell key={date} className={`compact-date ${hasInbound(row,date) ? "compact-inbound-day" : ""}`}><SalesValue row={row} date={date}/></TableCell>)}<TableCell className="compact-turnover"><MetricValue metrics={row.metrics} field="turnoverDays" warningTitle={turnoverAlert(row.metrics,row.quantity,alerts.turnoverAverageThreshold) ? `周转预警：销量均值 > ${alerts.turnoverAverageThreshold} 且库存周转 < ${TURNOVER_ALERT_DAYS}天；按未舍入值判断` : undefined}/></TableCell></TableRow>)}
+      {loading && <div className="compact-feedback" role="status">正在加载每页 {pageSize} 条，请稍候…</div>}
+      <div ref={tableWrap} className="compact-table-wrap" aria-busy={loading} role="region" aria-label="货品数据表，支持键盘滚动" tabIndex={0}>
+        <Table className="compact-table" aria-rowcount={view.totalRows+1} style={{minWidth: `${1032 + dates.length * 92}px`}}><TableHeader><TableRow><TableHead className="compact-index">#</TableHead><TableHead className="compact-goods">货品编码 / 名称</TableHead><TableHead className="compact-current"><button type="button" onClick={() => { setSort(sort === "quantity_desc" ? "quantity_asc" : "quantity_desc"); setPage(1); }}>当前库存 {sort === "quantity_desc" ? "↓" : sort === "quantity_asc" ? "↑" : "↕"}</button></TableHead><TableHead className="compact-metric" title="最近7个完整日期的净销量总和÷7，包含负销量；所有可比较日期按实际入库量修正">销量均值</TableHead><TableHead className="compact-trend">销售趋势</TableHead>{dates.map(date => <TableHead key={date} className="compact-date" aria-sort={sortDate === date && sort.startsWith("sales_") ? sort === "sales_desc" ? "descending" : "ascending" : "none"}><button type="button" className="compact-sales-sort" onClick={() => sortSales(date)} aria-label={`${date}销量，点击按${sortDate === date && sort === "sales_desc" ? "从小到大" : "从大到小"}排序`} title="点击切换此日期销量升序/降序">{date.slice(5)} {sortDate === date && sort.startsWith("sales_") ? sort === "sales_desc" ? "↓" : "↑" : "↕"}</button></TableHead>)}<TableHead className="compact-turnover" title="当前库存÷近7天未四舍五入的均值；估算库存可支撑天数">库存周转</TableHead></TableRow></TableHeader>
+        <TableBody><InventoryRows view={view} dates={dates} threshold={alerts.turnoverAverageThreshold} onSelect={setSelected} scrollRef={tableWrap}/>
         {!view.rows.length && <TableRow><TableCell colSpan={6 + dates.length}><div className="compact-empty"><Warehouse size={32}/><strong>{loading ? "正在读取仓库数据" : view.snapshot ? "没有符合条件的货品" : "从第一次库存采集开始"}</strong><p>{view.snapshot ? "可调整搜索条件。" : "自动获取该仓库 SKU 并采集可购数量，无需设置采集范围。"}</p>{!view.snapshot && <Button onClick={sync} disabled={syncing || loading || !view.configured}>{syncing ? "采集中…" : "采集库存"}</Button>}</div></TableCell></TableRow>}
         </TableBody></Table>
       </div>
-      <footer className="compact-footer"><span>共 {view.totalRows.toLocaleString()} 个货品</span><Select value={pageSize} onValueChange={v => { if(v) { setPageSize(v); setPage(1); } }}><SelectTrigger aria-label="每页条数"><SelectValue>每页 {pageSize} 条</SelectValue></SelectTrigger><SelectContent>{[100,200,500,1000].map(n => <SelectItem key={n} value={String(n)}>每页 {n} 条</SelectItem>)}</SelectContent></Select><Pagination className="compact-pagination"><Button variant="outline" size="icon" aria-label="上一页" disabled={view.page <= 1 || loading} onClick={() => setPage(view.page - 1)}><ArrowLeft/></Button><span>{view.page} / {totalPages}</span><Button variant="outline" size="icon" aria-label="下一页" disabled={view.page >= totalPages || loading} onClick={() => setPage(view.page + 1)}><ArrowRight/></Button></Pagination></footer>
+      <footer className="compact-footer"><span>共 {view.totalRows.toLocaleString()} 个货品</span><Select value={String(view.pageSize)} onValueChange={v => { if(v && v !== pageSize) { setLoading(true); setPageSize(v); setPage(1); } }}><SelectTrigger aria-label="每页条数" disabled={loading}><SelectValue>每页 {view.pageSize} 条</SelectValue></SelectTrigger><SelectContent>{[100,200,500,1000].map(n => <SelectItem key={n} value={String(n)}>每页 {n} 条</SelectItem>)}</SelectContent></Select><Pagination className="compact-pagination"><Button variant="outline" size="icon" aria-label="上一页" disabled={view.page <= 1 || loading} onClick={() => setPage(view.page - 1)}><ArrowLeft/></Button><span>{view.page} / {totalPages}</span><Button variant="outline" size="icon" aria-label="下一页" disabled={view.page >= totalPages || loading} onClick={() => setPage(view.page + 1)}><ArrowRight/></Button></Pagination></footer>
     </section>
     <p className="compact-footnote"><span className="compact-inbound-legend"/> 黄色表示该采集区间有入库，点击货品查看单据。点击日期列可切换销量升序/降序。销量为库存消耗估算：所有可比较商品按“上次库存 + 区间内实际入库 − 本次库存”核算。负值按退货/回补计入净销量。销量均值 = 近7天净销量总和 ÷ 7；周转 = 当前库存 ÷ 均值。均值为零或负数时不计算周转；缺日或入库未核验时不计算均值。</p>
     <Dialog open={addOpen} onOpenChange={setAddOpen}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>增加仓库</DialogTitle><DialogDescription>填入吉客云仓库编码。首次采集后自动识别仓库名称和 SKU。</DialogDescription></DialogHeader><form onSubmit={e => { e.preventDefault(); void add(); }}><label htmlFor="new-code">仓库编码</label><Input id="new-code" placeholder="例如 CK031" value={newCode} onChange={e => setNewCode(e.target.value)} required maxLength={50}/><label htmlFor="new-name">显示名称（可选）</label><Input id="new-name" placeholder="首次采集后同步官方名称" value={newName} onChange={e => setNewName(e.target.value)} maxLength={80}/><p>默认每日北京时间 08:00 采集。服务器启用定时任务后自动执行。</p>{error && <p role="alert" className="compact-error">{error}</p>}<Button type="submit" disabled={savingWarehouse}>{savingWarehouse ? "保存中…" : "增加仓库"}</Button></form></DialogContent></Dialog>
@@ -206,7 +243,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     <Dialog open={recordsOpen} onOpenChange={setRecordsOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 采集记录</DialogTitle><DialogDescription>仅显示当前仓库最近 20 次采集。</DialogDescription></DialogHeader><div className="compact-records">{runs.length ? runs.map(run => <div key={run.id}><strong>{run.status === "complete" ? "已完成" : run.status === "failed" ? "失败" : run.status === "queued" ? "排队中" : "采集中"}</strong><span>{time(run.startedAt)}</span><p>{run.message || `${run.pageCount} 页 · ${run.recordCount.toLocaleString()} 条记录`}</p></div>) : <p>暂无采集记录</p>}</div></DialogContent></Dialog>
     <Dialog open={alertsOpen} onOpenChange={changeAlertsOpen}><DialogContent className="compact-dialog compact-alert-dialog"><DialogHeader><DialogTitle>库存预警设置</DialogTitle><DialogDescription>页面预警保存后立即生效，适用于所有仓库。</DialogDescription></DialogHeader><form onSubmit={e => {e.preventDefault(); void saveAlerts();}}>
       <section aria-labelledby="turnover-alert-heading"><h3 id="turnover-alert-heading">库存周转预警</h3><label htmlFor="turnover-average-threshold">销量均值门槛</label><Input id="turnover-average-threshold" inputMode="decimal" maxLength={30} value={turnoverThreshold} onChange={e => setTurnoverThreshold(e.target.value)} disabled={saving || alertsLoading} required/><p>销量均值超过此门槛，且库存周转少于 {TURNOVER_ALERT_DAYS} 天时，周转数值标红。</p></section>
-      <section aria-labelledby="robot-alert-heading"><h3 id="robot-alert-heading">钉钉库存通知</h3><div className="compact-alert-switch"><label htmlFor="alert-enabled">启用群通知</label><Switch id="alert-enabled" checked={enabled} onCheckedChange={setEnabled} disabled={!alerts.robotConfigured || saving || alertsLoading}/></div><label htmlFor="alert-threshold">库存数量阈值</label><Input id="alert-threshold" inputMode="decimal" value={threshold} onChange={e => setThreshold(e.target.value)} disabled={saving || alertsLoading}/><p>完整采集后，库存低于或等于该阈值的货品发送至已配置群。</p>{!alerts.robotConfigured && <p>钉钉机器人未配置，群通知暂不可用。页面标红仍可使用。</p>}{alerts.lastResult && <p>{alerts.lastResult}</p>}</section>
+      <section aria-labelledby="robot-alert-heading"><h3 id="robot-alert-heading">钉钉群通知</h3><div className="compact-alert-switch"><label htmlFor="alert-enabled">启用群通知</label><Switch id="alert-enabled" checked={enabled} onCheckedChange={setEnabled} disabled={!alerts.robotConfigured || saving || alertsLoading}/></div><p>与页面标红条件一致。完整采集并核算后，按仓库汇总通知；每仓每天最多一次，只列周转最短的5款。</p><Button type="button" variant="outline" onClick={() => void previewAlert()} disabled={previewLoading || saving || alertsLoading}>{previewLoading ? "生成中…" : "预览当前仓库通知"}</Button>{alertPreview && <pre className="compact-alert-preview">{alertPreview}</pre>}{!alerts.robotConfigured && <p>钉钉机器人未配置，群通知暂不可用。页面标红和通知预览仍可使用。</p>}{alerts.lastResult && <p>{alerts.lastResult}</p>}</section>
       {alertError && <p className="compact-error" role="alert">{alertError}</p>}<Button type="submit" disabled={saving || alertsLoading}>{saving ? "保存中…" : alertsLoading ? "读取中…" : "保存设置"}</Button></form></DialogContent></Dialog>
     <Dialog open={!!selected} onOpenChange={v => { if(!v) setSelected(null); }}><DialogContent className="compact-dialog sales-calendar-dialog"><DialogHeader><DialogTitle>{selected?.goodsNo}</DialogTitle><DialogDescription>{selected?.goodsName}</DialogDescription></DialogHeader>{selected && <SalesCalendar key={`${code}:${selected.goodsNo}`} warehouseCode={code} goodsNo={selected.goodsNo} initialMonth={(dates[0] || view.snapshot?.date || new Date().toISOString().slice(0,10)).slice(0,7)}/>}</DialogContent></Dialog>
   </main>;
