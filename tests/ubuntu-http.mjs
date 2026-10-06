@@ -80,6 +80,21 @@ try {
   assert.equal(reconciled.rows[0].inbound[previous].inboundQuantity,'4');assert.equal(reconciled.rows[0].inbound[previous].records[0].documentNo,'TEST-INBOUND-4');
   assert.equal(reconciled.rows[0].currentInbound.correctedQuantity,'0','手动区间不重复记入此前入库');
   r=await fetch(url+'/api/sync?warehouseCode=TEST02',{headers:{cookie}});assert.match((await r.json()).runs[0].message,/仓库入库核验 2 个区间、2 个货品区间：已核算 2/);
+  {
+    const db=new DatabaseSync(path);
+    for(const [goods,before] of [['Z-SALE','2'],['M-PENDING','3']]) {
+      for(const id of ['http-inbound-before',inventory.snapshot.id,reconciled.snapshot.id])db.prepare('INSERT INTO stock_entries VALUES(?,?,?,?,?,1,1)').run(id,goods,'排序测试','Pcs',id==='http-inbound-before'?before:'0');
+    }
+    db.prepare("INSERT INTO inbound_reconciliations (owner,warehouse_code,goods_no,date,before_snapshot_id,after_snapshot_id,unit_name,raw_difference,opening_quantity,closing_quantity,status,inbound_quantity,corrected_quantity,window_start,window_end,checked_at,query_scope) VALUES('http-test','TEST02','Z-SALE',?,'http-inbound-before',?,'Pcs','2','2','0','verified','0','2',?,?,?,'warehouse:v1')").run(previous,inventory.snapshot.id,previous+'T00:00:00Z',inventory.snapshot.capturedAt,inventory.snapshot.capturedAt);db.close();
+  }
+  for(const [sort,order] of [['sales_desc',['Z-SALE','TEST-GOODS','M-PENDING']],['sales_asc',['TEST-GOODS','Z-SALE','M-PENDING']]]) {
+    r=await fetch(url+'/api/inventory?'+new URLSearchParams({warehouseCode:'TEST02',sort,sortDate:previous}),{headers:{cookie}});
+    assert.deepEqual((await r.json()).rows.map(row=>row.goodsNo),order,'HTTP传递指定日期并按真实核算值排序');
+  }
+  r=await fetch(url+'/',{headers:{cookie}});const sortedHtml=await r.text();
+  // Root defaults to CK031, so verify the controls through a warehouse-specific
+  // API above; visual checks use the isolated preview warehouse.
+  assert.equal(r.status,200);assert.doesNotMatch(sortedHtml,/>已核验<\/small>/);
   r=await fetch(url+'/api/export?warehouseCode=TEST02',{headers:{cookie}});assert.equal(r.ok,true);assert.ok((await r.arrayBuffer()).byteLength>1000);
   r=await fetch(url+'/api/session',{method:'DELETE',headers});assert.equal(r.ok,true);
   r=await fetch(url+'/api/inventory',{headers:{cookie}});assert.equal(r.ok,false);

@@ -61,7 +61,7 @@ function analyzedEntry(row: EntryRecord, values: EntryRecord[], date: string, sa
   return { ...mapEntry(row), history: Object.fromEntries(values.map(v => [v.date!, v.quantity])), rawSales, sales: reconciledSales(rawSales, inbound), inbound, currentInbound, metrics: inventoryMetrics(dailyValues, date, row.quantity, row.unit_name, inbound) };
 }
 
-export async function loadInventory(owner: string, query: { source?: string; warehouseCode?: string; q?: string; filter?: string; days?: number; page?: number; pageSize?: number; sort?: string } = {}): Promise<InventoryView> {
+export async function loadInventory(owner: string, query: { source?: string; warehouseCode?: string; q?: string; filter?: string; days?: number; page?: number; pageSize?: number; sort?: string; sortDate?: string } = {}): Promise<InventoryView> {
   const config = serverConfig(), warehouses = await loadWarehouses(owner);
   const warehouse = warehouses.find(w => w.code === (query.warehouseCode || WAREHOUSE_CODE));
   if (!warehouse) throw new Error("仓库尚未添加");
@@ -85,7 +85,26 @@ export async function loadInventory(owner: string, query: { source?: string; war
   const asc = query.sort === "quantity_asc", desc = query.sort === "quantity_desc" || query.sort === "quantity";
   // Normalized decimal strings sort exactly, including quantities beyond REAL precision.
   const sort = asc || desc ? `sign ${asc ? "ASC" : "DESC"}, CASE WHEN sign > 0 THEN instr(quantity || '.', '.') - 1 WHEN sign < 0 THEN 2 - instr(quantity || '.', '.') ELSE 0 END ${asc ? "ASC" : "DESC"}, CASE WHEN sign > 0 THEN quantity END COLLATE BINARY ${asc ? "ASC" : "DESC"}, CASE WHEN sign < 0 THEN substr(quantity, 2) END COLLATE BINARY ${asc ? "DESC" : "ASC"}, goods_no COLLATE BINARY ASC` : "goods_no COLLATE BINARY ASC";
-  const result = await database().prepare(`SELECT * FROM stock_entries WHERE ${where} ORDER BY ${sort} LIMIT ? OFFSET ?`).bind(...parameters, pageSize, (page - 1) * pageSize).all<EntryRecord>();
+  const salesSort = ["sales_asc","sales_desc"].includes(query.sort || "") && salesDates.includes(query.sortDate || "");
+  let result;
+  if (salesSort) {
+    const before = daily.find(s => s.date === query.sortDate)!;
+    const after = daily.find(s => s.date === new Date(Date.parse(query.sortDate! + "T00:00:00Z") + 86_400_000).toISOString().slice(0,10))!;
+    const direction = query.sort === "sales_asc" ? "ASC" : "DESC";
+    // Use the same verified daily correction as the displayed number. Missing
+    // values stay last in both directions; decimal strings never enter REAL.
+    result = await database().prepare(`WITH sortable AS (
+      SELECT e.*, r.corrected_quantity AS sales_quantity FROM stock_entries e
+      LEFT JOIN inbound_reconciliations r ON r.goods_no=e.goods_no AND r.unit_name=e.unit_name
+        AND r.owner=? AND r.warehouse_code=? AND r.before_snapshot_id=? AND r.after_snapshot_id=?
+        AND r.status='verified' AND r.query_scope='warehouse:v1'
+    ) SELECT * FROM sortable WHERE ${where}
+      ORDER BY (sales_quantity IS NULL) ASC, instr(sales_quantity || '.', '.') ${direction},
+        sales_quantity COLLATE BINARY ${direction}, goods_no COLLATE BINARY ASC LIMIT ? OFFSET ?`)
+      .bind(owner,warehouse.code,before.id,after.id,...parameters,pageSize,(page-1)*pageSize).all<EntryRecord>();
+  } else {
+    result = await database().prepare(`SELECT * FROM stock_entries WHERE ${where} ORDER BY ${sort} LIMIT ? OFFSET ?`).bind(...parameters, pageSize, (page - 1) * pageSize).all<EntryRecord>();
+  }
   // Three bindings even with a 1,000-row page; D1 limits bound variables to 100.
   const history = await rowHistory(owner, daily.map(s => s.id), result.results.map(r => r.goods_no));
   const inbound = await loadInboundReconciliations(owner, warehouse.code, daily.map(s => s.id), result.results.map(r => r.goods_no));

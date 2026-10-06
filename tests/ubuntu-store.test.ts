@@ -8,6 +8,7 @@ import { acquireRun, addWarehouse, allRows, completeInventoryRun, loadInventory,
 import { reconcileWarehouseInbound } from '../lib/inbound-store';
 import type { InboundQuery, InboundRecord } from '../lib/inbound';
 import { inventoryWorkbook } from '../lib/excel';
+import { addQuantity, compareQuantity } from '../lib/decimal';
 mkdirSync('.sites-runtime/tests',{recursive:true});
 process.env.INVENTORY_DB_PATH=resolve(`.sites-runtime/tests/store-${Date.now()}.sqlite`);
 
@@ -164,4 +165,44 @@ test('6000货品仅查一个仓库区间，整页查询失败不补零，旧核�
   const success=await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},collector,'batch-after');assert.deepEqual(success,{checked:6000,windows:1,verified:6000,unresolved:0,failed:0});assert.equal(calls,2);
   view=await loadInventory(owner,{warehouseCode:code});assert.equal(view.rows.find(r=>r.goodsNo==='M00000')!.sales!['2026-10-01'],'7');assert.equal(view.rows.find(r=>r.goodsNo==='M00001')!.sales!['2026-10-01'],'2');
   assert.deepEqual(await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},collector,'batch-after'),{checked:0,windows:0,verified:0,unresolved:0,failed:0});assert.equal(calls,2);
+});
+
+
+test('逐日期销量全仓精确排序后分页，入库修正/并列/未核验/筛选/不同日期互不混淆',async()=>{
+  const db=sqlite(),owner='sales-sort-owner',code='SORT01';await addWarehouse(owner,code,'排序测试仓');
+  const snapshots=['sort-day-1','sort-day-2','sort-day-3'];
+  for(let d=0;d<3;d++) {
+    const date='2026-10-0'+(d+1);
+    db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,205,205,'{}',0,0,?,'auto:v1')").run(snapshots[d],owner,date,date+'T00:00:00Z',code);
+    db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,snapshots[d]);
+  }
+  const expected:Record<string,string|null>={};
+  for(let i=0;i<205;i++) {
+    const goods='G'+String(i).padStart(3,'0');
+    const first=i===1?'9007199254740990.1':i===2?'9007199254740990.2':i===3?'10.02':i===4?'10.1':i>=203?'5':String(i%30);
+    const second=String(205-i);
+    expected[goods]=i>=203?null:i===0?'1000':first;
+    const quantities=[addQuantity(addQuantity('100',second),first),addQuantity('100',second),'100'];
+    for(let d=0;d<3;d++)db.prepare('INSERT INTO stock_entries VALUES(?,?,?,?,?,1,1)').run(snapshots[d],goods,goods,'Pcs',quantities[d]);
+  }
+  await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async(_k,_s,q)=>({quantity:'1000',records:q.start.startsWith('2026-10-01')?[{recId:'sort-receipt',docId:'sort-doc',documentNo:'SORT-INBOUND',goodsNo:'G000',warehouseCode:code,skuBarcode:'G000',quantity:'1000',unitName:'Pcs',inOutDate:'2026-10-01T12:00:00Z',createdAt:null,typeName:'入库'}]:[]}));
+  db.prepare("UPDATE inbound_reconciliations SET status='failed',inbound_quantity=NULL,corrected_quantity=NULL WHERE owner=? AND goods_no='G203' AND date='2026-10-01'").run(owner);
+  db.prepare("DELETE FROM inbound_reconciliations WHERE owner=? AND goods_no='G204' AND date='2026-10-01'").run(owner);
+  for(const ascending of [true,false]) {
+    const expectedOrder=Object.keys(expected).sort((a,b)=>expected[a]==null?(expected[b]==null?a.localeCompare(b):1):expected[b]==null?-1:compareQuantity(expected[a]!,expected[b]!)*(ascending?1:-1)||a.localeCompare(b));
+    const actual:string[]=[];
+    for(let page=1;page<=3;page++) {
+      const view=await loadInventory(owner,{warehouseCode:code,sort:ascending?'sales_asc':'sales_desc',sortDate:'2026-10-01',page,pageSize:100});
+      assert.equal(view.totalRows,205);actual.push(...view.rows.map(r=>r.goodsNo));
+      for(const row of view.rows)assert.equal(row.sales!['2026-10-01'],expected[row.goodsNo]);
+    }
+    assert.deepEqual(actual,expectedOrder,'整仓排序先于分页，空值末尾且并列编码稳定');
+  }
+  const other=await loadInventory(owner,{warehouseCode:code,sort:'sales_desc',sortDate:'2026-10-02'});
+  assert.equal(other.rows[0].goodsNo,'G000');assert.equal(other.rows[0].sales!['2026-10-02'],'205');
+  const filtered=await loadInventory(owner,{warehouseCode:code,q:'G00',sort:'sales_desc',sortDate:'2026-10-01'});
+  assert.deepEqual(filtered.rows.slice(0,3).map(r=>r.goodsNo),['G002','G001','G000']);
+  const invalid=await loadInventory(owner,{warehouseCode:code,sort:'sales_desc',sortDate:"2026-10-01' OR 1=1--"});
+  assert.equal(invalid.rows[0].goodsNo,'G000','无效日期回退编码排序');
+  assert.equal((await loadInventory('different-owner',{warehouseCode:'CK031',sort:'sales_desc',sortDate:'2026-10-01'})).rows.length,0);
 });
