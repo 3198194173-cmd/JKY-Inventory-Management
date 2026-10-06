@@ -8,4 +8,5 @@ await build({entryPoints:["tests/daily-inventory.test.ts"],outfile:".sites-runti
 const daily=spawnSync(process.execPath,["--test",".sites-runtime/tests/daily-inventory.test.mjs"],{stdio:"inherit"});
 await build({entryPoints:["tests/inbound.test.ts"],outfile:".sites-runtime/tests/inbound.test.mjs",bundle:true,platform:"node",format:"esm",target:"node22"});
 const inbound=spawnSync(process.execPath,["--test",".sites-runtime/tests/inbound.test.mjs"],{stdio:"inherit"});
-process.exitCode=result.status || daily.status || inbound.status || 0;
+const stream=spawnSync(process.execPath,["--test","tests/dingtalk-stream.test.mjs"],{stdio:"inherit"});
+process.exitCode=result.status || daily.status || inbound.status || stream.status || 0;
