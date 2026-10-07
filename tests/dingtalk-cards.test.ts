@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { mkdir, writeFile } from "node:fs/promises";
 import { turnoverCards, cardTemplateId } from "../lib/dingtalk-card-data";
 import { turnoverCardSvg, renderTurnoverCard } from "../lib/dingtalk-card-image";
-import { sendRobotCard, sendInventoryReport } from "../lib/dingtalk-cards";
+import { DingTalkCardError, sendRobotCard, sendInventoryReport } from "../lib/dingtalk-cards";
 import type { InventoryView } from "../lib/inventory-types";
 
 const rows = (count: number): InventoryView["rows"] => Array.from({length:count},(_,i)=>({goodsNo:`C.Q.CB.AP.00.${String(i+1).padStart(4,'0')}`,goodsName:'卡片预览示例',unitName:'Pcs',skuCount:1,quantity:String(40+i),history:{},sales:Object.fromEntries([3,6,11,-2,15,36,1].map((q,j)=>[`2026-10-0${j+1}`,String(q)])),metrics:{total7:'70',average7:'10',turnoverDays:'4',validDays:7,basis:'inbound_adjusted_difference',reason:null}}));
@@ -58,4 +58,30 @@ test('配置模板后走卡片传输并记录受理张数；未配置继续文�
     let texts=0;await sendInventoryReport(credentials,{messages:['完整文字'],cards:[card]},async(_c,m)=>{assert.equal(m,'完整文字');texts++;return 'mock';});assert.equal(texts,1);
     process.env.DINGTALK_CARD_TEMPLATE_ID='invalid';assert.throws(cardTemplateId,/格式无效/);
   } finally {globalThis.fetch=fetcher;if(previous===undefined)delete process.env.DINGTALK_CARD_TEMPLATE_ID;else process.env.DINGTALK_CARD_TEMPLATE_ID=previous;}
+});
+
+test('卡片400显示具体错误码、模板提示和请求编号；403与超时分类且不泄露响应凭证',async()=>{
+  const png=new Uint8Array([1,2,3]);
+  const reject=async(status:number,body:unknown)=>{
+    let calls=0;
+    const fetcher=(async(url:unknown)=>{
+      calls++;
+      if(String(url).includes('/media/upload'))return Response.json({errcode:0,media_id:'private-image'});
+      return typeof body==='string' ? new Response(body,{status}) : Response.json(body,{status});
+    }) as typeof fetch;
+    let captured:unknown;
+    try {await sendRobotCard(credentials,card,png,templateId,fetcher);}catch(error){captured=error;}
+    assert.equal(calls,2,'失败不自动重试');assert.ok(captured instanceof DingTalkCardError);
+    return captured;
+  };
+  const invalid=await reject(400,{code:'param.cardTemplateIdInvalid',message:'private-image isolated-card-secret mock-card-token',requestid:'trace-400'});
+  assert.equal(invalid.rejected,true);assert.match(invalid.message,/param.cardTemplateIdInvalid/);assert.match(invalid.message,/\.schema/);assert.match(invalid.message,/trace-400/);
+  assert.doesNotMatch(invalid.message,/private-image|isolated-card-secret|mock-card-token/);
+  const denied=await reject(403,{code:'Forbidden.AccessDenied',message:'permission denied'});
+  assert.equal(denied.rejected,true);assert.match(denied.message,/互动卡片实例写权限/);
+  const secret=await reject(400,{code:'isolated-card-secret',requestId:'mock-card-token',message:'https://example.com/?access_token=mock-card-token'});
+  assert.doesNotMatch(secret.message,/isolated-card-secret|mock-card-token|https:/);
+  const html=await reject(400,'<html>private-image</html>');assert.match(html.message,/请求参数/);assert.doesNotMatch(html.message,/html|private-image/);
+  assert.equal((await reject(408,{code:'RequestTimeout'})).rejected,false,'服务端超时仍按未确认处理');
+  assert.equal((await reject(500,{code:'InternalError'})).rejected,false,'服务端异常不误报确定失败');
 });

@@ -4,7 +4,7 @@ import { sqlite } from "./sqlite.mjs";
 import { previewTurnoverAlert, settings } from "./alerts-store";
 import { robotScope } from "./dingtalk-groups-store";
 import { sendRobotMessage } from "./dingtalk";
-import { sendInventoryReport } from "./dingtalk-cards";
+import { DingTalkCardError, sendInventoryReport } from "./dingtalk-cards";
 import { normalizeTurnoverThreshold } from "./turnover-alert";
 
 export type ManualAlertRequest = {
@@ -13,7 +13,7 @@ export type ManualAlertRequest = {
 };
 export type ManualAlertResult = {
   state: "sending" | "complete"; count: number;
-  groups: { id: string; name: string; acceptedParts: number; totalParts: number; state: "pending" | "accepted" | "unconfirmed" | "skipped"; error?: string }[];
+  groups: { id: string; name: string; acceptedParts: number; totalParts: number; state: "pending" | "accepted" | "unconfirmed" | "failed" | "skipped"; error?: string }[];
   message: string;
 };
 export class ManualAlertError extends Error {
@@ -70,7 +70,7 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
     const maxRunTime = recent ? 60_000 + (JSON.parse(recent.result) as ManualAlertResult).groups.reduce((total,g)=>total+g.totalParts*31_000,0) : 0;
     if (recent && (now - recent.attempted_at < COOLDOWN_MS || (recent.state === "sending" && now - recent.attempted_at < maxRunTime))) {
       // An unfinished run requires checking its result instead of starting another send.
-      throw new ManualAlertError(recent.state === "sending" ? "已有通知正在发送，请等待结果" : "刚刚已发送，请至少间隔30秒再发送", 429);
+      throw new ManualAlertError(recent.state === "sending" ? "已有通知正在发送，请等待结果" : "距离上次发送尝试不足30秒，请稍后再试", 429);
     }
     db.prepare("INSERT INTO manual_alert_deliveries VALUES(?,?,?,?,?,?,'sending',?,?)").run(...scope, request.requestId, hash, request.warehouseCode, JSON.stringify(result), now);
     db.exec("COMMIT");
@@ -87,6 +87,7 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
       group.state = "accepted";
       db.prepare("UPDATE alert_settings SET last_sent_at=? WHERE owner=?").run(new Date().toISOString(), owner);
     } catch (error) {
+      if (error instanceof DingTalkCardError && error.rejected) group.state = "failed";
       // Only expose our sanitized errors, never upstream bodies or credentials.
       if (error instanceof Error && error.message.startsWith("钉钉")) group.error = error.message;
     }
@@ -95,8 +96,9 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   result.state = "complete";
   const accepted = result.groups.filter(g => g.state === "accepted").length;
   const uncertain = result.groups.filter(g => g.state === "unconfirmed").length;
+  const failed = result.groups.filter(g => g.state === "failed").length;
   const skipped = result.groups.filter(g => g.state === "skipped").length;
-  result.message = `${request.warehouseCode}：${preview.count} 款预警，钉钉已受理 ${accepted} 个群${uncertain ? `，${uncertain} 个群未确认，请先核对群消息` : "，请到群内查看"}${skipped ? `；${skipped} 个群因勾选或成员关系变化已跳过` : ""}。`;
+  result.message = `${request.warehouseCode}：${preview.count} 款预警，钉钉已受理 ${accepted} 个群${failed ? `，${failed} 个群发送失败，请查看下方错误` : ""}${uncertain ? `，${uncertain} 个群未确认，请先核对群消息` : accepted ? "，请到群内查看" : ""}${skipped ? `；${skipped} 个群因勾选或成员关系变化已跳过` : ""}。`;
   persist();
   db.prepare("UPDATE alert_settings SET last_result=? WHERE owner=?").run("手动发送 · " + result.message, owner);
   return result;
