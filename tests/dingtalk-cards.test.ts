@@ -108,7 +108,7 @@ test('原生卡片保持精确数值、负销量和零销量；缺日不补零�
   assert.deepEqual(data[0].chart.data.map((p:{y:number})=>p.y),[0,-2,1.125,4,6]);
   assert.notEqual(data[0].chart.data[1].type,data[0].chart.data[2].type);
   assert.notEqual(data[0].chart.data[2].type,data[0].chart.data[3].type);
-  assert.deepEqual(data[0].chart.config,{xAxisConfig:{ticks:[]},yAxisConfig:{ticks:[]},padding:[4,4,4,4]});
+  assert.deepEqual(data[0].chart.config,{legend:false,lineShape:'smooth',color:'#5278D8',xAxisOptions:{label:false},yAxisOptions:{label:true}});
   assert.ok(JSON.parse(nativeCardParams(card).rows)[0].chart.data.every((p:Record<string,unknown>)=>p.type===undefined),'完整单条曲线不附带重复图例');
   assert.ok(Object.values(params).every(p=>typeof p==='string'));assert.equal(params.reportImage,undefined);
 });
@@ -121,7 +121,7 @@ test('原生卡片每款一行、统一表头，小曲线开启原生详情，�
   assert.ok(!nodes.some(n=>n.componentName==='Image'||n.componentName==='CollapsePanel'));
   const loop=nodes.find(n=>n.componentName==='Loop')!,chart=nodes.find(n=>n.componentName==='Chart')!;
   assert.equal(loop.props.listData?.variable,'rows');assert.equal(chart.props.data?.variable,'rows[0].chart');assert.equal(chart.props.enableDetail,true);
-  assert.equal(chart.props.height,42);assert.equal(loop.children!.length,1);assert.equal(loop.children![0].props.direction,'horizontal');assert.equal(loop.children![0].children!.length,5);
+  assert.equal(chart.props.height,64);assert.equal(loop.children!.length,1);assert.equal(loop.children![0].props.direction,'horizontal');assert.equal(loop.children![0].children!.length,5);
   assert.equal(new Set(nodes.map(n=>n.id)).size,nodes.length);
   const variables=editor.variableList.find((v:{name:string})=>v.name==='rows');assert.equal(variables.type,'loopArray');assert.equal(variables.schema.find((v:{name:string})=>v.name==='chart').type,'chart');
   assert.match(exported.widgetInfo,/<DDChartView/);assert.match(exported.widgetInfo,/dataPath/);assert.doesNotMatch(exported.widgetInfo,/<ImageView/);

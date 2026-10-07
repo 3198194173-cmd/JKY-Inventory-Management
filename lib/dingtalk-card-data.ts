@@ -8,9 +8,13 @@ export type TurnoverCard = {
   rows: { goodsNo: string; goodsName: string; unitName: string; quantity: string; average: string; turnover: string; sales: (string | null)[] }[];
 };
 export const CARD_ROWS_PER_PAGE = 12;
-// The native chart protocol supports explicit ticks and padding. Keep the row
-// compact; the native detail action exposes the same real points at full size.
-export const NATIVE_TREND_CONFIG = { xAxisConfig: { ticks: [] }, yAxisConfig: { ticks: [] }, padding: [4, 4, 4, 4] };
+// Current DingTalk clients use ECharts axis options, not the legacy F2 ticks.
+// Keep the real data unchanged; reserve the row for the curve and its detail action.
+export const NATIVE_TREND_CONFIG = {
+  legend: false, lineShape: "smooth", color: "#5278D8",
+  // Hiding both axes disables the native detail tooltip; retain the value axis.
+  xAxisOptions: { label: false }, yAxisOptions: { label: true },
+};
 export function turnoverCards(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string): TurnoverCard[] {
   const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(capturedAt));
   const dates = recentSalesDates(date).reverse();
