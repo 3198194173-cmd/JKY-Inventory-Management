@@ -25,8 +25,13 @@ export function turnoverCards(rows: InventoryView["rows"], threshold: string, wa
   }));
 }
 
-export function cardTemplateId(): string {
-  const value = (process.env.DINGTALK_CARD_TEMPLATE_ID || "").trim();
+export function normalizeCardTemplateId(input: string): string {
+  const value = input.trim();
   if (value && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.schema)?$/i.test(value)) throw new Error("钉钉卡片模板 ID 格式无效");
-  return value;
+  // The builder may display a UUID; the advanced-card API uses its schema ID.
+  return value ? `${value.replace(/\.schema$/i, "")}.schema` : "";
+}
+
+export function cardTemplateId(): string {
+  return normalizeCardTemplateId(process.env.DINGTALK_CARD_TEMPLATE_ID || "");
 }
