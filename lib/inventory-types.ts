@@ -60,6 +60,7 @@ export type RunInfo = {
 
 export type SalesCalendarDay = {
   date: string;
+  provisional?: boolean;
   sales: string | null;
   openingQuantity: string | null;
   closingQuantity: string | null;

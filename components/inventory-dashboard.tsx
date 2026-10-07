@@ -14,6 +14,7 @@ import type { AlertSettings } from "@/lib/alerts-store";
 import type { InventoryMetrics } from "@/lib/inventory-metrics";
 import { compareQuantity } from "@/lib/decimal";
 import { SalesCalendar } from "@/components/sales-calendar";
+import { SalesTrend } from "@/components/sales-trend";
 import { reconciliationDiagnostic } from "@/lib/reconciliation-diagnostics";
 import { turnoverAlert, TURNOVER_ALERT_DAYS } from "@/lib/turnover-alert";
 
@@ -49,23 +50,9 @@ async function apiJson<T>(response: Response): Promise<T> {
   if (!response.ok) throw new Error(data.error || "请求失败，请重试");
   return data as T;
 }
-function Sparkline({ dates, values }: { dates: string[]; values: Record<string, string | null> }) {
-  const points = [...dates].reverse().map(date => ({ date, n: values[date] == null ? null : Number(values[date]) }));
-  const present = points.flatMap(p => p.n !== null && Number.isFinite(p.n) ? [p.n] : []);
-  if (!present.length) return <span className="compact-muted">—</span>;
-  const low = Math.min(...present), range = Math.max(...present) - low || 1;
-  const xy = (n: number, i: number) => [5 + i / Math.max(1,points.length - 1) * 124, 29 - (n - low) / range * 24];
-  let path = "", previous = "";
-  points.forEach(({ date, n }, i) => {
-    if (n === null || !Number.isFinite(n)) { previous = ""; return; }
-    const contiguous = previous && new Date(date + "T00:00:00Z").getTime() - new Date(previous + "T00:00:00Z").getTime() === 86_400_000;
-    const [x,y] = xy(n, i); path += `${contiguous ? "L" : "M"}${x},${y} `; previous = date;
-  });
-  return <svg width="134" height="34" viewBox="0 0 134 34" role="img" aria-label={`${present.length} 天销售库存差额趋势`}><path d="M5 30H129" stroke="#e5eaf3" strokeDasharray="3 3"/><path d={path} fill="none" stroke="#4371eb" strokeWidth="1.7"/>{points.map((p,i) => p.n === null || !Number.isFinite(p.n) ? null : <circle key={p.date} cx={xy(p.n,i)[0]} cy={xy(p.n,i)[1]} r={present.length === 1 ? 3 : 1.7} fill="#4371eb"/>)}</svg>;
-}
 const ROW_HEIGHT = 57, OVERSCAN = 8;
 const InventoryDataRow = memo(function InventoryDataRow({row,index,dates,threshold,onSelect}:{row:InventoryView["rows"][number];index:number;dates:string[];threshold:string;onSelect:(row:InventoryView["rows"][number])=>void}) {
-  return <TableRow aria-rowindex={index+2} onClick={() => onSelect(row)} className="compact-data-row"><TableCell className="compact-index">{index+1}</TableCell><TableCell className="compact-goods"><button type="button" onClick={e => { e.stopPropagation(); onSelect(row); }} title={row.goodsName}><strong>{row.goodsNo}</strong><span>{row.goodsName}</span></button></TableCell><TableCell className="compact-current"><strong>{quantity(row.quantity)}</strong></TableCell><TableCell className="compact-metric"><MetricValue metrics={row.metrics} field="average7"/></TableCell><TableCell className="compact-trend"><Sparkline dates={dates} values={row.sales || {}}/></TableCell>{dates.map(date => <TableCell key={date} className={`compact-date ${hasInbound(row,date) ? "compact-inbound-day" : ""}`}><SalesValue row={row} date={date}/></TableCell>)}<TableCell className="compact-turnover"><MetricValue metrics={row.metrics} field="turnoverDays" warningTitle={turnoverAlert(row.metrics,row.quantity,threshold) ? `周转预警：销量均值 > ${threshold} 且库存周转 < ${TURNOVER_ALERT_DAYS}天；按未舍入值判断` : undefined}/></TableCell></TableRow>;
+  return <TableRow aria-rowindex={index+2} onClick={() => onSelect(row)} className="compact-data-row"><TableCell className="compact-index">{index+1}</TableCell><TableCell className="compact-goods"><button type="button" onClick={e => { e.stopPropagation(); onSelect(row); }} title={row.goodsName}><strong>{row.goodsNo}</strong><span>{row.goodsName}</span></button></TableCell><TableCell className="compact-current" title="上次采集的可订购量（orderAbleQuantity）；再次采集才更新"><strong>{quantity(row.quantity)}</strong></TableCell><TableCell className="compact-metric"><MetricValue metrics={row.metrics} field="average7"/></TableCell><TableCell className="compact-trend"><SalesTrend compact samples={dates.map(date=>({date,value:row.sales?.[date] ?? null}))}/></TableCell>{dates.map(date => <TableCell key={date} className={`compact-date ${hasInbound(row,date) ? "compact-inbound-day" : ""}`}><SalesValue row={row} date={date}/></TableCell>)}<TableCell className="compact-turnover"><MetricValue metrics={row.metrics} field="turnoverDays" warningTitle={turnoverAlert(row.metrics,row.quantity,threshold) ? `周转预警：销量均值 > ${threshold} 且库存周转 < ${TURNOVER_ALERT_DAYS}天；按未舍入值判断` : undefined}/></TableCell></TableRow>;
 });
 const InventoryRows = memo(function InventoryRows({view,dates,threshold,onSelect,scrollRef}:{view:InventoryView;dates:string[];threshold:string;onSelect:(row:InventoryView["rows"][number])=>void;scrollRef:RefObject<HTMLDivElement|null>}) {
   const [viewport,setViewport]=useState({top:0,height:600});
@@ -218,6 +205,6 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     <Dialog open={unavailableOpen} onOpenChange={setUnavailableOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 未取得库存的 SKU</DialogTitle><DialogDescription>已尝试条码或货品编码查询。以下记录不填零；含缺失规格的货品不展示部分合计、不参与销售差额。Excel 的采集说明也保留此清单。</DialogDescription></DialogHeader><div className="compact-records"><Table><TableHeader><TableRow><TableHead>货品编码 / 名称</TableHead><TableHead>SKU / 条码</TableHead><TableHead>原因</TableHead></TableRow></TableHeader><TableBody>{view.unavailableSkus?.map(row => <TableRow key={row.skuId}><TableCell>{row.goodsNo}<br/>{row.goodsName}</TableCell><TableCell>{row.skuId}<br/>{row.skuBarcode || "无条码"}</TableCell><TableCell>{row.reason}</TableCell></TableRow>)}</TableBody></Table></div></DialogContent></Dialog>
     <Dialog open={recordsOpen} onOpenChange={setRecordsOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 采集记录</DialogTitle><DialogDescription>仅显示当前仓库最近 20 次采集。</DialogDescription></DialogHeader><div className="compact-records">{runs.length ? runs.map(run => <div key={run.id}><strong>{run.status === "complete" ? "已完成" : run.status === "failed" ? "失败" : run.status === "queued" ? "排队中" : "采集中"}</strong><span>{time(run.startedAt)}</span><p>{run.message || `${run.pageCount} 页 · ${run.recordCount.toLocaleString()} 条记录`}</p></div>) : <p>暂无采集记录</p>}</div></DialogContent></Dialog>
     <AlertSettingsDialog open={alertsOpen} onOpenChange={setAlertsOpen} initial={alerts} warehouseCode={code} warehouseName={active?.name || code} dailyTime={active?.dailyTime || view.dailyTime || "08:00"} scheduleActive={!!view.scheduleActive} onSaved={data=>{setAlerts(data); if(data.warehouseSchedule) { const schedule=data.warehouseSchedule; setWarehouses(previous=>previous.map(w=>w.code===schedule.code?{...w,dailyTime:schedule.dailyTime}:w)); setView(previous=>({...previous,dailyTime:schedule.dailyTime})); }}}/>
-    <Dialog open={!!selected} onOpenChange={v => { if(!v) setSelected(null); }}><DialogContent className="compact-dialog sales-calendar-dialog"><DialogHeader><DialogTitle>{selected?.goodsNo}</DialogTitle><DialogDescription>{selected?.goodsName}</DialogDescription></DialogHeader>{selected && <SalesCalendar key={`${code}:${selected.goodsNo}`} warehouseCode={code} goodsNo={selected.goodsNo} initialMonth={(dates[0] || view.snapshot?.date || new Date().toISOString().slice(0,10)).slice(0,7)}/>}</DialogContent></Dialog>
+    <Dialog open={!!selected} onOpenChange={v => { if(!v) setSelected(null); }}><DialogContent className="compact-dialog sales-calendar-dialog"><DialogHeader><DialogTitle>{selected?.goodsNo}</DialogTitle><DialogDescription>{selected?.goodsName}</DialogDescription></DialogHeader>{selected && <SalesCalendar key={`${code}:${selected.goodsNo}`} warehouseCode={code} goodsNo={selected.goodsNo} initialMonth={(view.snapshot?.date || dates[0] || new Date().toISOString().slice(0,10)).slice(0,7)}/>}</DialogContent></Dialog>
   </main>;
 }

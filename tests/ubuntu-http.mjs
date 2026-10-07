@@ -106,6 +106,9 @@ try {
   assert.equal(calendarDay.sales,'1');assert.equal(calendarDay.openingQuantity,'14.25');assert.equal(calendarDay.closingQuantity,'17.25');assert.equal(calendarDay.correction.inboundQuantity,'4');
   assert.equal(calendarDay.correction.records[0].documentNo,'TEST-INBOUND-4','日历按需加载真实单据详情');
   assert.ok(calendar.days.length>=28 && calendar.days.length<=31);
+  r=await fetch(url+'/api/sales-calendar?'+new URLSearchParams({warehouseCode:'TEST02',goodsNo:'TEST-GOODS',month:reconciled.snapshot.date.slice(0,7)}),{headers:{cookie}});
+  assert.equal(r.ok,true);const today=(await r.json()).days.find(d=>d.date===reconciled.snapshot.date);
+  assert.equal(today.provisional,true);assert.equal(today.sales,'0');assert.equal(today.windowEnd,reconciled.snapshot.capturedAt,'真实HTTP返回截至最新采集的临时销量');
   r=await fetch(url+'/api/sales-calendar?warehouseCode=TEST02&goodsNo=TEST-GOODS&month=2026-13',{headers:{cookie}});assert.equal(r.status,400);
   r=await fetch(url+'/api/sync?warehouseCode=TEST02',{headers:{cookie}});assert.match((await r.json()).runs[0].message,/仓库入库核验 2 个区间、2 个货品区间：已核算 2/);
   {

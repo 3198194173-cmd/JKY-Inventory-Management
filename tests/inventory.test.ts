@@ -9,6 +9,23 @@ import { sendRobotMessage,alertDigest,alertRows } from "../lib/dingtalk";
 import { sampleView } from "../lib/sample";
 import { inventoryWorkbook } from "../lib/excel";
 import { stockScope, barcodeBatches } from "../lib/stock-scope";
+import { salesTrend } from "../lib/sales-trend";
+
+test('趋势使用真实日期间隔及含零的数值刻度，缺日断线、负值在零线下、临时段用虚线',()=>{
+  const chart=salesTrend([{date:'2026-10-01',value:'3'},{date:'2026-10-02',value:'6'},{date:'2026-10-04',value:'-2'},{date:'2026-10-05',value:'0',provisional:true}],400,160)!;
+  assert.equal(chart.ticks.includes(0),true);assert.equal(chart.segments.length,2);
+  assert.equal(chart.points[0].x,chart.left);assert.equal(chart.points.at(-1)!.x,chart.right);
+  assert.ok(chart.points[2].y!>chart.zero);assert.ok(chart.points[1].y!<chart.points[0].y!);
+  assert.equal(chart.points[3].y,chart.zero);assert.equal(chart.segments[1].provisional,true);
+  assert.ok(Math.abs((chart.points[2].x-chart.points[1].x)/(chart.points[1].x-chart.points[0].x)-2)<1e-10);
+  const flat=salesTrend([{date:'2026-10-01',value:'5'},{date:'2026-10-02',value:'5'}],140,44,true)!;
+  assert.equal(flat.points[0].y,flat.points[1].y);assert.ok(flat.points[0].y!<flat.zero);
+  assert.equal(salesTrend([{date:'2026-10-01',value:null}],400,160),null);
+  const missing=salesTrend([{date:'2026-10-01',value:'1'},{date:'2026-10-02',value:null},{date:'2026-10-03',value:'2'}],400,160)!;
+  assert.equal(missing.segments.length,0);
+  const zero=salesTrend([{date:'2026-10-01',value:'0'}],140,44,true)!;
+  assert.ok(Number.isFinite(zero.zero));assert.equal(zero.points[0].y,zero.zero);
+});
 
 const row = (skuId="1",quantity:unknown="0.1") => ({goodsNo:"G001",goodsName:"货品",skuId,skuBarcode:skuId,warehouseId:"2391620541187785472",warehouseName:WAREHOUSE_NAME,unitName:"Pcs",orderAbleQuantity:quantity});
 test("固定向量：吉客云签名使用小写原文而不是编码后文本",()=>{

@@ -485,3 +485,70 @@ test('逐日期销量全仓精确排序后分页，入库修正/并列/未核验
   assert.equal(invalid.rows[0].goodsNo,'G000','无效日期回退编码排序');
   assert.equal((await loadInventory('different-owner',{warehouseCode:'CK031',sort:'sales_desc',sortDate:'2026-10-01'})).rows.length,0);
 });
+
+
+test('当天第二次采集显示临时销量，连续区间入库累加；次日自动基准定稿且均值只用完整日',async()=>{
+  const db=sqlite(),owner='provisional-owner',code='DAY01';await addWarehouse(owner,code,'当天销量测试');
+  const insert=db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,3,3,'{}',0,0,?,'auto:v1')");
+  const entry=db.prepare("INSERT INTO stock_entries VALUES(?,?,?,'Pcs',?,1,1)");
+  for(let day=1;day<=8;day++) {
+    const date='2026-10-0'+day,id='provisional-'+date;insert.run(id,owner,date,date+'T00:00:23.000Z',code);
+    db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,id);
+    entry.run(id,'DAY','测试',String(108-day));entry.run(id,'RETURN','退货','500');entry.run(id,'UNIT','单位','20');
+  }
+  const receipt=(id:string,qty:string,date:string):InboundRecord=>({recId:id,docId:id,documentNo:id,goodsNo:'DAY',warehouseCode:code,skuBarcode:'DAY',quantity:qty,unitName:'Pcs',inOutDate:date,createdAt:null,typeName:'调拨入库'});
+  const receipts=[receipt('r10','10','2026-10-08T00:30:00.000Z'),receipt('r5','5','2026-10-08T23:00:00.000Z')];
+  let queries=0;
+  const collector=async(_k:string,_s:string,q:InboundQuery)=>{queries++;return {quantity:'0',records:receipts.filter(r=>r.inOutDate>q.start && r.inOutDate<=q.end)};};
+  await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},collector);
+  assert.equal((await loadSalesCalendar(owner,code,'DAY','2026-10')).days[7].sales,null,'单次采集无当天销量');
+  const capture=async(id:string,date:string,time:string,dayStock:string,returnStock:string)=>{
+    insert.run(id,owner,date,time,code);entry.run(id,'DAY','测试',dayStock);entry.run(id,'RETURN','退货',returnStock);
+    await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},collector,id);
+  };
+  await capture('provisional-manual-1','2026-10-08','2026-10-08T01:00:23.000Z','108','502');
+  let calendar=await loadSalesCalendar(owner,code,'DAY','2026-10'),day=calendar.days[7];
+  assert.equal(day.provisional,true);assert.equal(day.sales,'2');assert.equal(day.correction!.inboundQuantity,'10');assert.equal(day.correction!.records.length,1);
+  assert.equal((await loadSalesCalendar(owner,code,'RETURN','2026-10')).days[7].sales,'-2');
+  await capture('provisional-manual-2','2026-10-08','2026-10-08T02:00:23.000Z','104','501');
+  day=(await loadSalesCalendar(owner,code,'DAY','2026-10')).days[7];assert.equal(day.sales,'6');assert.equal(day.closingQuantity,'104');assert.equal(day.correction!.records.length,1,'入库不重复累加');
+  const count=queries;await loadSalesCalendar(owner,code,'RETURN','2026-10');assert.equal(queries,count,'打开日历不触发ERP请求');
+  db.prepare("UPDATE stock_entries SET unit_name='箱' WHERE snapshot_id='provisional-manual-1' AND goods_no='DAY'").run();
+  assert.equal((await loadSalesCalendar(owner,code,'DAY','2026-10')).days[7].sales,null,'中途单位改变不跨过异常区间');
+  db.prepare("UPDATE stock_entries SET unit_name='Pcs' WHERE snapshot_id='provisional-manual-1' AND goods_no='DAY'").run();
+  const main=await loadInventory(owner,{warehouseCode:code});assert.equal(main.salesDates!.includes('2026-10-08'),false);assert.equal(main.rows.find(r=>r.goodsNo==='DAY')!.metrics!.average7,'1');
+  db.prepare("UPDATE inbound_reconciliations SET status='failed',error='模拟入库查询失败' WHERE owner=? AND after_snapshot_id='provisional-manual-1'").run(owner);
+  assert.equal((await loadSalesCalendar(owner,code,'DAY','2026-10')).days[7].sales,null,'中途区间失败不补零');
+  db.prepare("UPDATE inbound_reconciliations SET status='verified',error=NULL WHERE owner=? AND after_snapshot_id='provisional-manual-1'").run(owner);
+  assert.equal((await loadSalesCalendar(owner,code,'UNIT','2026-10')).days[7].sales,null,'中途缺少货品不跨过缺口');
+  await capture('provisional-next-morning','2026-10-09','2026-10-08T22:00:23.000Z','103','501');
+  day=(await loadSalesCalendar(owner,code,'DAY','2026-10')).days[7];assert.equal(day.provisional,true);assert.equal(day.sales,'7','次日自动采集前仍是昨日临时区间');
+  const finalId='provisional-final';insert.run(finalId,owner,'2026-10-09','2026-10-09T00:00:23.000Z',code);entry.run(finalId,'DAY','测试','101');entry.run(finalId,'RETURN','退货','501');
+  db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,'2026-10-09',finalId);
+  await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},collector,finalId);
+  calendar=await loadSalesCalendar(owner,code,'DAY','2026-10');day=calendar.days[7];
+  assert.equal(day.provisional,undefined);assert.equal(day.sales,'14');assert.equal(day.correction!.inboundQuantity,'15');assert.equal(day.correction!.records.length,2);
+  assert.equal(calendar.days[8].sales,null,'新一天仅一次采集');
+  assert.equal((await loadInventory(owner,{warehouseCode:code})).rows.find(r=>r.goodsNo==='DAY')!.metrics!.average7,'2.86');
+  assert.equal((await loadSalesCalendar('another-owner','CK031','DAY','2026-10')).days.every(d=>!d.provisional),true);
+});
+
+test('启用云端定时时手动快照不抢占自动每日基准，本地关闭定时仍可手动建基准',async()=>{
+  const db=sqlite(),owner='baseline-mode-owner',code='MODE01';await addWarehouse(owner,code,'自动基准');
+  db.prepare("UPDATE warehouses SET daily_time='00:00' WHERE owner=? AND code=?").run(owner,code);
+  const old=process.env.INVENTORY_SCHEDULE_ENABLED;process.env.INVENTORY_SCHEDULE_ENABLED='true';
+  const rows=[{goodsNo:'A',goodsName:'测试',quantity:'100',unitName:'Pcs',skuCount:1}],scope={key:'auto:v1',label:'自动基准',count:1},warehouse={code,name:'自动基准',id:'1',hash:'test'};
+  try {
+    const manual=await acquireRun(owner,code,'manual');await publishSnapshot(owner,manual,rows,1,1,0,scope,warehouse);
+    const date=String(db.prepare('SELECT date FROM stock_snapshots WHERE id=?').get(manual)!.date);
+    assert.equal(db.prepare('SELECT snapshot_id FROM daily_slots WHERE owner=?').get(owner),undefined);
+    const automatic=await acquireRun(owner,code,'daily:'+date);await publishSnapshot(owner,automatic,rows,1,1,0,scope,warehouse);
+    assert.equal(db.prepare('SELECT snapshot_id FROM daily_slots WHERE owner=?').get(owner)!.snapshot_id,automatic);
+    const later=await acquireRun(owner,code,'manual');await publishSnapshot(owner,later,rows,1,1,0,scope,warehouse);
+    assert.equal(db.prepare('SELECT snapshot_id FROM daily_slots WHERE owner=?').get(owner)!.snapshot_id,automatic,'已定稿基准不改写');
+    process.env.INVENTORY_SCHEDULE_ENABLED='false';await addWarehouse(owner,'LOCAL01','本地基准');
+    db.prepare("UPDATE warehouses SET daily_time='00:00' WHERE owner=? AND code='LOCAL01'").run(owner);
+    const local=await acquireRun(owner,'LOCAL01','manual');await publishSnapshot(owner,local,rows,1,1,0,scope,{...warehouse,code:'LOCAL01'});
+    assert.equal(db.prepare("SELECT snapshot_id FROM daily_slots WHERE owner=? AND warehouse_code='LOCAL01'").get(owner)!.snapshot_id,local);
+  }finally{if(old===undefined)delete process.env.INVENTORY_SCHEDULE_ENABLED;else process.env.INVENTORY_SCHEDULE_ENABLED=old;}
+});

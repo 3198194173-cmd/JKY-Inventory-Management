@@ -1,4 +1,4 @@
-import { runtimeDatabase } from "./runtime";
+import { runtimeDatabase, env } from "./runtime";
 import { workerActive } from "./local-jobs";
 import { compareQuantity } from "./decimal";
 import { shanghaiTimestamp, WAREHOUSE_CODE, WAREHOUSE_NAME } from "./jackyun";
@@ -154,8 +154,10 @@ export async function publishSnapshot(owner: string, id: string, rows: StockRow[
     db.prepare("UPDATE sync_runs SET status = ?, completed_at = ?, last_progress_at = ?, page_count = ?, record_count = ?, goods_count = ?, message = ? WHERE id = ? AND owner = ? AND warehouse_code = ? AND status = 'running'").bind(deferCompletion ? 'running' : 'complete', deferCompletion ? null : captured, captured, pageCount, recordCount, rows.length, `已核验 ${recordCount} 个规格、${rows.length} 个货品；${unavailable.length ? `${unavailable.length} 个规格未取得库存，已列出；` : ""}${duplicateCount ? `去重 ${duplicateCount} 条；` : ""}目录游标读取完成`, id, owner, warehouse.code),
     db.prepare("UPDATE stock_snapshots SET status = 'complete' WHERE id = ? AND EXISTS (SELECT 1 FROM sync_runs WHERE id = ? AND status = ? AND last_progress_at = ?)").bind(id, id, deferCompletion ? 'running' : 'complete', captured),
     db.prepare("UPDATE warehouses SET name = ?, warehouse_id = ? WHERE owner = ? AND code = ? AND EXISTS (SELECT 1 FROM stock_snapshots WHERE id = ? AND status = 'complete')").bind(warehouse.name, warehouse.id, owner, warehouse.code, id),
-    // Keep the first daily baseline at/after the configured time immutable.
-    db.prepare("INSERT OR IGNORE INTO daily_slots (owner, warehouse_code, date, snapshot_id) SELECT ?, ?, ?, ? WHERE ? >= (SELECT daily_time || ':00' FROM warehouses WHERE owner=? AND code=?) AND EXISTS (SELECT 1 FROM stock_snapshots WHERE id = ? AND status = 'complete')").bind(owner, warehouse.code, date, id, localTime.slice(11), owner, warehouse.code, id),
+    // In cloud scheduling mode, only the scheduled collection can finalize a
+    // daily baseline. A manual collection must not preempt tomorrow's endpoint.
+    // Local development without scheduling retains its manual daily baseline.
+    db.prepare("INSERT OR IGNORE INTO daily_slots (owner, warehouse_code, date, snapshot_id) SELECT ?, ?, ?, ? WHERE ? >= (SELECT daily_time || ':00' FROM warehouses WHERE owner=? AND code=?) AND EXISTS (SELECT 1 FROM stock_snapshots WHERE id = ? AND status = 'complete') AND (?=1 OR EXISTS (SELECT 1 FROM sync_runs WHERE id=? AND trigger=?))").bind(owner, warehouse.code, date, id, localTime.slice(11), owner, warehouse.code, id, env.INVENTORY_SCHEDULE_ENABLED==='true'?0:1, id, `daily:${date}`),
   ]);
   if (!result[0].meta.changes) throw new Error("采集已失效，未发布本次数据");
   return captured;

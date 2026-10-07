@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       // Registered owners/warehouses are server-side data; callers cannot choose another user's identity.
       const done = await database().prepare("SELECT snapshot_id FROM daily_slots WHERE owner = ? AND warehouse_code = ? AND date = ?").bind(target.owner,target.code,date).first();
       if (done) { results.push({warehouseCode:target.code, status:"already_complete"}); continue; }
-      try { results.push({ ...enqueue(target.owner,target.code,"daily"), status:"queued" }); }
+      try { results.push({ ...enqueue(target.owner,target.code,`daily:${date}`), status:"queued" }); }
       catch(error) { results.push({warehouseCode:target.code,status:"failed",error:error instanceof Error ? error.message : "采集失败"}); }
     }
     return Response.json({date,results}, {headers:{"Cache-Control":"no-store"}});

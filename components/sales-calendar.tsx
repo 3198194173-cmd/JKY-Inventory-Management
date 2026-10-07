@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, LoaderCircle } from "lucide-react";
 import { compareQuantity } from "@/lib/decimal";
 import { reconciliationDiagnostic } from "@/lib/reconciliation-diagnostics";
 import type { SalesCalendarDay, SalesCalendarMonth } from "@/lib/inventory-types";
+import { SalesTrend } from "./sales-trend";
 
 const quantity = (value: string) => { const [a,b]=value.split("."); return a.replace(/\B(?=(\d{3})+(?!\d))/g,",")+(b ? "."+b : ""); };
 const time = (value: string) => new Date(value).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false});
@@ -18,7 +19,8 @@ function DayAnalysis({ day }: { day: SalesCalendarDay }) {
   const signedTerm=(value:string)=>compareQuantity(value,"0")<0 ? `(${quantity(value)})` : quantity(value);
   const hasQuantity=inbound != null && compareQuantity(inbound,"0")!==0;
   return <section className={`sales-analysis ${hasInbound(day) ? "sales-analysis-inbound" : ""}`} aria-label={`${day.date}销量分析`}>
-    <header><h3>{day.date} · 销量分析</h3><strong>{verified ? quantity(day.sales!) : day.openingQuantity == null || day.closingQuantity == null ? "暂无数据" : "待核验"}</strong></header>
+    <header><h3>{day.date} · {day.provisional ? "临时销量" : "销量分析"}</h3><strong>{verified ? quantity(day.sales!) : day.openingQuantity == null || day.closingQuantity == null ? "暂无数据" : "待核验"}</strong></header>
+    {day.provisional && <p className="sales-provisional-note">截至最新采集；次日每日基准采集后定稿。临时值不计入近7天均值。</p>}
     {day.openingQuantity != null && day.closingQuantity != null && <div className="sales-equation" aria-label="销量计算公式">
       <p className="sales-equation-labels">期初库存{hasQuantity ? " + 区间入库" : ""} − 期末库存 = {!verified && diagnostic ? "核算差额（销量待核对）" : "销售数"}</p>
       <p className="sales-equation-values"><span>{quantity(day.openingQuantity)}</span>{hasQuantity && <><b>+</b><span className="sales-equation-inbound">{signedTerm(inbound!)}</span></>}<b>−</b><span>{signedTerm(day.closingQuantity)}</span><b>=</b><strong className={!verified && diagnostic ? "sales-equation-unresolved" : undefined}>{verified ? quantity(day.sales!) : diagnostic ? quantity(diagnostic.difference) : "—"}</strong></p>
@@ -43,7 +45,7 @@ export function SalesCalendar({ warehouseCode, goodsNo, initialMonth }: { wareho
         try { result=JSON.parse(raw); } catch { throw new Error("暂时无法读取销量数据，请重试。"); }
         if (!response.ok) throw new Error(result.error || "销量数据读取失败");
         return result;
-      }).then(result=>{setData(result);setError("");})
+      }).then(result=>{if(!controller.signal.aborted){setData(result);setError("");}})
       .catch(e=>{if(e.name!=="AbortError")setError(e.message);})
       .finally(()=>{if(!controller.signal.aborted)setLoading(false);});
     return ()=>controller.abort();
@@ -68,10 +70,11 @@ export function SalesCalendar({ warehouseCode, goodsNo, initialMonth }: { wareho
     <div className="sales-calendar-grid" aria-label={`${month}每日销量`} aria-busy={loading}>
       {loading ? <p className="sales-calendar-state" role="status"><LoaderCircle size={18} className="animate-spin"/>正在读取本月销量…</p> : error ? <div className="sales-calendar-state" role="alert"><p>{error}</p><button type="button" onClick={()=>{setLoading(true);setRetry(n=>n+1);}}>重试</button></div> : current && <>
         {Array.from({length:offset},(_,i)=><span key={`blank-${i}`} aria-hidden="true"/>)}
-        {current.days.map(d=><button type="button" key={d.date} className={`sales-calendar-day ${hasInbound(d) ? "sales-calendar-inbound" : ""} ${d.sales == null ? "sales-calendar-missing" : ""}`} aria-label={`${d.date}，销量${d.sales == null ? "暂无有效数据" : d.sales}${hasInbound(d) ? "，有入库" : ""}`} aria-pressed={selected===d.date} onClick={()=>setSelected(selected===d.date ? null : d.date)}><span>{Number(d.date.slice(-2))}</span><strong>{d.sales == null ? "—" : quantity(d.sales)}</strong></button>)}
+        {current.days.map(d=><button type="button" key={d.date} className={`sales-calendar-day ${hasInbound(d) ? "sales-calendar-inbound" : ""} ${d.sales == null ? "sales-calendar-missing" : ""} ${d.provisional ? "sales-calendar-provisional" : ""}`} aria-label={`${d.date}，${d.provisional ? "临时" : ""}销量${d.sales == null ? "暂无有效数据" : d.sales}${hasInbound(d) ? "，有入库" : ""}`} aria-pressed={selected===d.date} onClick={()=>setSelected(selected===d.date ? null : d.date)}><span>{Number(d.date.slice(-2))}{d.provisional && <small>临时</small>}</span><strong>{d.sales == null ? "—" : quantity(d.sales)}</strong></button>)}
       </>}
     </div>
     <p className="sales-calendar-hint"><span className="compact-inbound-legend"/> 有入库　— 暂无有效数据　点击日期查看计算</p>
+    {current && <details className="sales-month-trend"><summary>本月销量趋势</summary><SalesTrend samples={current.days.map(d=>({date:d.date,value:d.sales,provisional:d.provisional}))}/><p>日期 → · 净销量 ↑　悬停数据点查看数值；虚线为空心点对应的临时销量。</p></details>}
     </div><div className="sales-calendar-analysis-pane">{day ? <DayAnalysis key={day.date} day={day}/> : <div className="sales-calendar-select-hint"><strong>选择一个日期</strong><p>查看当天的库存与入库核算</p></div>}</div></div>
     <p className="sales-calendar-caption">日期沿用主表的采集区间起始日，区间按仓库每日采集时间确定；净销量为库存消耗估算，包含负值退货/回补。</p>
   </div>;

@@ -37,6 +37,43 @@ export async function loadCurrentInboundReconciliations(owner: string, code: str
   return new Map(result.results.map(r => [r.goods_no,mapStored(r)]));
 }
 
+// Sum the already verified, consecutive capture intervals. No extra ERP query
+// per product/day, and no mixing a partial window with a full-day correction.
+export async function loadProvisionalInbound(owner: string, code: string, goodsNo: string,
+  before: {id:string;date:string;captured_at:string;quantity:string;unit_name:string},
+  after: {id:string;captured_at:string;quantity:string;unit_name:string}) {
+  const captures = await db.prepare(`SELECT s.id,s.captured_at,e.quantity,e.unit_name FROM stock_snapshots s
+    LEFT JOIN stock_entries e ON e.snapshot_id=s.id AND e.goods_no=?
+    WHERE s.owner=? AND s.warehouse_code=? AND s.status='complete' AND s.coverage='auto:v1'
+      AND s.captured_at>=? AND s.captured_at<=? ORDER BY s.captured_at,s.id LIMIT 1002`)
+    .bind(goodsNo,owner,code,before.captured_at,after.captured_at).all<{id:string;captured_at:string;quantity:string|null;unit_name:string|null}>();
+  const shots=captures.results, pairs=shots.slice(1).map((s,i)=>[shots[i].id,s.id]);
+  const stored = await db.prepare(`SELECT r.* FROM json_each(?) p CROSS JOIN inbound_reconciliations r
+    ON r.owner=? AND r.warehouse_code=? AND r.goods_no=?
+      AND r.before_snapshot_id=json_extract(p.value,'$[0]') AND r.after_snapshot_id=json_extract(p.value,'$[1]')`)
+    .bind(JSON.stringify(pairs),owner,code,goodsNo).all<Stored & {before_snapshot_id:string;after_snapshot_id:string;unit_name:string}>();
+  const corrections=new Map(stored.results.map(r=>[JSON.stringify([r.before_snapshot_id,r.after_snapshot_id]),r]));
+  let total='0', error:string|null=null, checkedAt='';
+  const records: InboundReconciliation['records']=[];
+  const ids=new Set<string>();
+  if(shots.length<2 || shots.length>1000 || shots[0]?.id!==before.id || shots.at(-1)?.id!==after.id) error='采集区间不完整，暂不能汇总当天销量';
+  for(let i=1;i<shots.length && !error;i++) {
+    const a=shots[i-1],b=shots[i],r=corrections.get(JSON.stringify([a.id,b.id]));
+    if(a.unit_name!==before.unit_name || b.unit_name!==before.unit_name || a.quantity==null || b.quantity==null || b.captured_at<=a.captured_at) {error='区间缺少库存、单位变化或采集时间无法区分，暂不能汇总';break;}
+    if(!r || r.query_scope!=='warehouse:v1' || r.status!=='verified' || r.inbound_quantity==null || r.unit_name!==before.unit_name
+      || r.opening_quantity!==a.quantity || r.closing_quantity!==b.quantity || r.raw_difference!==subtractQuantity(a.quantity,b.quantity)
+      || r.corrected_quantity!==addQuantity(r.raw_difference,r.inbound_quantity)) {error=r?.error || '部分采集区间入库尚未核验，等待采集核验完成';break;}
+    total=addQuantity(total,r.inbound_quantity);
+    const item=mapStored(r);
+    for(const record of item.records) {if(ids.has(record.recId)){error='入库明细跨区间重复，暂不能汇总';break;}ids.add(record.recId);records.push(record);}
+    if(r.checked_at>checkedAt) checkedAt=r.checked_at;
+  }
+  const raw=subtractQuantity(before.quantity,after.quantity);
+  return {date:before.date,rawDifference:raw,openingQuantity:before.quantity,closingQuantity:after.quantity,
+    inboundQuantity:error?null:total,correctedQuantity:error?null:addQuantity(raw,total),status:error?'failed':'verified',
+    windowStart:before.captured_at,windowEnd:after.captured_at,records,error,checkedAt} satisfies InboundReconciliation;
+}
+
 export async function reconcileWarehouseInbound(owner: string, code: string, appkey: string, secret: string,
   progress: (done: number, total: number, requests?: number) => Promise<void>,
   collector: (appkey: string, secret: string, query: InboundQuery, fetcher?: typeof fetch, onPage?: () => Promise<void>) => ReturnType<typeof collectInbound> = collectInbound, currentSnapshotId?: string) {
