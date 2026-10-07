@@ -160,7 +160,7 @@ export function AlertSettingsDialog({ open, onOpenChange, initial, warehouseCode
           <section className="alert-send-card" aria-labelledby="alert-send-heading">
             <div className="alert-section-heading"><h3 id="alert-send-heading"><Warehouse size={16}/>{warehouseName} <span>{warehouseCode}</span></h3><Button type="button" variant="ghost" size="sm" onClick={() => void previewOnly()} disabled={busy || previewing || !!pendingRequest}>{previewing ? <LoaderCircle size={14} className="animate-spin"/> : <Eye size={14}/>}预览通知</Button></div>
             <p>发送给：{selectedNames.length ? selectedNames.join("、") : "请先勾选接收群"}</p>
-            <p>原生消息卡片：商品编码、库存、均值、周转和近7天销量图表。可展开每日销量，每张12款，完整发送全部预警货品。</p>
+            <p>每款一行：商品编码、库存、均值、周转和近7天曲线。点击曲线查看详情，每张12款，完整发送全部预警货品。</p>
             {!saved.cardConfigured && <p className="alert-warning">报表卡片可预览；云端配置卡片模板后启用卡片发送，当前仍发送文字通知。</p>}
             {preview && <div className="alert-preview"><div><strong>{preview.count} 款符合预警</strong><span>采集于 {time(preview.capturedAt)}</span></div>{preview.incomplete && <p className="alert-warning">库存采集不完整，暂不能发送。</p>}
               {preview.cards.length ? <><InventoryAlertCardPreview key={cardPart} card={preview.cards[cardPart - 1]}/><div className="alert-card-preview-pages"><Button type="button" variant="outline" size="sm" disabled={cardPart<=1} onClick={()=>setCardPart(p=>p-1)}>上一张</Button><span>{cardPart} / {preview.cards.length} 张 · {preview.cardConfigured ? "原生卡片发送" : "文字发送"}</span><Button type="button" variant="outline" size="sm" disabled={cardPart>=preview.cards.length} onClick={()=>setCardPart(p=>p+1)}>下一张</Button></div></> : <p>{preview.message}</p>}

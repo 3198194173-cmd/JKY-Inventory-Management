@@ -36,7 +36,7 @@ test('投放原生数据卡片，不生成或上传图片；验证指定群真�
     if(String(url).includes('/oauth2/'))return Response.json({accessToken:'mock-card-token',expireIn:7200});
     assert.ok(String(url).includes('/createAndDeliver'));
     const body=JSON.parse(options.body as string);assert.equal(body.cardTemplateId,apiTemplateId);assert.equal(body.openSpaceId,'dtv1.card//IM_GROUP.card-group');assert.equal(body.imGroupOpenDeliverModel.robotCode,'card-robot');assert.equal(body.cardData.cardParamMap.reportImage,undefined);assert.equal(JSON.parse(body.cardData.cardParamMap.config).autoLayout,true);
-    const dataRows=JSON.parse(body.cardData.cardParamMap.rows);assert.equal(dataRows.length,5);assert.equal(dataRows[0].chart.type,'lineChart');assert.equal(dataRows[0].chart.data[3].y,-2);assert.match(dataRows[0].salesDetail,/2026-10-04：-2 Pcs/);
+    const dataRows=JSON.parse(body.cardData.cardParamMap.rows);assert.equal(dataRows.length,5);assert.equal(dataRows[0].chart.type,'lineChart');assert.equal(dataRows[0].chart.data[3].y,-2);assert.equal(dataRows[0].quantity,'40');assert.equal(dataRows[0].salesDetail,undefined);
     return Response.json({success:true,result:{outTrackId:body.outTrackId,deliverResults:[{success:true,spaceId:'card-group',spaceType:'IM_GROUP'}]}});
   }) as typeof fetch;
   assert.ok(await sendRobotCard(credentials,card,templateId,fetcher));assert.equal(calls.length,2);
@@ -104,25 +104,43 @@ test('卡片400显示具体错误码、模板提示和请求编号；403与超�
 test('原生卡片保持精确数值、负销量和零销量；缺日不补零且不跨缺日连接',()=>{
   const exact=structuredClone(card);exact.rows[0].quantity='9007199254740993.125';exact.rows[0].sales=['0','-2',null,'1.125','9007199254740993.125','4','6'];
   const params=nativeCardParams(exact),data=JSON.parse(params.rows);
-  assert.equal(data[0].quantity,'9007199254740993.125');assert.match(data[0].salesDetail,/9007199254740993.125 Pcs/);
-  assert.match(data[0].salesDetail,/2026-10-03：暂无数据/);
+  assert.equal(data[0].quantity,'9007199254740993.125');assert.equal(data[0].salesDetail,undefined);
   assert.deepEqual(data[0].chart.data.map((p:{y:number})=>p.y),[0,-2,1.125,4,6]);
   assert.notEqual(data[0].chart.data[1].type,data[0].chart.data[2].type);
   assert.notEqual(data[0].chart.data[2].type,data[0].chart.data[3].type);
+  assert.deepEqual(data[0].chart.config,{xAxisConfig:{ticks:[]},yAxisConfig:{ticks:[]},padding:[4,4,4,4]});
+  assert.ok(JSON.parse(nativeCardParams(card).rows)[0].chart.data.every((p:Record<string,unknown>)=>p.type===undefined),'完整单条曲线不附带重复图例');
   assert.ok(Object.values(params).every(p=>typeof p==='string'));assert.equal(params.reportImage,undefined);
 });
 
-test('可导入模板绑定原生商品列表与图表，启用详情及独立商品折叠，不含图片组件',()=>{
+test('原生卡片每款一行、统一表头，小曲线开启原生详情，不含图片或每日销量面板',()=>{
   const exported=JSON.parse(readFileSync('docs/dingtalk-inventory-card.json','utf8')),editor=JSON.parse(exported.editorData);
-  type TemplateNode={componentName:string;id:string;props:{listData?:{variable:string};data?:{variable:string};enableDetail?:boolean;id?:{content:string};contentVisible?:boolean};children?:TemplateNode[]};
+  type TemplateNode={componentName:string;id:string;props:{listData?:{variable:string};data?:{variable:string};enableDetail?:boolean;direction?:string;height?:number;text?:{content:string}};children?:TemplateNode[]};
   const nodes:TemplateNode[]=[];
   const walk=(n:TemplateNode)=>{nodes.push(n);for(const child of n.children||[])walk(child);};walk(editor.schema.componentsTree[0]);
-  assert.ok(!nodes.some(n=>n.componentName==='Image'));
-  const loop=nodes.find(n=>n.componentName==='Loop')!,chart=nodes.find(n=>n.componentName==='Chart')!,panel=nodes.find(n=>n.componentName==='CollapsePanel')!;
+  assert.ok(!nodes.some(n=>n.componentName==='Image'||n.componentName==='CollapsePanel'));
+  const loop=nodes.find(n=>n.componentName==='Loop')!,chart=nodes.find(n=>n.componentName==='Chart')!;
   assert.equal(loop.props.listData?.variable,'rows');assert.equal(chart.props.data?.variable,'rows[0].chart');assert.equal(chart.props.enableDetail,true);
-  assert.equal(panel.props.id?.content,'${rows[0].stateKey}');assert.equal(panel.props.contentVisible,false);
+  assert.equal(chart.props.height,42);assert.equal(loop.children!.length,1);assert.equal(loop.children![0].props.direction,'horizontal');assert.equal(loop.children![0].children!.length,5);
   assert.equal(new Set(nodes.map(n=>n.id)).size,nodes.length);
   const variables=editor.variableList.find((v:{name:string})=>v.name==='rows');assert.equal(variables.type,'loopArray');assert.equal(variables.schema.find((v:{name:string})=>v.name==='chart').type,'chart');
   assert.match(exported.widgetInfo,/<DDChartView/);assert.match(exported.widgetInfo,/dataPath/);assert.doesNotMatch(exported.widgetInfo,/<ImageView/);
   assert.ok(editor.mockData.cardData.rows.some((r:{chart:{data:{y:number}[]}})=>r.chart.data.some(p=>p.y<0)));
+});
+
+test('循环文字使用官方 loop 上下文，两个商品分别渲染真实编码与精确数值，不留下参数字面量',()=>{
+  const exported=JSON.parse(readFileSync('docs/dingtalk-inventory-card.json','utf8')),editor=JSON.parse(exported.editorData);
+  type Node={componentName:string;id:string;props:{text?:{content:string};hoverText?:{content:string}};children?:Node[]};
+  const nodes:Node[]=[];const walk=(node:Node)=>{nodes.push(node);node.children?.forEach(walk);};walk(editor.schema.componentsTree[0]);
+  const values=JSON.parse(nativeCardParams(card).rows) as Record<string,string>[];
+  for(const field of ['goodsNo','quantity','average','turnover']){
+    const id=field==='goodsNo'?'code':field;
+    const text=nodes.find(n=>n.id===`node_inventory_${id}`)!.props.text!.content;
+    assert.equal(text,'${loop.'+field+'}');
+    const rendered=values.slice(0,2).map(row=>text.replace(/\$\{loop\.(\w+)\}/g,(_match,key)=>row[key]));
+    assert.deepEqual(rendered,values.slice(0,2).map(row=>row[field]));assert.ok(rendered.every(value=>!value.includes('${')));
+    assert.ok(exported.widgetInfo.includes(`@subdata{'${field}'}`));
+  }
+  const loopTexts=nodes.filter(n=>n.componentName==='BaseText'&&n.props.text?.content.includes('loop.'));
+  assert.equal(loopTexts.length,4);assert.doesNotMatch(exported.editorData,/\$\{rows\[0\]\./);
 });

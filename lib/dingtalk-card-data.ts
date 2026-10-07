@@ -8,6 +8,9 @@ export type TurnoverCard = {
   rows: { goodsNo: string; goodsName: string; unitName: string; quantity: string; average: string; turnover: string; sales: (string | null)[] }[];
 };
 export const CARD_ROWS_PER_PAGE = 12;
+// The native chart protocol supports explicit ticks and padding. Keep the row
+// compact; the native detail action exposes the same real points at full size.
+export const NATIVE_TREND_CONFIG = { xAxisConfig: { ticks: [] }, yAxisConfig: { ticks: [] }, padding: [4, 4, 4, 4] };
 export function turnoverCards(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string): TurnoverCard[] {
   const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(capturedAt));
   const dates = recentSalesDates(date).reverse();
@@ -28,7 +31,7 @@ export function turnoverCards(rows: InventoryView["rows"], threshold: string, wa
 // The card builder's native Chart accepts { type, data: [{x,y,type}], config }.
 // Quantities stay decimal strings in text; only plotting uses JavaScript numbers.
 export function nativeCardParams(card: TurnoverCard): Record<string, string> {
-  const rows = card.rows.map((row, rowIndex) => {
+  const rows = card.rows.map(row => {
     let segment = 0, afterGap = false;
     const data = card.dates.flatMap((date, index) => {
       const raw = row.sales[index], value = raw == null ? NaN : Number(raw);
@@ -36,10 +39,12 @@ export function nativeCardParams(card: TurnoverCard): Record<string, string> {
       if (afterGap) { segment++; afterGap = false; }
       return [{ x: date.slice(5), y: value, type: segment ? `净销量（数据段${segment + 1}）` : "净销量" }];
     });
-    return { stateKey: `item_${rowIndex}`, goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName,
+    // A complete single series needs no grouping field/legend. Gapped series
+    // retain separate groups so they never connect across a missing date.
+    const chartData = segment === 0 ? data.map(({ x, y }) => ({ x, y })) : data;
+    return { goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName,
       quantity: row.quantity, average: row.average, turnover: row.turnover,
-      chart: { type: "lineChart", data, config: {} },
-      salesDetail: card.dates.map((date, i) => `${date}：${row.sales[i] ?? "暂无数据"}${row.sales[i] == null ? "" : ` ${row.unitName}`}`).join("\n"),
+      chart: { type: "lineChart", data: chartData, config: NATIVE_TREND_CONFIG },
     };
   });
   return { title: card.title, summary: card.summary, footer: card.footer,
