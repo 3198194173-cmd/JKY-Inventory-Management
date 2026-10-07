@@ -5,7 +5,7 @@ import { TURNOVER_ALERT_DAYS } from "./turnover-alert";
 export type TurnoverCard = {
   title: string; summary: string; footer: string; dates: string[];
   totalCount: number; part: number; totalParts: number;
-  rows: { goodsNo: string; quantity: string; average: string; turnover: string; sales: (string | null)[] }[];
+  rows: { goodsNo: string; goodsName: string; unitName: string; quantity: string; average: string; turnover: string; sales: (string | null)[] }[];
 };
 export const CARD_ROWS_PER_PAGE = 12;
 export function turnoverCards(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string): TurnoverCard[] {
@@ -19,10 +19,31 @@ export function turnoverCards(rows: InventoryView["rows"], threshold: string, wa
     footer: `均值 > ${threshold} · 周转 < ${TURNOVER_ALERT_DAYS}天 · 净销量含退货，按库存与入库核算`,
     dates, totalCount: rows.length, part: index + 1, totalParts,
     rows: rows.slice(index * CARD_ROWS_PER_PAGE, (index + 1) * CARD_ROWS_PER_PAGE).map(row => ({
-      goodsNo: row.goodsNo, quantity: row.quantity, average: row.metrics?.average7 ?? "—", turnover: row.metrics?.turnoverDays ?? "—",
+      goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName, quantity: row.quantity, average: row.metrics?.average7 ?? "—", turnover: row.metrics?.turnoverDays ?? "—",
       sales: dates.map(day => row.sales?.[day] ?? null),
     })),
   }));
+}
+
+// The card builder's native Chart accepts { type, data: [{x,y,type}], config }.
+// Quantities stay decimal strings in text; only plotting uses JavaScript numbers.
+export function nativeCardParams(card: TurnoverCard): Record<string, string> {
+  const rows = card.rows.map((row, rowIndex) => {
+    let segment = 0, afterGap = false;
+    const data = card.dates.flatMap((date, index) => {
+      const raw = row.sales[index], value = raw == null ? NaN : Number(raw);
+      if (raw == null || !Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER) { afterGap = true; return []; }
+      if (afterGap) { segment++; afterGap = false; }
+      return [{ x: date.slice(5), y: value, type: segment ? `净销量（数据段${segment + 1}）` : "净销量" }];
+    });
+    return { stateKey: `item_${rowIndex}`, goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName,
+      quantity: row.quantity, average: row.average, turnover: row.turnover,
+      chart: { type: "lineChart", data, config: {} },
+      salesDetail: card.dates.map((date, i) => `${date}：${row.sales[i] ?? "暂无数据"}${row.sales[i] == null ? "" : ` ${row.unitName}`}`).join("\n"),
+    };
+  });
+  return { title: card.title, summary: card.summary, footer: card.footer,
+    rows: JSON.stringify(rows), config: JSON.stringify({ autoLayout: true }) };
 }
 
 export function normalizeCardTemplateId(input: string): string {

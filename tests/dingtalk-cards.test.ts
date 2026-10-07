@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
 import { mkdir, writeFile } from "node:fs/promises";
-import { turnoverCards, cardTemplateId, normalizeCardTemplateId } from "../lib/dingtalk-card-data";
+import { readFileSync } from "node:fs";
+import { turnoverCards, cardTemplateId, normalizeCardTemplateId, nativeCardParams } from "../lib/dingtalk-card-data";
 import { turnoverCardSvg, renderTurnoverCard } from "../lib/dingtalk-card-image";
 import { DingTalkCardError, sendRobotCard, sendInventoryReport } from "../lib/dingtalk-cards";
 import type { InventoryView } from "../lib/inventory-types";
@@ -28,20 +29,21 @@ test('横向表格真实渲染ECharts平滑曲线和PNG；编码进行XML转义'
   const png=await renderTurnoverCard(card),metadata=await sharp(png).metadata();assert.equal(metadata.format,'png');assert.equal(metadata.width,1200);assert.equal(metadata.height,578);
   await mkdir('outputs',{recursive:true});await writeFile('outputs/dingtalk-inventory-card.png',png);
 });
-test('图片上传后投放指定群的卡片；验证真正投放结果，无自动重试或文字降级',async()=>{
-  const calls:string[]=[],png=await renderTurnoverCard(card);
+test('投放原生数据卡片，不生成或上传图片；验证指定群真正投放结果，无自动重试',async()=>{
+  const calls:string[]=[];
   const fetcher=(async(url: unknown,options: RequestInit)=>{
     calls.push(String(url));
     if(String(url).includes('/oauth2/'))return Response.json({accessToken:'mock-card-token',expireIn:7200});
-    if(String(url).includes('/media/upload')){assert.ok(options.body instanceof FormData);assert.equal((options.body as FormData).get('media') instanceof Blob,true);return Response.json({errcode:0,media_id:'$mock-image'});}
-    const body=JSON.parse(options.body as string);assert.equal(body.cardTemplateId,apiTemplateId);assert.equal(body.openSpaceId,'dtv1.card//IM_GROUP.card-group');assert.equal(body.imGroupOpenDeliverModel.robotCode,'card-robot');assert.equal(body.cardData.cardParamMap.reportImage,'$mock-image');assert.equal(JSON.parse(body.cardData.cardParamMap.config).autoLayout,true);
+    assert.ok(String(url).includes('/createAndDeliver'));
+    const body=JSON.parse(options.body as string);assert.equal(body.cardTemplateId,apiTemplateId);assert.equal(body.openSpaceId,'dtv1.card//IM_GROUP.card-group');assert.equal(body.imGroupOpenDeliverModel.robotCode,'card-robot');assert.equal(body.cardData.cardParamMap.reportImage,undefined);assert.equal(JSON.parse(body.cardData.cardParamMap.config).autoLayout,true);
+    const dataRows=JSON.parse(body.cardData.cardParamMap.rows);assert.equal(dataRows.length,5);assert.equal(dataRows[0].chart.type,'lineChart');assert.equal(dataRows[0].chart.data[3].y,-2);assert.match(dataRows[0].salesDetail,/2026-10-04：-2 Pcs/);
     return Response.json({success:true,result:{outTrackId:body.outTrackId,deliverResults:[{success:true,spaceId:'card-group',spaceType:'IM_GROUP'}]}});
   }) as typeof fetch;
-  assert.ok(await sendRobotCard(credentials,card,png,templateId,fetcher));assert.equal(calls.length,3);
+  assert.ok(await sendRobotCard(credentials,card,templateId,fetcher));assert.equal(calls.length,2);
   let attempts=0;
-  const failed=(async(url:unknown)=>{attempts++;return String(url).includes('/media/upload')?Response.json({errcode:0,media_id:'$mock-image'}):Response.json({success:true,result:{deliverResults:[{success:false,spaceId:'card-group',spaceType:'IM_GROUP'}]}});}) as typeof fetch;
-  await assert.rejects(()=>sendRobotCard(credentials,card,png,templateId,failed),/未确认/);assert.equal(attempts,2);
-  await assert.rejects(()=>sendRobotCard(credentials,card,png,templateId,(async()=>new Response('',{status:403})) as typeof fetch),/图片上传失败/);
+  const failed=(async()=>{attempts++;return Response.json({success:true,result:{deliverResults:[{success:false,spaceId:'card-group',spaceType:'IM_GROUP'}]}});}) as typeof fetch;
+  await assert.rejects(()=>sendRobotCard(credentials,card,templateId,failed),/未确认/);assert.equal(attempts,1);
+  await assert.rejects(()=>sendRobotCard(credentials,card,templateId,(async()=>new Response('',{status:403})) as typeof fetch),/互动卡片实例写权限/);
 });
 test('配置模板后走卡片传输并记录受理张数；未配置继续文字通知',async()=>{
   const previous=process.env.DINGTALK_CARD_TEMPLATE_ID,fetcher=globalThis.fetch;
@@ -49,12 +51,12 @@ test('配置模板后走卡片传输并记录受理张数；未配置继续文�
     process.env.DINGTALK_CARD_TEMPLATE_ID=templateId;assert.equal(cardTemplateId(),apiTemplateId);
     let uploads=0,deliveries=0,accepted=0;
     globalThis.fetch=(async(url:unknown,options:RequestInit)=>{
-      if(String(url).includes('/media/upload')){uploads++;return Response.json({errcode:0,media_id:'$mock-image'});}
+      if(String(url).includes('/media/upload')){uploads++;throw Error('不应上传图片');}
       if(String(url).includes('/createAndDeliver')){deliveries++;const body=JSON.parse(options.body as string);assert.equal(body.cardTemplateId,apiTemplateId);return Response.json({success:true,result:{outTrackId:body.outTrackId,deliverResults:[{success:true,spaceId:credentials.openConversationId,spaceType:'IM_GROUP'}]}});}
       throw Error('禁止外部请求');
     }) as typeof fetch;
     await sendInventoryReport(credentials,{messages:['mock text'],cards:[card]},undefined,parts=>accepted=parts);
-    assert.equal(uploads,1);assert.equal(deliveries,1);assert.equal(accepted,1);
+    assert.equal(uploads,0);assert.equal(deliveries,1);assert.equal(accepted,1);
     delete process.env.DINGTALK_CARD_TEMPLATE_ID;
     let texts=0;await sendInventoryReport(credentials,{messages:['完整文字'],cards:[card]},async(_c,m)=>{assert.equal(m,'完整文字');texts++;return 'mock';});assert.equal(texts,1);
     process.env.DINGTALK_CARD_TEMPLATE_ID='invalid';assert.throws(cardTemplateId,/格式无效/);
@@ -68,23 +70,21 @@ test('模板UUID转换为接口schema ID，完整ID不重复追加，非法ID在
   assert.equal(normalizeCardTemplateId(''), '');
   for(const invalid of [templateId+'.schema.schema','not-a-template',templateId+'?x=1'])assert.throws(()=>normalizeCardTemplateId(invalid),/格式无效/);
   let calls=0;const fetcher=(async()=>{calls++;throw Error('禁止调用');}) as typeof fetch;
-  await assert.rejects(()=>sendRobotCard(credentials,card,new Uint8Array(),'',fetcher),/不能为空/);
-  await assert.rejects(()=>sendRobotCard(credentials,card,new Uint8Array(),'invalid',fetcher),/格式无效/);
+  await assert.rejects(()=>sendRobotCard(credentials,card,'',fetcher),/不能为空/);
+  await assert.rejects(()=>sendRobotCard(credentials,card,'invalid',fetcher),/格式无效/);
   assert.equal(calls,0);
 });
 
 test('卡片400显示具体错误码、模板提示和请求编号；403与超时分类且不泄露响应凭证',async()=>{
-  const png=new Uint8Array([1,2,3]);
   const reject=async(status:number,body:unknown)=>{
     let calls=0;
-    const fetcher=(async(url:unknown)=>{
+    const fetcher=(async()=>{
       calls++;
-      if(String(url).includes('/media/upload'))return Response.json({errcode:0,media_id:'private-image'});
       return typeof body==='string' ? new Response(body,{status}) : Response.json(body,{status});
     }) as typeof fetch;
     let captured:unknown;
-    try {await sendRobotCard(credentials,card,png,templateId,fetcher);}catch(error){captured=error;}
-    assert.equal(calls,2,'失败不自动重试');assert.ok(captured instanceof DingTalkCardError);
+    try {await sendRobotCard(credentials,card,templateId,fetcher);}catch(error){captured=error;}
+    assert.equal(calls,1,'失败不自动重试');assert.ok(captured instanceof DingTalkCardError);
     return captured;
   };
   const invalid=await reject(400,{code:'param.cardTemplateIdInvalid',message:'private-image isolated-card-secret mock-card-token',requestid:'trace-400'});
@@ -99,4 +99,30 @@ test('卡片400显示具体错误码、模板提示和请求编号；403与超�
   const html=await reject(400,'<html>private-image</html>');assert.match(html.message,/请求参数/);assert.doesNotMatch(html.message,/html|private-image/);
   assert.equal((await reject(408,{code:'RequestTimeout'})).rejected,false,'服务端超时仍按未确认处理');
   assert.equal((await reject(500,{code:'InternalError'})).rejected,false,'服务端异常不误报确定失败');
+});
+
+test('原生卡片保持精确数值、负销量和零销量；缺日不补零且不跨缺日连接',()=>{
+  const exact=structuredClone(card);exact.rows[0].quantity='9007199254740993.125';exact.rows[0].sales=['0','-2',null,'1.125','9007199254740993.125','4','6'];
+  const params=nativeCardParams(exact),data=JSON.parse(params.rows);
+  assert.equal(data[0].quantity,'9007199254740993.125');assert.match(data[0].salesDetail,/9007199254740993.125 Pcs/);
+  assert.match(data[0].salesDetail,/2026-10-03：暂无数据/);
+  assert.deepEqual(data[0].chart.data.map((p:{y:number})=>p.y),[0,-2,1.125,4,6]);
+  assert.notEqual(data[0].chart.data[1].type,data[0].chart.data[2].type);
+  assert.notEqual(data[0].chart.data[2].type,data[0].chart.data[3].type);
+  assert.ok(Object.values(params).every(p=>typeof p==='string'));assert.equal(params.reportImage,undefined);
+});
+
+test('可导入模板绑定原生商品列表与图表，启用详情及独立商品折叠，不含图片组件',()=>{
+  const exported=JSON.parse(readFileSync('docs/dingtalk-inventory-card.json','utf8')),editor=JSON.parse(exported.editorData);
+  type TemplateNode={componentName:string;id:string;props:{listData?:{variable:string};data?:{variable:string};enableDetail?:boolean;id?:{content:string};contentVisible?:boolean};children?:TemplateNode[]};
+  const nodes:TemplateNode[]=[];
+  const walk=(n:TemplateNode)=>{nodes.push(n);for(const child of n.children||[])walk(child);};walk(editor.schema.componentsTree[0]);
+  assert.ok(!nodes.some(n=>n.componentName==='Image'));
+  const loop=nodes.find(n=>n.componentName==='Loop')!,chart=nodes.find(n=>n.componentName==='Chart')!,panel=nodes.find(n=>n.componentName==='CollapsePanel')!;
+  assert.equal(loop.props.listData?.variable,'rows');assert.equal(chart.props.data?.variable,'rows[0].chart');assert.equal(chart.props.enableDetail,true);
+  assert.equal(panel.props.id?.content,'${rows[0].stateKey}');assert.equal(panel.props.contentVisible,false);
+  assert.equal(new Set(nodes.map(n=>n.id)).size,nodes.length);
+  const variables=editor.variableList.find((v:{name:string})=>v.name==='rows');assert.equal(variables.type,'loopArray');assert.equal(variables.schema.find((v:{name:string})=>v.name==='chart').type,'chart');
+  assert.match(exported.widgetInfo,/<DDChartView/);assert.match(exported.widgetInfo,/dataPath/);assert.doesNotMatch(exported.widgetInfo,/<ImageView/);
+  assert.ok(editor.mockData.cardData.rows.some((r:{chart:{data:{y:number}[]}})=>r.chart.data.some(p=>p.y<0)));
 });

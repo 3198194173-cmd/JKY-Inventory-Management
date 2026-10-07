@@ -10,8 +10,10 @@ import type { AlertSettings } from "@/lib/alerts-store";
 import type { DingTalkGroupState } from "@/lib/dingtalk-groups-store";
 import type { ManualAlertRequest, ManualAlertResult } from "@/lib/manual-alerts";
 import { TURNOVER_ALERT_DAYS } from "@/lib/turnover-alert";
+import type { TurnoverCard } from "@/lib/dingtalk-card-data";
+import { InventoryAlertCardPreview } from "@/components/inventory-alert-card-preview";
 
-type Preview = { snapshotId: string; capturedAt: string; averageThreshold: string; count: number; incomplete: boolean; message: string; cards: { part: number }[]; cardConfigured: boolean };
+type Preview = { snapshotId: string; capturedAt: string; averageThreshold: string; count: number; incomplete: boolean; message: string; cards: TurnoverCard[]; cardConfigured: boolean };
 const time = (iso: string) => new Date(iso).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
 async function json<T>(response: Response): Promise<T> {
   let data: T & { error?: string };
@@ -158,13 +160,10 @@ export function AlertSettingsDialog({ open, onOpenChange, initial, warehouseCode
           <section className="alert-send-card" aria-labelledby="alert-send-heading">
             <div className="alert-section-heading"><h3 id="alert-send-heading"><Warehouse size={16}/>{warehouseName} <span>{warehouseCode}</span></h3><Button type="button" variant="ghost" size="sm" onClick={() => void previewOnly()} disabled={busy || previewing || !!pendingRequest}>{previewing ? <LoaderCircle size={14} className="animate-spin"/> : <Eye size={14}/>}预览通知</Button></div>
             <p>发送给：{selectedNames.length ? selectedNames.join("、") : "请先勾选接收群"}</p>
-            <p>每个商品一行：编码、库存、均值、周转和近7天销量曲线。每张卡片12款，全部货品按周转排序发送。</p>
+            <p>原生消息卡片：商品编码、库存、均值、周转和近7天销量图表。可展开每日销量，每张12款，完整发送全部预警货品。</p>
             {!saved.cardConfigured && <p className="alert-warning">报表卡片可预览；云端配置卡片模板后启用卡片发送，当前仍发送文字通知。</p>}
             {preview && <div className="alert-preview"><div><strong>{preview.count} 款符合预警</strong><span>采集于 {time(preview.capturedAt)}</span></div>{preview.incomplete && <p className="alert-warning">库存采集不完整，暂不能发送。</p>}
-              {preview.cards.length ? <><div className="alert-card-preview-image">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={`/api/alerts/preview?${new URLSearchParams({warehouseCode,averageThreshold:preview.averageThreshold,format:"image",part:String(cardPart)})}`} alt={`库存预警卡片，第${cardPart}/${preview.cards.length}张`} loading="lazy"/>
-              </div><div className="alert-card-preview-pages"><Button type="button" variant="outline" size="sm" disabled={cardPart<=1} onClick={()=>setCardPart(p=>p-1)}>上一张</Button><span>{cardPart} / {preview.cards.length} 张 · {preview.cardConfigured ? "卡片发送" : "文字发送"}</span><Button type="button" variant="outline" size="sm" disabled={cardPart>=preview.cards.length} onClick={()=>setCardPart(p=>p+1)}>下一张</Button></div></> : <p>{preview.message}</p>}
+              {preview.cards.length ? <><InventoryAlertCardPreview key={cardPart} card={preview.cards[cardPart - 1]}/><div className="alert-card-preview-pages"><Button type="button" variant="outline" size="sm" disabled={cardPart<=1} onClick={()=>setCardPart(p=>p-1)}>上一张</Button><span>{cardPart} / {preview.cards.length} 张 · {preview.cardConfigured ? "原生卡片发送" : "文字发送"}</span><Button type="button" variant="outline" size="sm" disabled={cardPart>=preview.cards.length} onClick={()=>setCardPart(p=>p+1)}>下一张</Button></div></> : <p>{preview.message}</p>}
             </div>}
           </section>
           {result && <div className={`alert-result ${result.groups.some(g => g.state === "unconfirmed" || g.state === "failed") ? "alert-result-warning" : ""}`} role="status"><strong>{result.message}</strong><div>{result.groups.map(g => <span key={g.id}>{g.name} · {g.state === "accepted" ? "已受理" : g.state === "failed" ? "发送失败" : g.state === "unconfirmed" ? "未确认" : g.state === "skipped" ? "已跳过" : "等待发送"} {g.acceptedParts}/{g.totalParts}条{g.error && <small>{g.error}</small>}</span>)}</div></div>}
