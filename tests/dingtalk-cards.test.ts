@@ -14,11 +14,13 @@ const templateId='957e3c25-a2d9-4cd3-a424-be40f18a9f9b';
 const apiTemplateId=templateId+'.schema';
 const credentials={clientId:'card-test',clientSecret:'isolated-card-secret',robotCode:'card-robot',openConversationId:'card-group'};
 
-test('完整报表每张12款，不丢失货品、负销量、精确数量或日期',()=>{
+test('完整报表每张6款，分张后不丢失货品、负销量、精确数量或日期',()=>{
   const cards=turnoverCards(rows(1203),'3','全仓','2026-10-07T16:00:23Z');
-  assert.equal(cards.length,101);assert.equal(cards.flatMap(c=>c.rows).length,1203);assert.equal(cards.at(-1)!.rows.length,3);
+  assert.equal(cards.length,201);assert.equal(cards.flatMap(c=>c.rows).length,1203);assert.equal(cards.at(-1)!.rows.length,3);
+  assert.ok(cards.every(c=>c.rows.length<=6));
+  assert.deepEqual(cards.flatMap(c=>c.rows.map(r=>r.goodsNo)),rows(1203).map(r=>r.goodsNo));
   assert.deepEqual(cards[0].dates,['2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05','2026-10-06','2026-10-07']);
-  assert.equal(cards[0].rows[0].sales[3],'-2');assert.equal(cards[100].part,101);assert.equal(cards[100].totalParts,101);
+  assert.equal(cards[0].rows[0].sales[3],'-2');assert.equal(cards[200].part,201);assert.equal(cards[200].totalParts,201);
   const exact=rows(1);exact[0].quantity='9007199254740993.125';delete exact[0].sales!['2026-10-03'];
   const result=turnoverCards(exact,'3','仓','2026-10-08T00:00:23Z')[0];
   assert.equal(result.rows[0].quantity,exact[0].quantity);assert.equal(result.rows[0].sales[2],null);
@@ -126,13 +128,22 @@ test('原生卡片桌面保留表格、手机另用完整编码布局，两端�
   assert.equal(mobileLoop.props.listData?.variable,'rows');assert.equal(mobileLoop.children![0].props.direction,'vertical');
   assert.equal(mobileChart.props.data?.variable,chart.props.data?.variable);assert.equal(mobileChart.props.enableDetail,true);assert.equal(mobileChart.props.height,76);
   assert.equal(new Set(nodes.map(n=>n.id)).size,nodes.length);
+  const desktopLayout=nodes.find(n=>n.id==='node_inventory_desktop_layout')!,mobileLayout=nodes.find(n=>n.id==='node_inventory_mobile_layout')!;
+  const layouts=[desktopLayout,mobileLayout] as unknown as {props:{isFixedWidth:boolean;width:number;visible:{condition:{conditions:{type:string;platform:string[]}[]}}}}[];
+  assert.equal(layouts[0].props.isFixedWidth,true);assert.equal(layouts[0].props.width,640);
+  assert.equal(layouts[1].props.isFixedWidth,false,'手机不能继承桌面的固定宽度');
+  for(const [layout,platform] of layouts.map((layout,i)=>[layout,i===0?['pc']:['ios','android']] as const)){
+    assert.deepEqual(layout.props.visible.condition.conditions,[{type:'env',platform,version:Object.fromEntries(platform.map(p=>[p,{op:'all'}]))}]);
+  }
+  assert.ok(!editor.expList.some((v:{name:string})=>v.name==='mobileLayout'),'使用客户端环境条件，不从报告数据读取 env');
   const variables=editor.variableList.find((v:{name:string})=>v.name==='rows');assert.equal(variables.type,'loopArray');assert.equal(variables.schema.find((v:{name:string})=>v.name==='chart').type,'chart');
-  assert.match(exported.widgetInfo,/<DDChartView/);assert.match(exported.widgetInfo,/dataPath/);assert.doesNotMatch(exported.widgetInfo,/<ImageView/);
+  assert.match(exported.widgetInfo,/<DDChartView/);assert.match(exported.widgetInfo,/dataPath/);assert.doesNotMatch(exported.widgetInfo,/reportImage/);
   assert.ok(editor.mockData.cardData.rows.some((r:{chart:{data:{y:number}[]}})=>r.chart.data.some(p=>p.y<0)));
 });
 
 test('循环文字使用官方 loop 上下文，两个商品分别渲染真实编码与精确数值，不留下参数字面量',()=>{
   const exported=JSON.parse(readFileSync('docs/dingtalk-inventory-card.json','utf8')),editor=JSON.parse(exported.editorData);
+  const xml=exported.widgetInfo.replace(/&#039;/g,"'");
   type Node={componentName:string;id:string;props:{text?:{content:string};hoverText?:{content:string}};children?:Node[]};
   const nodes:Node[]=[];const walk=(node:Node)=>{nodes.push(node);node.children?.forEach(walk);};walk(editor.schema.componentsTree[0]);
   const values=JSON.parse(nativeCardParams(card).rows) as Record<string,string>[];
@@ -142,7 +153,7 @@ test('循环文字使用官方 loop 上下文，两个商品分别渲染真实�
     assert.equal(text,'${loop.'+field+'}');
     const rendered=values.slice(0,2).map(row=>text.replace(/\$\{loop\.(\w+)\}/g,(_match,key)=>row[key]));
     assert.deepEqual(rendered,values.slice(0,2).map(row=>row[field]));assert.ok(rendered.every(value=>!value.includes('${')));
-    assert.ok(exported.widgetInfo.includes(`@subdata{'${field}'}`));
+    assert.ok(xml.includes(`@subdata{'${field}'}`));
   }
   const loopTexts=nodes.filter(n=>n.componentName==='BaseText'&&n.props.text?.content.includes('loop.'));
   assert.equal(loopTexts.length,8);assert.doesNotMatch(exported.editorData,/\$\{rows\[0\]\./);

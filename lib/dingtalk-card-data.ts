@@ -7,7 +7,7 @@ export type TurnoverCard = {
   totalCount: number; part: number; totalParts: number;
   rows: { goodsNo: string; goodsName: string; unitName: string; quantity: string; average: string; turnover: string; sales: (string | null)[] }[];
 };
-export const CARD_ROWS_PER_PAGE = 12;
+export const CARD_ROWS_PER_PAGE = 6;
 // Current DingTalk clients use ECharts axis options, not the legacy F2 ticks.
 // Keep the real data unchanged; reserve the row for the curve and its detail action.
 export const NATIVE_TREND_CONFIG = {
