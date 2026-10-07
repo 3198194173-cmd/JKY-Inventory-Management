@@ -11,4 +11,6 @@ const inbound=spawnSync(process.execPath,["--test",".sites-runtime/tests/inbound
 const stream=spawnSync(process.execPath,["--test","tests/dingtalk-stream.test.mjs"],{stdio:"inherit"});
 await build({entryPoints:["tests/dingtalk-groups.test.ts"],outfile:".sites-runtime/tests/dingtalk-groups.test.mjs",bundle:true,platform:"node",format:"esm",target:"node24"});
 const groups=spawnSync(process.execPath,["--test",".sites-runtime/tests/dingtalk-groups.test.mjs"],{stdio:"inherit"});
-process.exitCode=result.status || daily.status || inbound.status || stream.status || groups.status || 0;
+await build({entryPoints:["tests/dingtalk-cards.test.ts"],outfile:".sites-runtime/tests/dingtalk-cards.test.mjs",bundle:true,platform:"node",format:"esm",target:"node24",external:["sharp"]});
+const cards=spawnSync(process.execPath,["--test",".sites-runtime/tests/dingtalk-cards.test.mjs"],{stdio:"inherit"});
+process.exitCode=result.status || daily.status || inbound.status || stream.status || groups.status || cards.status || 0;

@@ -3,7 +3,8 @@ import { env } from "./runtime";
 import { sqlite } from "./sqlite.mjs";
 import { previewTurnoverAlert, settings } from "./alerts-store";
 import { robotScope } from "./dingtalk-groups-store";
-import { sendRobotMessage, sendTurnoverReport } from "./dingtalk";
+import { sendRobotMessage } from "./dingtalk";
+import { sendInventoryReport } from "./dingtalk-cards";
 import { normalizeTurnoverThreshold } from "./turnover-alert";
 
 export type ManualAlertRequest = {
@@ -12,7 +13,7 @@ export type ManualAlertRequest = {
 };
 export type ManualAlertResult = {
   state: "sending" | "complete"; count: number;
-  groups: { id: string; name: string; acceptedParts: number; totalParts: number; state: "pending" | "accepted" | "unconfirmed" | "skipped" }[];
+  groups: { id: string; name: string; acceptedParts: number; totalParts: number; state: "pending" | "accepted" | "unconfirmed" | "skipped"; error?: string }[];
   message: string;
 };
 export class ManualAlertError extends Error {
@@ -59,7 +60,7 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   if (preview.incomplete) throw new ManualAlertError("本次库存采集不完整，暂不能发送预警");
   if (!preview.count) throw new ManualAlertError("当前仓库没有符合预警条件的货品，无需发送");
   const result: ManualAlertResult = { state: "sending", count: preview.count,
-    groups: groups.map(g => ({ id: g.id, name: g.name || g.id, acceptedParts: 0, totalParts: preview.messages.length, state: "pending" })), message: "正在发送，请稍候；请勿重复发送。" };
+    groups: groups.map(g => ({ id: g.id, name: g.name || g.id, acceptedParts: 0, totalParts: preview.cardConfigured && sender === sendRobotMessage ? preview.cards.length : preview.messages.length, state: "pending" })), message: "正在发送，请稍候；请勿重复发送。" };
   const now = Date.now();
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -82,10 +83,13 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
     // Persist uncertainty before the external call: a crash cannot cause a retry.
     group.state = "unconfirmed"; persist();
     try {
-      await sendTurnoverReport({ clientId: scope[1], clientSecret: secret, robotCode: scope[2], openConversationId: group.id }, preview.messages, sender, parts=>{group.acceptedParts=parts;persist();});
+      await sendInventoryReport({ clientId: scope[1], clientSecret: secret, robotCode: scope[2], openConversationId: group.id }, preview, sender, parts=>{group.acceptedParts=parts;persist();});
       group.state = "accepted";
       db.prepare("UPDATE alert_settings SET last_sent_at=? WHERE owner=?").run(new Date().toISOString(), owner);
-    } catch { /* Leave uncertain attempts visible, without an automatic retry. */ }
+    } catch (error) {
+      // Only expose our sanitized errors, never upstream bodies or credentials.
+      if (error instanceof Error && error.message.startsWith("钉钉")) group.error = error.message;
+    }
     persist();
   }
   result.state = "complete";

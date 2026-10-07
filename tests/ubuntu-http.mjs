@@ -37,6 +37,7 @@ try {
   r=await fetch(url+'/api/alerts/send',{method:'POST',headers,body:'{}'});assert.equal(r.status,400,'主动通知拒绝无效参数');
   r=await fetch(url+'/api/alerts/send',{method:'POST',headers,body:JSON.stringify({requestId:'abcd1234-abcd-4abc-8abc-abcd12345678',warehouseCode:'TEST02',snapshotId:'unavailable',averageThreshold:'3',groupIds:['unavailable']})});assert.equal(r.status,400);assert.match((await r.json()).error,/配置钉钉/);
   r=await fetch(url+'/api/alerts/preview?warehouseCode=TEST02');assert.equal(r.ok,false,'通知预览需要登录');
+  r=await fetch(url+'/api/alerts/preview?warehouseCode=TEST02&format=image');assert.equal(r.ok,false,'报表图片也需要登录，不向公网泄露库存');
   r=await fetch(url+'/api/alerts',{headers:{cookie}});assert.equal((await r.json()).turnoverAverageThreshold,'3');
   r=await fetch(url+'/api/alerts',{method:'POST',headers:{...headers,origin:'https://evil.example'},body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'9'})});assert.equal(r.ok,false,'拒绝跨来源更改预警');
   r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({enabled:false,threshold:'0',turnoverAverageThreshold:'4.500'})});assert.equal(r.ok,true);assert.equal((await r.json()).turnoverAverageThreshold,'4.5');
@@ -132,6 +133,7 @@ try {
     for(const [size,page,length] of [[100,1,100],[200,1,200],[500,1,500],[1000,1,1000],[1000,2,208],[100,1,100]]) {
       r=await fetch(url+'/api/inventory?'+new URLSearchParams({warehouseCode:'TEST02',pageSize:String(size),page:String(page)}),{headers:{cookie}});
       assert.equal(r.ok,true);const data=await r.json();assert.equal(data.pageSize,size);assert.equal(data.page,page);assert.equal(data.rows.length,length);assert.equal(data.totalRows,1208);assert.deepEqual(data.rows[0].history,{});
+      assert.ok(data.rows.every((row,i)=>i===0 || Number(data.rows[i-1].quantity)>=Number(row.quantity)),'HTTP无排序参数时默认库存降序');
     }
   }
   r=await fetch(url+'/',{headers:{cookie}});const sortedHtml=await r.text();

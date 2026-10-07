@@ -1,5 +1,5 @@
 "use client";
-import { memo, useEffect, useRef, useState, type RefObject } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDownToLine, ArrowDownUp, ArrowLeft, ArrowRight, BellRing, CircleHelp, Clock3, LoaderCircle, Plus, RefreshCw, Search, Warehouse } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -75,7 +75,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
   const router = useRouter();
   const [view,setView] = useState(initial), [code,setCode] = useState(initial.warehouseCode);
   const [warehouses,setWarehouses] = useState(initial.warehouses || []);
-  const [search,setSearch] = useState(""), [query,setQuery] = useState(""), [days,setDays] = useState("14"), [page,setPage] = useState(1), [pageSize,setPageSize] = useState("100"), [sort,setSort] = useState("code");
+  const [search,setSearch] = useState(""), [query,setQuery] = useState(""), [days,setDays] = useState("14"), [page,setPage] = useState(1), [pageSize,setPageSize] = useState("100"), [sort,setSort] = useState("quantity_desc");
   const [sortDate,setSortDate] = useState("");
   const [refresh,setRefresh] = useState(0), [loading,setLoading] = useState(false), [syncing,setSyncing] = useState(false), [exporting,setExporting] = useState(false);
   const [notice,setNotice] = useState(""), [error,setError] = useState("");
@@ -88,13 +88,14 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
   const appliedPaging = useRef({page:initial.page,pageSize:initial.pageSize});
   const skipInitialLoad = useRef(true), previousRun = useRef<RunInfo | null>(null);
   const dates = view.salesDates || [], active = warehouses.find(w => w.code === code), latestRun = runs[0], running = syncing || (latestRun?.status === "running" || latestRun?.status === "queued");
-  function receiveRuns(next: RunInfo[]) {
+  const refreshInventory = useCallback(() => { setSort("quantity_desc"); setSortDate(""); setPage(1); setRefresh(r => r + 1); }, []);
+  const receiveRuns = useCallback((next: RunInfo[]) => {
     const before = previousRun.current, latest = next[0];
     previousRun.current = latest || null; setRuns(next);
     if (!before || before.id !== latest?.id || !["running","queued"].includes(before.status) || ["running","queued"].includes(latest.status)) return;
-    if (latest.status === "complete") { setError(""); setNotice(latest.message || "采集完成"); setRefresh(r => r + 1); }
+    if (latest.status === "complete") { setError(""); setNotice(latest.message || "采集完成"); refreshInventory(); }
     if (latest.status === "failed") { setNotice(""); setError(latest.message || "采集失败，上次成功数据已保留"); }
-  }
+  }, [refreshInventory]);
   useEffect(() => { const timer = setTimeout(() => { setQuery(search); setPage(1); },300); return () => clearTimeout(timer); },[search]);
   useEffect(() => {
     if (skipInitialLoad.current) { skipInitialLoad.current = false; return; }
@@ -108,7 +109,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     const controller = new AbortController();
     fetch(`/api/sync?${new URLSearchParams({warehouseCode:code})}`, {signal:controller.signal}).then(r => apiJson<{runs:RunInfo[]}>(r)).then(d => receiveRuns(d.runs)).catch(e => { if(e.name !== "AbortError") setError(e.message); });
     return () => controller.abort();
-  },[recordsOpen,code,refresh]);
+  },[recordsOpen,code,refresh,receiveRuns]);
   useEffect(() => {
     if (!running) return;
     let stopped = false;
@@ -119,7 +120,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
       } catch { /* A transient status request must not erase the last known result. */ }
     }, 3000);
     return () => { stopped = true; window.clearInterval(timer); };
-  },[code,running]);
+  },[code,running,receiveRuns]);
   useEffect(() => {
     const modelContext = (document as Document & { modelContext?: { registerTool: (tool: unknown, options: {signal:AbortSignal}) => unknown } }).modelContext;
     if (!modelContext?.registerTool) return;
@@ -135,7 +136,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
   function changeAlertsOpen(open: boolean) { setAlertsOpen(open); }
   function changeWarehouse(next: string) {
     if (next === code) return;
-    setCode(next); if (sort.startsWith("sales_")) { setSort("code"); setSortDate(""); } setPage(1); setSearch(""); setQuery(""); setSelected(null); setNotice(""); setError(""); setRuns([]); previousRun.current = null;
+    setCode(next); setSort("quantity_desc"); setSortDate(""); setPage(1); setSearch(""); setQuery(""); setSelected(null); setNotice(""); setError(""); setRuns([]); previousRun.current = null;
     setUnavailableOpen(false); setView(v => ({ ...v, warehouseCode:next, snapshot:null, rows:[], snapshots:[], salesDates:[], unavailableSkus:[], totalRows:0 }));
   }
   async function add() {
@@ -149,15 +150,15 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     setSyncing(true); setError(""); setNotice("正在读取 SKU 目录。采集进度会显示在页面上，请勿重复提交。");
     try {
       const result = await apiJson<{queued?:boolean;goodsCount:number;skuCount:number;recordCount:number;unavailableCount:number;message?:string}>(await fetch("/api/sync", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({warehouseCode:code})}));
-      if (result.queued) { setNotice("已加入后台采集队列，关闭网页也会继续执行。"); setRefresh(r => r + 1); return; }
-      setNotice(result.message || `采集完成：已核验 ${result.recordCount.toLocaleString()} / ${result.skuCount.toLocaleString()} 个 SKU，${result.goodsCount.toLocaleString()} 个货品。${result.unavailableCount ? ` ${result.unavailableCount} 个 SKU 未取得库存，查看下方清单。` : ""}`); setRefresh(r => r + 1);
+      if (result.queued) { setNotice("已加入后台采集队列，关闭网页也会继续执行。"); refreshInventory(); return; }
+      setNotice(result.message || `采集完成：已核验 ${result.recordCount.toLocaleString()} / ${result.skuCount.toLocaleString()} 个 SKU，${result.goodsCount.toLocaleString()} 个货品。${result.unavailableCount ? ` ${result.unavailableCount} 个 SKU 未取得库存，查看下方清单。` : ""}`); refreshInventory();
     } catch(e) {
       try {
         const status = await apiJson<{runs:RunInfo[]}>(await fetch(`/api/sync?${new URLSearchParams({warehouseCode:code})}`));
         receiveRuns(status.runs);
         const run = status.runs[0];
         if ((run?.status === "running" || run?.status === "queued")) setNotice(`${run.message || "采集中"}。网页连接已中断，仍在核对服务器状态；请勿重复提交。`);
-        else if (run?.status === "complete" && Date.now() - new Date(run.startedAt).getTime() < 5 * 60_000) { setNotice(run.message || "采集完成"); setRefresh(r => r + 1); }
+        else if (run?.status === "complete" && Date.now() - new Date(run.startedAt).getTime() < 5 * 60_000) { setNotice(run.message || "采集完成"); refreshInventory(); }
         else { setNotice(""); setError(run?.status === "failed" ? run.message || "采集失败，上次成功数据已保留" : e instanceof Error ? e.message : "采集结果暂时无法确认，请查看采集记录"); }
       } catch { setNotice(""); setError("连接暂时中断，请打开采集记录确认结果；上次成功库存仍保留。"); }
     } finally { setSyncing(false); }

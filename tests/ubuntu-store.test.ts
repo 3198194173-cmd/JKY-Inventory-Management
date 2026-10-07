@@ -49,10 +49,15 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
   await assert.rejects(()=>previewTurnoverAlert('another-notification-owner',code),/仓库尚未添加/);
   assert.equal(db.prepare('SELECT count(*) AS n FROM turnover_alert_deliveries').get()!.n,0,'预览不产生发送记录');
   for(const size of [100,200,500,1000]) {
-    const view=await loadInventory(owner,{warehouseCode:code,pageSize:size,compact:true});assert.equal(view.rows.length,size);assert.equal(view.pageSize,size);assert.equal(view.totalRows,1205);
+    const view=await loadInventory(owner,{warehouseCode:code,pageSize:size,compact:true,sort:"code"});assert.equal(view.rows.length,size);assert.equal(view.pageSize,size);assert.equal(view.totalRows,1205);
     assert.deepEqual(view.rows[0].history,{});assert.equal(view.rows[0].inbound,undefined);assert.equal(view.rows[0].rawSales,undefined);assert.deepEqual(view.rows[0].salesHints,{});
   }
-  const next=await loadInventory(owner,{warehouseCode:code,pageSize:1000,page:2,compact:true});assert.equal(next.rows.length,205);assert.equal(next.rows[0].goodsNo,'G1000');assert.equal(next.rows[204].goodsNo,'G1204');
+  const next=await loadInventory(owner,{warehouseCode:code,pageSize:1000,page:2,compact:true,sort:"code"});assert.equal(next.rows.length,205);assert.equal(next.rows[0].goodsNo,'G1000');assert.equal(next.rows[204].goodsNo,'G1204');
+  const defaults=await loadInventory(owner,{warehouseCode:code,compact:true});
+  assert.equal(defaults.rows[0].goodsNo,'G0000');assert.equal(defaults.rows[0].quantity,'79');
+  assert.ok(defaults.rows.every((row,i)=>i===0 || compareQuantity(defaults.rows[i-1].quantity,row.quantity)>=0),'无排序参数时按库存精确降序');
+  const byCode=await loadInventory(owner,{warehouseCode:code,sort:'code'});assert.equal(byCode.rows[1].goodsNo,'G0001','手动编码排序仍可使用');
+  assert.equal(preview.cards.flatMap(c=>c.rows).length,preview.count,'卡片覆盖整个仓库的全部预警货品');
   const names=['DINGTALK_CLIENT_ID','DINGTALK_CLIENT_SECRET','DINGTALK_ROBOT_CODE','DINGTALK_OPEN_CONVERSATION_ID'];const old=names.map(n=>process.env[n]);names.forEach(n=>process.env[n]='isolated-fake');
   let sent=0;const sender=async(_credentials: unknown,message: string)=>{if(!/第\d+\/\d+部分/.test(message)||/第1\/\d+部分/.test(message))sent++;return 'fake-accepted';};
   try {

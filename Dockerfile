@@ -9,6 +9,7 @@ RUN npm run build:ubuntu
 
 FROM ${NODE_IMAGE} AS runtime
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000 INVENTORY_DB_PATH=/app/storage/inventory.sqlite
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static

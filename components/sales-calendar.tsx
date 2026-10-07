@@ -56,6 +56,8 @@ export function SalesCalendar({ warehouseCode, goodsNo, initialMonth }: { wareho
   }
   const current=data?.month===month && !loading && !error ? data : null;
   const day=current?.days.find(d=>d.date===selected);
+  const lastObserved=current?.days.findLast(d=>d.windowStart!=null || d.windowEnd!=null)?.date;
+  const trendDays=current?.days.filter(d=>lastObserved && d.date<=lastObserved) || [];
   const offset=(new Date(month+"-01T00:00:00Z").getUTCDay()+6)%7;
   const months:string[]=[];
   for(let value=data?.firstMonth || month;value<=(data?.lastMonth && data.lastMonth>month ? data.lastMonth : month);value=shiftMonth(value,1)) months.push(value);
@@ -74,7 +76,7 @@ export function SalesCalendar({ warehouseCode, goodsNo, initialMonth }: { wareho
       </>}
     </div>
     <p className="sales-calendar-hint"><span className="compact-inbound-legend"/> 有入库　— 暂无有效数据　点击日期查看计算</p>
-    {current && <details className="sales-month-trend"><summary>本月销量趋势</summary><SalesTrend samples={current.days.map(d=>({date:d.date,value:d.sales,provisional:d.provisional}))}/><p>日期 → · 净销量 ↑　悬停数据点查看数值；虚线为空心点对应的临时销量。</p></details>}
+    {current && <details className="sales-month-trend"><summary>本月销量趋势</summary><SalesTrend samples={trendDays.map(d=>({date:d.date,value:d.sales,provisional:d.provisional}))}/><p>日期 → · 净销量 ↑　悬停数据点查看数值；橙色点表示临时销量。</p></details>}
     </div><div className="sales-calendar-analysis-pane">{day ? <DayAnalysis key={day.date} day={day}/> : <div className="sales-calendar-select-hint"><strong>选择一个日期</strong><p>查看当天的库存与入库核算</p></div>}</div></div>
     <p className="sales-calendar-caption">日期沿用主表的采集区间起始日，区间按仓库每日采集时间确定；净销量为库存消耗估算，包含负值退货/回补。</p>
   </div>;

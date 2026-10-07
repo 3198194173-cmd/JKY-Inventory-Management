@@ -96,7 +96,7 @@ export async function loadInventory(owner: string, query: { source?: string; war
   if (query.filter === "positive") where += " AND sign > 0";
   const count = await database().prepare(`SELECT COUNT(*) AS count FROM stock_entries WHERE ${where}`).bind(...parameters).first<{ count: number }>();
   const totalRows = count?.count || 0, page = Math.min(requestedPage, Math.max(1, Math.ceil(totalRows / pageSize)));
-  const asc = query.sort === "quantity_asc", desc = query.sort === "quantity_desc" || query.sort === "quantity";
+  const asc = query.sort === "quantity_asc", desc = !query.sort || query.sort === "quantity_desc" || query.sort === "quantity";
   // Normalized decimal strings sort exactly, including quantities beyond REAL precision.
   const sort = asc || desc ? `sign ${asc ? "ASC" : "DESC"}, CASE WHEN sign > 0 THEN instr(quantity || '.', '.') - 1 WHEN sign < 0 THEN 2 - instr(quantity || '.', '.') ELSE 0 END ${asc ? "ASC" : "DESC"}, CASE WHEN sign > 0 THEN quantity END COLLATE BINARY ${asc ? "ASC" : "DESC"}, CASE WHEN sign < 0 THEN substr(quantity, 2) END COLLATE BINARY ${asc ? "DESC" : "ASC"}, goods_no COLLATE BINARY ASC` : "goods_no COLLATE BINARY ASC";
   const salesSort = ["sales_asc","sales_desc"].includes(query.sort || "") && salesDates.includes(query.sortDate || "");

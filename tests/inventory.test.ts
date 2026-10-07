@@ -9,22 +9,24 @@ import { sendRobotMessage,alertDigest,alertRows } from "../lib/dingtalk";
 import { sampleView } from "../lib/sample";
 import { inventoryWorkbook } from "../lib/excel";
 import { stockScope, barcodeBatches } from "../lib/stock-scope";
-import { salesTrend } from "../lib/sales-trend";
+import { salesTrendOption, trendSamples } from "../lib/sales-trend";
+import { init as initChart } from "../lib/echarts-runtime";
 
-test('趋势使用真实日期间隔及含零的数值刻度，缺日断线、负值在零线下、临时段用虚线',()=>{
-  const chart=salesTrend([{date:'2026-10-01',value:'3'},{date:'2026-10-02',value:'6'},{date:'2026-10-04',value:'-2'},{date:'2026-10-05',value:'0',provisional:true}],400,160)!;
-  assert.equal(chart.ticks.includes(0),true);assert.equal(chart.segments.length,2);
-  assert.equal(chart.points[0].x,chart.left);assert.equal(chart.points.at(-1)!.x,chart.right);
-  assert.ok(chart.points[2].y!>chart.zero);assert.ok(chart.points[1].y!<chart.points[0].y!);
-  assert.equal(chart.points[3].y,chart.zero);assert.equal(chart.segments[1].provisional,true);
-  assert.ok(Math.abs((chart.points[2].x-chart.points[1].x)/(chart.points[1].x-chart.points[0].x)-2)<1e-10);
-  const flat=salesTrend([{date:'2026-10-01',value:'5'},{date:'2026-10-02',value:'5'}],140,44,true)!;
-  assert.equal(flat.points[0].y,flat.points[1].y);assert.ok(flat.points[0].y!<flat.zero);
-  assert.equal(salesTrend([{date:'2026-10-01',value:null}],400,160),null);
-  const missing=salesTrend([{date:'2026-10-01',value:'1'},{date:'2026-10-02',value:null},{date:'2026-10-03',value:'2'}],400,160)!;
-  assert.equal(missing.segments.length,0);
-  const zero=salesTrend([{date:'2026-10-01',value:'0'}],140,44,true)!;
-  assert.ok(Number.isFinite(zero.zero));assert.equal(zero.points[0].y,zero.zero);
+test('ECharts基础平滑折线实际渲染曲线，保留缺日、负数与临时标记',()=>{
+  const samples=[{date:'2026-10-01',value:'3'},{date:'2026-10-02',value:'6'},{date:'2026-10-03',value:'1'},{date:'2026-10-04',value:'-2'},{date:'2026-10-06',value:'0',provisional:true}];
+  const points=trendSamples(samples);assert.equal(points.length,6);assert.equal(points[4].value,null);
+  const option=salesTrendOption(samples),chart=initChart(null,undefined,{renderer:'svg',ssr:true,width:400,height:220});
+  try {
+    chart.setOption(option);const svg=chart.renderToSVGString();
+    assert.match(svg,/<svg/);assert.match(svg,/d="M[^"]*C/,'使用ECharts生成的贝塞尔平滑路径');assert.doesNotMatch(svg,/NaN|Infinity/);
+    const model=chart.getOption(),series=(model.series as Record<string,unknown>[])[0];
+    assert.equal(series.smooth,true);assert.equal(series.connectNulls,false);
+    assert.deepEqual((model.xAxis as Record<string,unknown>[])[0].data,['2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05','2026-10-06']);
+    const data=series.data as unknown[];assert.equal(data[3],-2);assert.equal(data[4],null);assert.deepEqual(data[5],{value:0,itemStyle:{color:'#d69a25',borderColor:'#d69a25'}});
+    chart.setOption(salesTrendOption([{date:'2026-10-01',value:'0'}],true),{notMerge:true});
+    assert.doesNotMatch(chart.renderToSVGString(),/NaN|Infinity/,'单日零销量也能正确绘制');
+    chart.resize({width:140,height:44});assert.doesNotMatch(chart.renderToSVGString(),/NaN|Infinity/);
+  }finally{chart.dispose();}assert.equal(chart.isDisposed(),true);
 });
 
 const row = (skuId="1",quantity:unknown="0.1") => ({goodsNo:"G001",goodsName:"货品",skuId,skuBarcode:skuId,warehouseId:"2391620541187785472",warehouseName:WAREHOUSE_NAME,unitName:"Pcs",orderAbleQuantity:quantity});
