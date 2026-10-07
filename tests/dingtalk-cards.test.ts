@@ -113,7 +113,7 @@ test('原生卡片保持精确数值、负销量和零销量；缺日不补零�
   assert.ok(Object.values(params).every(p=>typeof p==='string'));assert.equal(params.reportImage,undefined);
 });
 
-test('原生卡片每款一行、统一表头，小曲线开启原生详情，不含图片或每日销量面板',()=>{
+test('原生卡片桌面保留表格、手机另用完整编码布局，两端曲线开启同一份原生详情',()=>{
   const exported=JSON.parse(readFileSync('docs/dingtalk-inventory-card.json','utf8')),editor=JSON.parse(exported.editorData);
   type TemplateNode={componentName:string;id:string;props:{listData?:{variable:string};data?:{variable:string};enableDetail?:boolean;direction?:string;height?:number;text?:{content:string}};children?:TemplateNode[]};
   const nodes:TemplateNode[]=[];
@@ -122,6 +122,9 @@ test('原生卡片每款一行、统一表头，小曲线开启原生详情，�
   const loop=nodes.find(n=>n.componentName==='Loop')!,chart=nodes.find(n=>n.componentName==='Chart')!;
   assert.equal(loop.props.listData?.variable,'rows');assert.equal(chart.props.data?.variable,'rows[0].chart');assert.equal(chart.props.enableDetail,true);
   assert.equal(chart.props.height,64);assert.equal(loop.children!.length,1);assert.equal(loop.children![0].props.direction,'horizontal');assert.equal(loop.children![0].children!.length,5);
+  const mobileLoop=nodes.find(n=>n.id==='node_inventory_mobile_rows')!,mobileChart=nodes.find(n=>n.id==='node_inventory_mobile_chart')!;
+  assert.equal(mobileLoop.props.listData?.variable,'rows');assert.equal(mobileLoop.children![0].props.direction,'vertical');
+  assert.equal(mobileChart.props.data?.variable,chart.props.data?.variable);assert.equal(mobileChart.props.enableDetail,true);assert.equal(mobileChart.props.height,76);
   assert.equal(new Set(nodes.map(n=>n.id)).size,nodes.length);
   const variables=editor.variableList.find((v:{name:string})=>v.name==='rows');assert.equal(variables.type,'loopArray');assert.equal(variables.schema.find((v:{name:string})=>v.name==='chart').type,'chart');
   assert.match(exported.widgetInfo,/<DDChartView/);assert.match(exported.widgetInfo,/dataPath/);assert.doesNotMatch(exported.widgetInfo,/<ImageView/);
@@ -142,5 +145,5 @@ test('循环文字使用官方 loop 上下文，两个商品分别渲染真实�
     assert.ok(exported.widgetInfo.includes(`@subdata{'${field}'}`));
   }
   const loopTexts=nodes.filter(n=>n.componentName==='BaseText'&&n.props.text?.content.includes('loop.'));
-  assert.equal(loopTexts.length,4);assert.doesNotMatch(exported.editorData,/\$\{rows\[0\]\./);
+  assert.equal(loopTexts.length,8);assert.doesNotMatch(exported.editorData,/\$\{rows\[0\]\./);
 });
