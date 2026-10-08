@@ -90,6 +90,7 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
       if (error instanceof DingTalkCardError && error.rejected) group.state = "failed";
       // Only expose our sanitized errors, never upstream bodies or credentials.
       if (error instanceof Error && error.message.startsWith("钉钉")) group.error = error.message;
+      else group.error = "钉钉发送未确认：未取得有效受理回执，请先核对群消息；本次不会自动重发";
     }
     persist();
   }

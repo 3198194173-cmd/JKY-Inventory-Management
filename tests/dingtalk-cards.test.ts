@@ -43,6 +43,41 @@ test('手机小曲线使用真实7天数据，PNG和可点击详情可无登录�
   await writeFile('outputs/dingtalk-mobile-trend.png',png);
 });
 
+test('公网地址配置失败明确标记尚未发送并保留修复提示，不调用钉钉',async()=>{
+  const previous=process.env.INVENTORY_SITE_URL;
+  let calls=0;const fetcher=(async()=>{calls++;throw Error('禁止发送 isolated-card-secret');}) as typeof fetch;
+  try {
+    for(const address of ['', 'http://localhost:3108', 'https://localhost:3108', 'invalid-isolated-card-secret']) {
+      process.env.INVENTORY_SITE_URL=address;
+      await assert.rejects(()=>sendRobotCard(credentials,card,templateId,fetcher),(error:unknown)=>{
+        assert.ok(error instanceof DingTalkCardError);assert.equal(error.rejected,true);
+        assert.match(error.message,/尚未发送.*INVENTORY_SITE_URL.*HTTPS/);assert.doesNotMatch(error.message,/isolated-card-secret/);
+        return true;
+      });
+    }
+    assert.equal(calls,0);
+  } finally {if(previous===undefined)delete process.env.INVENTORY_SITE_URL;else process.env.INVENTORY_SITE_URL=previous;}
+});
+
+test('令牌阶段失败确定未投放，投放超时或网络异常保留未确认并给出安全原因',async()=>{
+  let calls=0;
+  await assert.rejects(()=>sendRobotCard({...credentials,clientId:'token-stage-failure'},card,templateId,(async()=>{calls++;throw Error('private credential isolated-card-secret');}) as typeof fetch),(error:unknown)=>{
+    assert.ok(error instanceof DingTalkCardError);assert.equal(error.rejected,true);assert.match(error.message,/尚未发送.*访问令牌/);assert.doesNotMatch(error.message,/private|isolated-card-secret/);return true;
+  });
+  assert.equal(calls,1);
+  for(const failure of [new DOMException('isolated-card-secret','TimeoutError'),new TypeError('https://private/?token=isolated-card-secret')]) {
+    let sends=0;
+    const fetcher=(async(url:unknown)=>{
+      if(String(url).includes('/oauth2/'))return Response.json({accessToken:'mock-card-token',expireIn:7200});
+      sends++;throw failure;
+    }) as typeof fetch;
+    await assert.rejects(()=>sendRobotCard({...credentials,clientId:'network-stage-failure'},card,templateId,fetcher),(error:unknown)=>{
+      assert.ok(error instanceof DingTalkCardError);assert.equal(error.rejected,false);assert.match(error.message,/超时|网络请求异常/);assert.doesNotMatch(error.message,/private|isolated-card-secret|https:/);return true;
+    });
+    assert.equal(sends,1,'不自动重试可能已送达的请求');
+  }
+});
+
 test('负库存预警进入完整单卡数据，按周转排序且均值门槛仍有效',()=>{
   const source=rows(24);
   source[23].quantity='-5';source[23].metrics={...source[23].metrics!,turnoverDays:'-0.5',reason:'negative_inventory'};

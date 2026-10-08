@@ -6,25 +6,29 @@ import type { TurnoverCard } from "./dingtalk-card-data";
 
 const signature = (payload: string, secret: string) => createHmac("sha256", secret).update("inventory-trend-v1:" + payload).digest();
 
+// These messages contain only our own validation hints, never request data.
+export class TrendThumbnailError extends Error {}
+
 function samplesFromPayload(value: unknown): TrendSample[] {
-  if (!Array.isArray(value) || value.length !== 7) throw new Error("无效趋势数据");
+  if (!Array.isArray(value) || value.length !== 7) throw new TrendThumbnailError("无效趋势数据");
   const samples = value.map((item: unknown) => {
-    if (!Array.isArray(item) || item.length !== 2) throw new Error("无效趋势数据");
+    if (!Array.isArray(item) || item.length !== 2) throw new TrendThumbnailError("无效趋势数据");
     const [date, raw] = item;
-    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date + "T00:00:00Z"))) throw new Error("无效趋势日期");
-    if (raw !== null && (typeof raw !== "string" || raw.length > 40 || !/^-?\d+(?:\.\d+)?$/.test(raw))) throw new Error("无效趋势数值");
+    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date + "T00:00:00Z"))) throw new TrendThumbnailError("无效趋势日期");
+    if (raw !== null && (typeof raw !== "string" || raw.length > 40 || !/^-?\d+(?:\.\d+)?$/.test(raw))) throw new TrendThumbnailError("无效趋势数值");
     const number = raw === null ? null : Number(raw);
     return { date, value: number !== null && Number.isFinite(number) && Math.abs(number) <= Number.MAX_SAFE_INTEGER ? raw as string : null };
   });
-  if (samples.some((sample, i) => i > 0 && Date.parse(sample.date) - Date.parse(samples[i - 1].date) !== 86400000)) throw new Error("无效趋势日期");
+  if (samples.some((sample, i) => i > 0 && Date.parse(sample.date) - Date.parse(samples[i - 1].date) !== 86400000)) throw new TrendThumbnailError("无效趋势日期");
   return samples;
 }
 
 export function trendThumbnailUrls(card: TurnoverCard, siteUrl: string, secret: string): string[] {
-  if (!secret) throw new Error("缺少趋势图签名配置");
+  if (!secret) throw new TrendThumbnailError("缺少趋势图签名配置，请检查 DINGTALK_CLIENT_SECRET");
   let base: URL;
-  try { base = new URL(siteUrl); } catch { throw new Error("请将 INVENTORY_SITE_URL 配置为可公开访问的 HTTPS 库存网站地址"); }
-  if (base.protocol !== "https:" || base.username || base.password) throw new Error("请将 INVENTORY_SITE_URL 配置为可公开访问的 HTTPS 库存网站地址");
+  const addressHint = "请将云端 INVENTORY_SITE_URL 配置为可公开访问的 HTTPS 库存网站地址（不能使用 localhost 或 HTTP），并重建 web、worker 容器";
+  try { base = new URL(siteUrl.trim()); } catch { throw new TrendThumbnailError(addressHint); }
+  if (base.protocol !== "https:" || base.username || base.password || /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/i.test(base.hostname)) throw new TrendThumbnailError(addressHint);
   return card.rows.map(row => {
     const samples = samplesFromPayload(card.dates.map((date, i) => [date, row.sales[i] ?? null]));
     // Only seven dates and sales are included. No account, product or inventory fields.

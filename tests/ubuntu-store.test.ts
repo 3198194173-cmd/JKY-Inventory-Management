@@ -117,6 +117,7 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
       return 'mock-accepted';
     });
     assert.equal(partial.groups.find(g=>g.id==='test-group')!.state,'unconfirmed');assert.equal(partial.groups.find(g=>g.id==='test-group')!.acceptedParts,1);
+    assert.match(partial.groups.find(g=>g.id==='test-group')!.error!,/未取得有效受理回执/);
     assert.equal(otherParts,currentPreview.messages.length,'一个群的分条失败不影响其他群完整报告');
     await sendManualAlert(owner,partialInput,manualSender);assert.equal(manualCalls,currentPreview.messages.length*2,'部分受理不重试');
     db.prepare('UPDATE manual_alert_deliveries SET attempted_at=0 WHERE owner=?').run(owner);
@@ -128,6 +129,22 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
     assert.ok(rejected.groups.every(g=>g.error?.includes('param.cardTemplateIdInvalid')));
     await sendManualAlert(owner,rejectedInput,rejection);assert.equal(rejectedCalls,2,'明确拒绝的原请求重放也不重发');
     await assert.rejects(()=>sendManualAlert(owner,{...rejectedInput,requestId:randomUUID()},rejection),/发送尝试不足30秒/);
+    db.prepare('UPDATE manual_alert_deliveries SET attempted_at=0 WHERE owner=?').run(owner);
+    const oldSite=process.env.INVENTORY_SITE_URL,oldTemplate=process.env.DINGTALK_CARD_TEMPLATE_ID,oldFetch=globalThis.fetch;
+    let externalCalls=0;
+    try {
+      process.env.INVENTORY_SITE_URL='http://localhost:3108';process.env.DINGTALK_CARD_TEMPLATE_ID='957e3c25-a2d9-4cd3-a424-be40f18a9f9b';
+      globalThis.fetch=(async()=>{externalCalls++;throw Error('禁止真实请求');}) as typeof fetch;
+      const configInput={...input,requestId:randomUUID()},configFailed=await sendManualAlert(owner,configInput);
+      assert.match(configFailed.message,/2 个群发送失败/);assert.doesNotMatch(configFailed.message,/未确认/);
+      assert.ok(configFailed.groups.every(g=>g.state==='failed' && g.acceptedParts===0 && g.totalParts===1 && g.error?.includes('INVENTORY_SITE_URL')));
+      assert.equal(externalCalls,0,'地址配置错误时不调用钉钉');
+      const replayed=await sendManualAlert(owner,configInput);assert.deepEqual(replayed,configFailed);assert.equal(externalCalls,0);
+    } finally {
+      if(oldSite===undefined)delete process.env.INVENTORY_SITE_URL;else process.env.INVENTORY_SITE_URL=oldSite;
+      if(oldTemplate===undefined)delete process.env.DINGTALK_CARD_TEMPLATE_ID;else process.env.DINGTALK_CARD_TEMPLATE_ID=oldTemplate;
+      globalThis.fetch=oldFetch;
+    }
     const interruptedInput={...input,requestId:randomUUID()},hashInput={...interruptedInput,groupIds:[...interruptedInput.groupIds].sort()};
     const {createHash}=await import('node:crypto');
     db.prepare("INSERT INTO manual_alert_deliveries VALUES(?,?,?,?,?,?,'sending',?,0)").run(...robotScope(owner),interruptedInput.requestId,createHash('sha256').update(JSON.stringify(hashInput)).digest('hex'),code,JSON.stringify({...partial,state:'sending',groups:[{...partial.groups[0],state:'pending'},{...partial.groups[1],state:'unconfirmed'}]}));
