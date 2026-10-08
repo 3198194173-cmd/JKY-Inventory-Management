@@ -16,9 +16,9 @@ export function normalizeTurnoverThreshold(value: unknown): string {
 }
 
 export function turnoverAlert(metrics: InventoryMetrics | undefined, stock: string, averageThreshold: string): boolean {
-  if (!metrics || metrics.reason !== null || metrics.validDays !== 7 || metrics.total7 == null || metrics.average7 == null || metrics.turnoverDays == null) return false;
+  if (!metrics || (metrics.reason !== null && metrics.reason !== "negative_inventory") || metrics.validDays !== 7 || metrics.total7 == null || metrics.average7 == null || metrics.turnoverDays == null) return false;
   const total = metrics.total7;
-  if (compareQuantity(total,"0") <= 0 || compareQuantity(stock,"0") < 0) return false;
+  if (compareQuantity(total,"0") <= 0) return false;
   // Compare unrounded ratios by cross multiplication with exact decimal arithmetic.
   return compareQuantity(total,multiplyQuantityByInteger(averageThreshold,7)) > 0
     && compareQuantity(multiplyQuantityByInteger(stock,7),multiplyQuantityByInteger(total,TURNOVER_ALERT_DAYS)) < 0;

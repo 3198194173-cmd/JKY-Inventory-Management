@@ -7,11 +7,13 @@ export type TurnoverCard = {
   totalCount: number; part: number; totalParts: number;
   rows: { goodsNo: string; goodsName: string; unitName: string; quantity: string; average: string; turnover: string; sales: (string | null)[] }[];
 };
-export const CARD_ROWS_PER_PAGE = 6;
-// Current DingTalk clients use ECharts axis options, not the legacy F2 ticks.
-// Keep the real data unchanged; reserve the row for the curve and its detail action.
+// Inline native charts and the web detail panel do not share a renderer.
+// Supply the native protocol's padding/scale fields as well as web axis options.
 export const NATIVE_TREND_CONFIG = {
   legend: false, lineShape: "smooth", color: "#5278D8",
+  padding: [12, 8, 20, 32],
+  xAxisConfig: { type: "cat", tickCount: 2 },
+  yAxisConfig: { tickCount: 3, alias: "净销量" },
   // Hiding both axes disables the native detail tooltip; retain the value axis.
   xAxisOptions: { label: false }, yAxisOptions: { label: true },
 };
@@ -19,17 +21,17 @@ export function turnoverCards(rows: InventoryView["rows"], threshold: string, wa
   const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(capturedAt));
   const dates = recentSalesDates(date).reverse();
   const time = new Date(capturedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
-  const totalParts = Math.ceil(rows.length / CARD_ROWS_PER_PAGE);
-  return Array.from({ length: totalParts }, (_, index) => ({
+  if (!rows.length) return [];
+  return [{
     title: "库存周转预警",
-    summary: `${warehouse.replace(/[\r\n\t]/g, " ")} · ${time} · 共 ${rows.length} 款 · ${index + 1}/${totalParts}`,
+    summary: `${warehouse.replace(/[\r\n\t]/g, " ")} · ${time} · 共 ${rows.length} 款`,
     footer: `均值 > ${threshold} · 周转 < ${TURNOVER_ALERT_DAYS}天 · 净销量含退货，按库存与入库核算`,
-    dates, totalCount: rows.length, part: index + 1, totalParts,
-    rows: rows.slice(index * CARD_ROWS_PER_PAGE, (index + 1) * CARD_ROWS_PER_PAGE).map(row => ({
+    dates, totalCount: rows.length, part: 1, totalParts: 1,
+    rows: rows.map(row => ({
       goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName, quantity: row.quantity, average: row.metrics?.average7 ?? "—", turnover: row.metrics?.turnoverDays ?? "—",
       sales: dates.map(day => row.sales?.[day] ?? null),
     })),
-  }));
+  }];
 }
 
 // The card builder's native Chart accepts { type, data: [{x,y,type}], config }.

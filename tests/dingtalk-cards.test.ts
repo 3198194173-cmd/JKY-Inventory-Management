@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { turnoverCards, cardTemplateId, normalizeCardTemplateId, nativeCardParams } from "../lib/dingtalk-card-data";
 import { turnoverCardSvg, renderTurnoverCard } from "../lib/dingtalk-card-image";
 import { DingTalkCardError, sendRobotCard, sendInventoryReport } from "../lib/dingtalk-cards";
+import { turnoverAlertRows } from "../lib/dingtalk";
 import type { InventoryView } from "../lib/inventory-types";
 
 const rows = (count: number): InventoryView["rows"] => Array.from({length:count},(_,i)=>({goodsNo:`C.Q.CB.AP.00.${String(i+1).padStart(4,'0')}`,goodsName:'卡片预览示例',unitName:'Pcs',skuCount:1,quantity:String(40+i),history:{},sales:Object.fromEntries([3,6,11,-2,15,36,1].map((q,j)=>[`2026-10-0${j+1}`,String(q)])),metrics:{total7:'70',average7:'10',turnoverDays:'4',validDays:7,basis:'inbound_adjusted_difference',reason:null}}));
@@ -14,13 +15,25 @@ const templateId='957e3c25-a2d9-4cd3-a424-be40f18a9f9b';
 const apiTemplateId=templateId+'.schema';
 const credentials={clientId:'card-test',clientSecret:'isolated-card-secret',robotCode:'card-robot',openConversationId:'card-group'};
 
-test('完整报表每张6款，分张后不丢失货品、负销量、精确数量或日期',()=>{
+test('负库存预警进入完整单卡数据，按周转排序且均值门槛仍有效',()=>{
+  const source=rows(24);
+  source[23].quantity='-5';source[23].metrics={...source[23].metrics!,turnoverDays:'-0.5',reason:'negative_inventory'};
+  source[22].quantity='-3';source[22].metrics={...source[22].metrics!,total7:'21',average7:'3',turnoverDays:'-1',reason:'negative_inventory'};
+  const matching=turnoverAlertRows(source,'3');
+  assert.equal(matching.length,23);assert.equal(matching[0].goodsNo,source[23].goodsNo);
+  const report=turnoverCards(matching,'3','仓','2026-10-08T00:00:23Z');
+  assert.equal(report.length,1);
+  const payload=JSON.parse(nativeCardParams(report[0]).rows);
+  assert.equal(payload.length,23);assert.equal(payload[0].quantity,'-5');assert.equal(payload[0].turnover,'-0.5');
+});
+
+test('完整报表仅一张卡片，不丢失货品、负销量、精确数量或日期',()=>{
   const cards=turnoverCards(rows(1203),'3','全仓','2026-10-07T16:00:23Z');
-  assert.equal(cards.length,201);assert.equal(cards.flatMap(c=>c.rows).length,1203);assert.equal(cards.at(-1)!.rows.length,3);
-  assert.ok(cards.every(c=>c.rows.length<=6));
+  assert.equal(cards.length,1);assert.equal(cards[0].rows.length,1203);
+  assert.deepEqual(turnoverCards([],"3","空仓","2026-10-08T00:00:23Z"),[]);
   assert.deepEqual(cards.flatMap(c=>c.rows.map(r=>r.goodsNo)),rows(1203).map(r=>r.goodsNo));
   assert.deepEqual(cards[0].dates,['2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05','2026-10-06','2026-10-07']);
-  assert.equal(cards[0].rows[0].sales[3],'-2');assert.equal(cards[200].part,201);assert.equal(cards[200].totalParts,201);
+  assert.equal(cards[0].rows[0].sales[3],'-2');assert.equal(cards[0].part,1);assert.equal(cards[0].totalParts,1);
   const exact=rows(1);exact[0].quantity='9007199254740993.125';delete exact[0].sales!['2026-10-03'];
   const result=turnoverCards(exact,'3','仓','2026-10-08T00:00:23Z')[0];
   assert.equal(result.rows[0].quantity,exact[0].quantity);assert.equal(result.rows[0].sales[2],null);
@@ -57,7 +70,7 @@ test('配置模板后走卡片传输并记录受理张数；未配置继续文�
       if(String(url).includes('/createAndDeliver')){deliveries++;const body=JSON.parse(options.body as string);assert.equal(body.cardTemplateId,apiTemplateId);return Response.json({success:true,result:{outTrackId:body.outTrackId,deliverResults:[{success:true,spaceId:credentials.openConversationId,spaceType:'IM_GROUP'}]}});}
       throw Error('禁止外部请求');
     }) as typeof fetch;
-    await sendInventoryReport(credentials,{messages:['mock text'],cards:[card]},undefined,parts=>accepted=parts);
+    await sendInventoryReport(credentials,{messages:['mock text'],cards:turnoverCards(rows(24),'3','仓','2026-10-08T00:00:23Z')},undefined,parts=>accepted=parts);
     assert.equal(uploads,0);assert.equal(deliveries,1);assert.equal(accepted,1);
     delete process.env.DINGTALK_CARD_TEMPLATE_ID;
     let texts=0;await sendInventoryReport(credentials,{messages:['完整文字'],cards:[card]},async(_c,m)=>{assert.equal(m,'完整文字');texts++;return 'mock';});assert.equal(texts,1);
@@ -110,7 +123,7 @@ test('原生卡片保持精确数值、负销量和零销量；缺日不补零�
   assert.deepEqual(data[0].chart.data.map((p:{y:number})=>p.y),[0,-2,1.125,4,6]);
   assert.notEqual(data[0].chart.data[1].type,data[0].chart.data[2].type);
   assert.notEqual(data[0].chart.data[2].type,data[0].chart.data[3].type);
-  assert.deepEqual(data[0].chart.config,{legend:false,lineShape:'smooth',color:'#5278D8',xAxisOptions:{label:false},yAxisOptions:{label:true}});
+  assert.deepEqual(data[0].chart.config,{legend:false,lineShape:'smooth',color:'#5278D8',padding:[12,8,20,32],xAxisConfig:{type:'cat',tickCount:2},yAxisConfig:{tickCount:3,alias:'净销量'},xAxisOptions:{label:false},yAxisOptions:{label:true}});
   assert.ok(JSON.parse(nativeCardParams(card).rows)[0].chart.data.every((p:Record<string,unknown>)=>p.type===undefined),'完整单条曲线不附带重复图例');
   assert.ok(Object.values(params).every(p=>typeof p==='string'));assert.equal(params.reportImage,undefined);
 });
@@ -126,7 +139,11 @@ test('原生卡片桌面保留表格、手机另用完整编码布局，两端�
   assert.equal(chart.props.height,64);assert.equal(loop.children!.length,1);assert.equal(loop.children![0].props.direction,'horizontal');assert.equal(loop.children![0].children!.length,5);
   const mobileLoop=nodes.find(n=>n.id==='node_inventory_mobile_rows')!,mobileChart=nodes.find(n=>n.id==='node_inventory_mobile_chart')!;
   assert.equal(mobileLoop.props.listData?.variable,'rows');assert.equal(mobileLoop.children![0].props.direction,'vertical');
-  assert.equal(mobileChart.props.data?.variable,chart.props.data?.variable);assert.equal(mobileChart.props.enableDetail,true);assert.equal(mobileChart.props.height,76);
+  assert.equal(mobileChart.props.data?.variable,chart.props.data?.variable);assert.equal(mobileChart.props.enableDetail,true);assert.equal(mobileChart.props.height,120);
+  assert.equal(nodes.find(n=>n.id==="node_inventory_mobile_detail")!.props.direction,"vertical");
+  assert.equal(editor.schema.componentsTree[0].props.autoFoldConfig.needFold,true);
+  assert.equal(editor.schema.componentsTree[0].props.autoFoldConfig.heightLimit,360);
+  assert.match(exported.widgetInfo,/heightLimit-360-_cardFoldStatusLocalDataKey/);
   assert.equal(new Set(nodes.map(n=>n.id)).size,nodes.length);
   const desktopLayout=nodes.find(n=>n.id==='node_inventory_desktop_layout')!,mobileLayout=nodes.find(n=>n.id==='node_inventory_mobile_layout')!;
   const layouts=[desktopLayout,mobileLayout] as unknown as {props:{isFixedWidth:boolean;width:number;visible:{condition:{conditions:{type:string;platform:string[]}[]}}}}[];

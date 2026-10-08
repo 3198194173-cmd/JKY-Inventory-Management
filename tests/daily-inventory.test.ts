@@ -31,7 +31,7 @@ test("近7天均值固定除7，周转使用最新库存及未舍入均值", () 
   assert.throws(()=>divideQuantity("1","0"),/除以零/);
 });
 
-test("缺日、单位变化、零消耗和负库存不伪造周转", () => {
+test("缺日、单位变化和零消耗不伪造周转；负库存保留带符号周转", () => {
   const values = Array.from({length:8},(_,i)=>({date:`2026-10-0${i+1}`,quantity:String(20-i),unitName:"Pcs"}));
   const missing = inventoryMetrics(values.filter((_,i)=>i!==3),"2026-10-08","10","Pcs");
   assert.equal(missing.average7,null); assert.equal(missing.reason,"insufficient_data"); assert.equal(missing.validDays,5);
@@ -65,7 +65,11 @@ test("周转预警同时满足严格门槛，使用未舍入值且不将无效�
   assert.equal(turnoverAlert(tinyDays,"119.999","3"),true,"周转未舍入时小于30");
   assert.equal(turnoverAlert(metric("28","0"),"0","3"),true,"有日均消耗但库存为0需预警");
   for (const total of ["0","-2"])assert.equal(turnoverAlert(metric(total,"80"),"80","0"),false);
-  assert.equal(turnoverAlert(metric("28","-1"),"-1","3"),false);
+  assert.equal(metric("28","-1").turnoverDays,"-0.25");
+  assert.equal(turnoverAlert(metric("28","-1"),"-1","3"),true);
+  assert.equal(turnoverAlert(metric("21","-1"),"-1","3"),false,"负库存也必须严格超过均值门槛");
+  assert.equal(turnoverAlert(metric("20","-5"),"-5","3"),false);
+  assert.equal(turnoverAlert(metric("21.001","-1"),"-1","3"),true,"负库存也使用未舍入均值");
   assert.equal(turnoverAlert(undefined,"80","3"),false);
   assert.equal(turnoverAlert({...metric("28","80"),reason:"inbound_unverified",total7:null},"80","3"),false);
   assert.equal(turnoverAlert({...metric("28","80"),validDays:6},"80","3"),false);

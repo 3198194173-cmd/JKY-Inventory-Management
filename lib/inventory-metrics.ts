@@ -33,7 +33,7 @@ export function inventoryMetrics(values: DailyValue[], asOfDate: string, stock: 
   result.average7 = divideQuantity(total, "7");
   if (compareQuantity(total, "0") === 0) return { ...result, reason: "no_consumption" };
   if (compareQuantity(total, "0") < 0) return { ...result, reason: "net_returns" };
-  if (compareQuantity(stock, "0") < 0) return { ...result, reason: "negative_inventory" };
   // stock / (total / 7), using the unrounded total rather than the displayed mean.
-  return { ...result, turnoverDays: divideQuantity(multiplyQuantityByInteger(stock, 7), total), reason: null };
+  // Negative available stock is a shortage, not missing sales data.
+  return { ...result, turnoverDays: divideQuantity(multiplyQuantityByInteger(stock, 7), total), reason: compareQuantity(stock, "0") < 0 ? "negative_inventory" : null };
 }
