@@ -134,12 +134,18 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
     let externalCalls=0;
     try {
       process.env.INVENTORY_SITE_URL='http://localhost:3108';process.env.DINGTALK_CARD_TEMPLATE_ID='957e3c25-a2d9-4cd3-a424-be40f18a9f9b';
-      globalThis.fetch=(async()=>{externalCalls++;throw Error('禁止真实请求');}) as typeof fetch;
-      const configInput={...input,requestId:randomUUID()},configFailed=await sendManualAlert(owner,configInput);
-      assert.match(configFailed.message,/2 个群发送失败/);assert.doesNotMatch(configFailed.message,/未确认/);
-      assert.ok(configFailed.groups.every(g=>g.state==='failed' && g.acceptedParts===0 && g.totalParts===1 && g.error?.includes('INVENTORY_SITE_URL')));
-      assert.equal(externalCalls,0,'地址配置错误时不调用钉钉');
-      const replayed=await sendManualAlert(owner,configInput);assert.deepEqual(replayed,configFailed);assert.equal(externalCalls,0);
+      globalThis.fetch=(async(url:unknown,options:RequestInit)=>{
+        if(String(url).includes('/oauth2/'))return Response.json({accessToken:'store-card-token',expireIn:7200});
+        externalCalls++;assert.ok(String(url).includes('/createAndDeliver'));
+        const body=JSON.parse(options.body as string),fields=JSON.parse(body.cardData.cardParamMap.rows);
+        assert.equal(fields.length,currentPreview.count);assert.equal(fields[0].chartThumbnail,undefined);
+        return Response.json({success:true,result:{outTrackId:body.outTrackId,deliverResults:[{success:true,spaceId:body.openSpaceId.replace('dtv1.card//IM_GROUP.',''),spaceType:'IM_GROUP'}]}});
+      }) as typeof fetch;
+      const configInput={...input,requestId:randomUUID()},configAccepted=await sendManualAlert(owner,configInput);
+      assert.match(configAccepted.message,/已受理 2 个群/);assert.doesNotMatch(configAccepted.message,/未确认|发送失败/);
+      assert.ok(configAccepted.groups.every(g=>g.state==='accepted' && g.acceptedParts===1 && g.totalParts===1 && !g.error));
+      assert.equal(externalCalls,2,'localhost 配置仍能发送原生卡片，每群一张');
+      const replayed=await sendManualAlert(owner,configInput);assert.deepEqual(replayed,configAccepted);assert.equal(externalCalls,2);
     } finally {
       if(oldSite===undefined)delete process.env.INVENTORY_SITE_URL;else process.env.INVENTORY_SITE_URL=oldSite;
       if(oldTemplate===undefined)delete process.env.DINGTALK_CARD_TEMPLATE_ID;else process.env.DINGTALK_CARD_TEMPLATE_ID=oldTemplate;

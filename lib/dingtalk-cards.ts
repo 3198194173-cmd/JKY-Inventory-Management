@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { appAccessToken, sendRobotMessage, sendTurnoverReport, type RobotCredentials } from "./dingtalk";
 import { cardTemplateId, normalizeCardTemplateId, nativeCardParams, type TurnoverCard } from "./dingtalk-card-data";
-import { TrendThumbnailError, trendThumbnailUrls } from "./dingtalk-trend-thumbnail";
 
 export class DingTalkCardError extends Error {
   constructor(message: string, public readonly rejected: boolean) { super(message); }
@@ -35,8 +34,8 @@ export async function sendRobotCard(credentials: RobotCredentials, card: Turnove
   catch { throw new DingTalkCardError("钉钉卡片尚未发送：模板 ID 格式无效，请从模板列表复制完整 ID", true); }
   if (!apiTemplateId) throw new DingTalkCardError("钉钉卡片模板 ID 不能为空", true);
   let cardParamMap: Record<string, string>;
-  try { cardParamMap = nativeCardParams(card, trendThumbnailUrls(card, process.env.INVENTORY_SITE_URL || "", credentials.clientSecret)); }
-  catch (error) { throw new DingTalkCardError(`钉钉卡片尚未发送：${error instanceof TrendThumbnailError ? error.message : "报告数据准备失败，请重新预览"}`, true); }
+  try { cardParamMap = nativeCardParams(card); }
+  catch { throw new DingTalkCardError("钉钉卡片尚未发送：报告数据准备失败，请重新预览", true); }
   let token: string;
   try { token = await appAccessToken(credentials, fetcher); }
   catch { throw new DingTalkCardError("钉钉卡片尚未发送：获取应用访问令牌失败，请检查应用凭证及服务器到钉钉的网络", true); }
