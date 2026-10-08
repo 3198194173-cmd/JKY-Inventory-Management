@@ -36,8 +36,9 @@ export function turnoverCards(rows: InventoryView["rows"], threshold: string, wa
 
 // The card builder's native Chart accepts { type, data: [{x,y,type}], config }.
 // Quantities stay decimal strings in text; only plotting uses JavaScript numbers.
-export function nativeCardParams(card: TurnoverCard): Record<string, string> {
-  const rows = card.rows.map(row => {
+export function nativeCardParams(card: TurnoverCard, thumbnails?: string[]): Record<string, string> {
+  if (thumbnails && thumbnails.length !== card.rows.length) throw new Error("趋势图数量与预警商品不一致");
+  const rows = card.rows.map((row, rowIndex) => {
     let segment = 0, afterGap = false;
     const data = card.dates.flatMap((date, index) => {
       const raw = row.sales[index], value = raw == null ? NaN : Number(raw);
@@ -50,10 +51,15 @@ export function nativeCardParams(card: TurnoverCard): Record<string, string> {
     const chartData = segment === 0 ? data.map(({ x, y }) => ({ x, y })) : data;
     return { goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName,
       quantity: row.quantity, average: row.average, turnover: row.turnover,
+      ...(thumbnails ? {
+        chartThumbnail: thumbnails[rowIndex],
+        chartDetailUrl: `dingtalk://dingtalkclient/action/im_open_hybrid_panel?panelHeight=percent70&hybridType=online&pageUrl=${encodeURIComponent(thumbnails[rowIndex] + "?view=detail")}`,
+      } : {}),
       chart: { type: "lineChart", data: chartData, config: NATIVE_TREND_CONFIG },
     };
   });
   return { title: card.title, summary: card.summary, footer: card.footer,
+    detailTitle: `查看全部 ${card.totalCount} 款预警商品（点击展开／收起）`,
     rows: JSON.stringify(rows), config: JSON.stringify({ autoLayout: true }) };
 }
 

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { appAccessToken, sendRobotMessage, sendTurnoverReport, type RobotCredentials } from "./dingtalk";
 import { cardTemplateId, normalizeCardTemplateId, nativeCardParams, type TurnoverCard } from "./dingtalk-card-data";
+import { trendThumbnailUrls } from "./dingtalk-trend-thumbnail";
 
 export class DingTalkCardError extends Error {
   constructor(message: string, public readonly rejected: boolean) { super(message); }
@@ -31,12 +32,13 @@ async function cardResponseError(response: Response, secrets: string[], template
 export async function sendRobotCard(credentials: RobotCredentials, card: TurnoverCard, templateId: string, fetcher: typeof fetch = fetch): Promise<string> {
   const apiTemplateId = normalizeCardTemplateId(templateId);
   if (!apiTemplateId) throw new Error("钉钉卡片模板 ID 不能为空");
+  const cardParamMap = nativeCardParams(card, trendThumbnailUrls(card, process.env.INVENTORY_SITE_URL || "", credentials.clientSecret));
   const token = await appAccessToken(credentials, fetcher);
   const outTrackId = randomUUID();
   const response = await fetcher("https://api.dingtalk.com/v1.0/card/instances/createAndDeliver", {
     method: "POST", headers: { "Content-Type": "application/json", "x-acs-dingtalk-access-token": token },
     body: JSON.stringify({ cardTemplateId: apiTemplateId, outTrackId, callbackType: "STREAM",
-      cardData: { cardParamMap: nativeCardParams(card) },
+      cardData: { cardParamMap },
       openSpaceId: `dtv1.card//IM_GROUP.${credentials.openConversationId}`,
       imGroupOpenSpaceModel: { supportForward: false }, imGroupOpenDeliverModel: { robotCode: credentials.robotCode },
     }), signal: AbortSignal.timeout(15_000),

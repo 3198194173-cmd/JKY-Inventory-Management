@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { before, after } from "node:test";
 import sharp from "sharp";
 import { mkdir, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
@@ -8,12 +8,40 @@ import { turnoverCardSvg, renderTurnoverCard } from "../lib/dingtalk-card-image"
 import { DingTalkCardError, sendRobotCard, sendInventoryReport } from "../lib/dingtalk-cards";
 import { turnoverAlertRows } from "../lib/dingtalk";
 import type { InventoryView } from "../lib/inventory-types";
+import { trendThumbnailUrls, verifyTrendThumbnail, trendThumbnailSvg, renderTrendThumbnail, trendDetailHtml } from "../lib/dingtalk-trend-thumbnail";
+import { GET as trendResponse } from "../app/api/alerts/trend/[token]/route";
 
 const rows = (count: number): InventoryView["rows"] => Array.from({length:count},(_,i)=>({goodsNo:`C.Q.CB.AP.00.${String(i+1).padStart(4,'0')}`,goodsName:'卡片预览示例',unitName:'Pcs',skuCount:1,quantity:String(40+i),history:{},sales:Object.fromEntries([3,6,11,-2,15,36,1].map((q,j)=>[`2026-10-0${j+1}`,String(q)])),metrics:{total7:'70',average7:'10',turnoverDays:'4',validDays:7,basis:'inbound_adjusted_difference',reason:null}}));
 const card=turnoverCards(rows(5),'3','测试仓（CK031）','2026-10-08T00:00:23Z')[0];
 const templateId='957e3c25-a2d9-4cd3-a424-be40f18a9f9b';
 const apiTemplateId=templateId+'.schema';
+const originalSiteUrl=process.env.INVENTORY_SITE_URL;
+before(()=>{process.env.INVENTORY_SITE_URL="https://inventory.example.test";});
+after(()=>{if(originalSiteUrl===undefined)delete process.env.INVENTORY_SITE_URL;else process.env.INVENTORY_SITE_URL=originalSiteUrl;});
 const credentials={clientId:'card-test',clientSecret:'isolated-card-secret',robotCode:'card-robot',openConversationId:'card-group'};
+
+test('手机小曲线使用真实7天数据，PNG和可点击详情可无登录读取；伪造URL不泄露数据',async()=>{
+  const report=structuredClone(card);report.rows[0].sales=['0','-2',null,'1.125','9007199254740993.125','4','6'];
+  const urls=trendThumbnailUrls(report,'https://inventory.example.test',credentials.clientSecret),token=urls[0].split('/').at(-1)!;
+  const samples=verifyTrendThumbnail(token,credentials.clientSecret)!;
+  assert.deepEqual(samples.map(s=>s.value),['0','-2',null,'1.125',null,'4','6']);
+  assert.equal(verifyTrendThumbnail(token,'wrong-secret'),null);
+  assert.equal(verifyTrendThumbnail(token.slice(1),credentials.clientSecret),null);
+  assert.equal(verifyTrendThumbnail('x'.repeat(2049),credentials.clientSecret),null);
+  assert.throws(()=>trendThumbnailUrls(report,'http://localhost:3108',credentials.clientSecret),/HTTPS/);
+  assert.ok(!urls[0].includes(credentials.clientSecret));
+  const svg=trendThumbnailSvg(samples);assert.match(svg,/d="M[^"]*C/);assert.doesNotMatch(svg,/NaN|Infinity/);
+  const png=await renderTrendThumbnail(samples),meta=await sharp(png).metadata();assert.equal(meta.width,640);assert.equal(meta.height,180);
+  const html=trendDetailHtml(samples);assert.match(html,/data-value="-2"/);assert.match(html,/data-value="暂无数据"/);assert.match(html,/aria-pressed/);assert.match(html,/ecmeta_data_index/);
+  const previous=process.env.DINGTALK_CLIENT_SECRET;process.env.DINGTALK_CLIENT_SECRET=credentials.clientSecret;
+  try{
+    const response=await trendResponse(new Request(urls[0]),{params:Promise.resolve({token})});assert.equal(response.status,200);assert.equal(response.headers.get('Content-Type'),'image/png');
+    assert.equal((await sharp(Buffer.from(await response.arrayBuffer())).metadata()).width,640);
+    const detail=await trendResponse(new Request(urls[0]+'?view=detail'),{params:Promise.resolve({token})});assert.match(detail.headers.get('Content-Type')!,/text\/html/);
+    const rejected=await trendResponse(new Request(urls[0]),{params:Promise.resolve({token:'invalid'})});assert.equal(rejected.status,404);assert.equal(await rejected.text(),'');
+  }finally{if(previous===undefined)delete process.env.DINGTALK_CLIENT_SECRET;else process.env.DINGTALK_CLIENT_SECRET=previous;}
+  await writeFile('outputs/dingtalk-mobile-trend.png',png);
+});
 
 test('负库存预警进入完整单卡数据，按周转排序且均值门槛仍有效',()=>{
   const source=rows(24);
@@ -44,14 +72,14 @@ test('横向表格真实渲染ECharts平滑曲线和PNG；编码进行XML转义'
   const png=await renderTurnoverCard(card),metadata=await sharp(png).metadata();assert.equal(metadata.format,'png');assert.equal(metadata.width,1200);assert.equal(metadata.height,578);
   await mkdir('outputs',{recursive:true});await writeFile('outputs/dingtalk-inventory-card.png',png);
 });
-test('投放原生数据卡片，不生成或上传图片；验证指定群真正投放结果，无自动重试',async()=>{
+test('投放卡片真实字段与小曲线URL，不上传整张报表；验证群投放结果，无自动重试',async()=>{
   const calls:string[]=[];
   const fetcher=(async(url: unknown,options: RequestInit)=>{
     calls.push(String(url));
     if(String(url).includes('/oauth2/'))return Response.json({accessToken:'mock-card-token',expireIn:7200});
     assert.ok(String(url).includes('/createAndDeliver'));
     const body=JSON.parse(options.body as string);assert.equal(body.cardTemplateId,apiTemplateId);assert.equal(body.openSpaceId,'dtv1.card//IM_GROUP.card-group');assert.equal(body.imGroupOpenDeliverModel.robotCode,'card-robot');assert.equal(body.cardData.cardParamMap.reportImage,undefined);assert.equal(JSON.parse(body.cardData.cardParamMap.config).autoLayout,true);
-    const dataRows=JSON.parse(body.cardData.cardParamMap.rows);assert.equal(dataRows.length,5);assert.equal(dataRows[0].chart.type,'lineChart');assert.equal(dataRows[0].chart.data[3].y,-2);assert.equal(dataRows[0].quantity,'40');assert.equal(dataRows[0].salesDetail,undefined);
+    const dataRows=JSON.parse(body.cardData.cardParamMap.rows);assert.equal(dataRows.length,5);assert.equal(dataRows[0].chart.type,'lineChart');assert.equal(dataRows[0].chart.data[3].y,-2);assert.equal(dataRows[0].quantity,'40');assert.equal(dataRows[0].salesDetail,undefined);assert.ok(dataRows[0].chartThumbnail.startsWith('https://inventory.example.test/api/alerts/trend/')); assert.match(dataRows[0].chartDetailUrl,/im_open_hybrid_panel/);
     return Response.json({success:true,result:{outTrackId:body.outTrackId,deliverResults:[{success:true,spaceId:'card-group',spaceType:'IM_GROUP'}]}});
   }) as typeof fetch;
   assert.ok(await sendRobotCard(credentials,card,templateId,fetcher));assert.equal(calls.length,2);
@@ -128,22 +156,25 @@ test('原生卡片保持精确数值、负销量和零销量；缺日不补零�
   assert.ok(Object.values(params).every(p=>typeof p==='string'));assert.equal(params.reportImage,undefined);
 });
 
-test('原生卡片桌面保留表格、手机另用完整编码布局，两端曲线开启同一份原生详情',()=>{
+test('原生卡片桌面保留表格、手机完整编码与兼容小曲线，两端列表默认折叠且可展开',()=>{
   const exported=JSON.parse(readFileSync('docs/dingtalk-inventory-card.json','utf8')),editor=JSON.parse(exported.editorData);
   type TemplateNode={componentName:string;id:string;props:{listData?:{variable:string};data?:{variable:string};enableDetail?:boolean;direction?:string;height?:number;text?:{content:string}};children?:TemplateNode[]};
   const nodes:TemplateNode[]=[];
   const walk=(n:TemplateNode)=>{nodes.push(n);for(const child of n.children||[])walk(child);};walk(editor.schema.componentsTree[0]);
-  assert.ok(!nodes.some(n=>n.componentName==='Image'||n.componentName==='CollapsePanel'));
+  assert.equal(nodes.filter(n=>n.componentName==='CollapsePanel').length,2);
+  assert.equal(nodes.filter(n=>n.componentName==='Image').length,1);
   const loop=nodes.find(n=>n.componentName==='Loop')!,chart=nodes.find(n=>n.componentName==='Chart')!;
   assert.equal(loop.props.listData?.variable,'rows');assert.equal(chart.props.data?.variable,'rows[0].chart');assert.equal(chart.props.enableDetail,true);
   assert.equal(chart.props.height,64);assert.equal(loop.children!.length,1);assert.equal(loop.children![0].props.direction,'horizontal');assert.equal(loop.children![0].children!.length,5);
-  const mobileLoop=nodes.find(n=>n.id==='node_inventory_mobile_rows')!,mobileChart=nodes.find(n=>n.id==='node_inventory_mobile_chart')!;
+  const mobileLoop=nodes.find(n=>n.id==='node_inventory_mobile_rows')!;
   assert.equal(mobileLoop.props.listData?.variable,'rows');assert.equal(mobileLoop.children![0].props.direction,'vertical');
-  assert.equal(mobileChart.props.data?.variable,chart.props.data?.variable);assert.equal(mobileChart.props.enableDetail,true);assert.equal(mobileChart.props.height,120);
-  assert.equal(nodes.find(n=>n.id==="node_inventory_mobile_detail")!.props.direction,"vertical");
-  assert.equal(editor.schema.componentsTree[0].props.autoFoldConfig.needFold,true);
-  assert.equal(editor.schema.componentsTree[0].props.autoFoldConfig.heightLimit,360);
-  assert.match(exported.widgetInfo,/heightLimit-360-_cardFoldStatusLocalDataKey/);
+  const mobileImage=nodes.find(n=>n.id==='node_inventory_mobile_trend_image')! as unknown as {props:{images:{variable:string};height:{value:number}}};
+  assert.equal(mobileImage.props.images.variable,'rows[0].chartThumbnail');assert.equal(mobileImage.props.height.value,90);
+  assert.equal(editor.schema.componentsTree[0].props.autoFoldConfig.needFold,false);
+  for(const panel of nodes.filter(n=>n.componentName==='CollapsePanel') as unknown as {props:{contentVisible:boolean}}[])assert.equal(panel.props.contentVisible,false);
+  assert.match(exported.widgetInfo,/dtSendOutData/);assert.match(exported.widgetInfo,/inventory-report-desktop/);assert.match(exported.widgetInfo,/inventory-report-mobile/);
+  assert.ok(exported.widgetInfo.replace(/&#039;/g,"'").includes("@subdata{'chartThumbnail'}"));
+  assert.ok(exported.widgetInfo.replace(/&#039;/g,"'").includes("@subdata{'chartDetailUrl'}"));
   assert.equal(new Set(nodes.map(n=>n.id)).size,nodes.length);
   const desktopLayout=nodes.find(n=>n.id==='node_inventory_desktop_layout')!,mobileLayout=nodes.find(n=>n.id==='node_inventory_mobile_layout')!;
   const layouts=[desktopLayout,mobileLayout] as unknown as {props:{isFixedWidth:boolean;width:number;visible:{condition:{conditions:{type:string;platform:string[]}[]}}}}[];
