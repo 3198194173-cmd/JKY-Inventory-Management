@@ -13,7 +13,7 @@ export type ManualAlertRequest = {
 };
 export type ManualAlertResult = {
   state: "sending" | "complete"; count: number;
-  groups: { id: string; name: string; acceptedParts: number; totalParts: number; state: "pending" | "accepted" | "unconfirmed" | "failed" | "skipped"; error?: string }[];
+  groups: { id: string; name: string; acceptedParts: number; totalParts: number; state: "pending" | "accepted" | "unconfirmed" | "failed" | "skipped"; skipReason?: "automatic"; error?: string }[];
   message: string;
 };
 export class ManualAlertError extends Error {
@@ -72,7 +72,9 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
       // An unfinished run requires checking its result instead of starting another send.
       throw new ManualAlertError(recent.state === "sending" ? "已有通知正在发送，请等待结果" : "距离上次发送尝试不足30秒，请稍后再试", 429);
     }
-    db.prepare("INSERT INTO manual_alert_deliveries VALUES(?,?,?,?,?,?,'sending',?,?)").run(...scope, request.requestId, hash, request.warehouseCode, JSON.stringify(result), now);
+    db.prepare(`INSERT INTO manual_alert_deliveries
+      (owner,client_id,robot_code,request_id,payload_hash,warehouse_code,state,result,attempted_at,snapshot_id,average_threshold)
+      VALUES(?,?,?,?,?,?,'sending',?,?,?,?)`).run(...scope, request.requestId, hash, request.warehouseCode, JSON.stringify(result), now, request.snapshotId, request.averageThreshold);
     db.exec("COMMIT");
   } catch (error) { if (db.isTransaction) db.exec("ROLLBACK"); throw error; }
   const persist = () => db.prepare("UPDATE manual_alert_deliveries SET state=?,result=? WHERE owner=? AND client_id=? AND robot_code=? AND request_id=?").run(result.state, JSON.stringify(result), ...scope, request.requestId);
@@ -80,6 +82,20 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   for (const group of result.groups) {
     const selected = db.prepare("SELECT 1 FROM dingtalk_groups WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND active=1 AND enabled=1").get(...scope, group.id);
     if (!selected || robotScope(owner).some((value, i) => value !== scope[i])) { group.state = "skipped"; persist(); continue; }
+    // The worker may have claimed this same report while the dialog saved settings.
+    // A manual claim is already persisted, so subsequent worker claims will skip it.
+    const automatic = db.prepare(`SELECT state FROM turnover_group_deliveries
+      WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=?
+        AND warehouse_code=? AND snapshot_id=? AND average_threshold=?
+        AND (attempted_at>=? OR state='sending')`).get(...scope, group.id, request.warehouseCode,
+          request.snapshotId, request.averageThreshold, new Date(Date.now()-COOLDOWN_MS).toISOString()) as { state: string } | undefined;
+    if (automatic) {
+      group.state = "skipped";
+      group.skipReason = "automatic";
+      group.error = automatic.state === "accepted" ? "同一份预警刚刚已由自动通知发送，本次不重复投放"
+        : "同一份自动预警正在发送或结果未确认，请先核对群消息，本次不重复投放";
+      persist(); continue;
+    }
     // Persist uncertainty before the external call: a crash cannot cause a retry.
     group.state = "unconfirmed"; persist();
     try {
@@ -98,8 +114,9 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   const accepted = result.groups.filter(g => g.state === "accepted").length;
   const uncertain = result.groups.filter(g => g.state === "unconfirmed").length;
   const failed = result.groups.filter(g => g.state === "failed").length;
-  const skipped = result.groups.filter(g => g.state === "skipped").length;
-  result.message = `${request.warehouseCode}：${preview.count} 款预警，钉钉已受理 ${accepted} 个群${failed ? `，${failed} 个群发送失败，请查看下方错误` : ""}${uncertain ? `，${uncertain} 个群未确认，请先核对群消息` : accepted ? "，请到群内查看" : ""}${skipped ? `；${skipped} 个群因勾选或成员关系变化已跳过` : ""}。`;
+  const duplicates = result.groups.filter(g => g.skipReason === "automatic").length;
+  const skipped = result.groups.filter(g => g.state === "skipped" && !g.skipReason).length;
+  result.message = `${request.warehouseCode}：${preview.count} 款预警，钉钉已受理 ${accepted} 个群${failed ? `，${failed} 个群发送失败，请查看下方错误` : ""}${uncertain ? `，${uncertain} 个群未确认，请先核对群消息` : accepted ? "，请到群内查看" : ""}${duplicates ? `；${duplicates} 个群已有同一份自动预警，本次已防止重复发送，请查看群说明` : ""}${skipped ? `；${skipped} 个群因勾选或成员关系变化已跳过` : ""}。`;
   persist();
   db.prepare("UPDATE alert_settings SET last_result=? WHERE owner=?").run("手动发送 · " + result.message, owner);
   return result;

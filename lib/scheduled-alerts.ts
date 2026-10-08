@@ -17,7 +17,8 @@ export async function sendDueAlerts(local = shanghaiTimestamp(), sender = sendRo
     if (!current.robotConfigured || !groups.length) continue;
     const fingerprint = createHash("sha256").update(JSON.stringify([snapshot.id,current.turnoverAverageThreshold,process.env.DINGTALK_CLIENT_ID,process.env.DINGTALK_ROBOT_CODE,groups])).digest("hex");
     if (db.prepare("SELECT 1 FROM scheduled_alert_checks WHERE owner=? AND warehouse_code=? AND date=? AND fingerprint=?").get(target.owner,target.code,date,fingerprint)) continue;
-    await notifyAfterSnapshot(target.owner,snapshot.id,target.code,sender);
+    const result = await notifyAfterSnapshot(target.owner,snapshot.id,target.code,sender);
+    if (result?.deferred) continue;
     db.prepare("INSERT INTO scheduled_alert_checks VALUES(?,?,?,?) ON CONFLICT(owner,warehouse_code,date) DO UPDATE SET fingerprint=excluded.fingerprint").run(target.owner,target.code,date,fingerprint);
   }
 }

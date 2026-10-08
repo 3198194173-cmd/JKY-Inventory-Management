@@ -210,5 +210,11 @@ test('循环文字使用官方 loop 上下文，两个商品分别渲染真实�
     assert.ok(xml.includes(`@subdata{'${field}'}`));
   }
   const loopTexts=nodes.filter(n=>n.componentName==='BaseText'&&n.props.text?.content.includes('loop.'));
-  assert.equal(loopTexts.length,8);assert.doesNotMatch(exported.editorData,/\$\{rows\[0\]\./);
+  assert.equal(loopTexts.length,10);assert.doesNotMatch(exported.editorData,/\$\{rows\[0\]\./);
+  for(const id of ['node_inventory_name','node_inventory_mobile_name']) {
+    const name=nodes.find(n=>n.id===id)!;
+    assert.equal(name.props.text!.content,'${loop.goodsName}');
+    assert.ok(xml.includes("@subdata{'goodsName'}"));
+    assert.deepEqual(values.slice(0,2).map(row=>name.props.text!.content.replace(/\$\{loop\.(\w+)\}/g,(_match,key)=>row[key])),values.slice(0,2).map(row=>row.goodsName));
+  }
 });

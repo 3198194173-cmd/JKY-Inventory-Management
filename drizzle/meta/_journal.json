@@ -92,6 +92,13 @@
       "when": 1791270000005,
       "tag": "0012_manual_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1791270000006,
+      "tag": "0013_manual_alert_snapshot",
+      "breakpoints": true
     }
   ]
 }

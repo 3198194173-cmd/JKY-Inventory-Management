@@ -97,6 +97,7 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
     const currentPreview=await previewTurnoverAlert(owner,code,'3');
     const input={requestId:randomUUID(),warehouseCode:code,snapshotId:id,averageThreshold:'3',groupIds:['test-group','second-group']};
     let manualCalls=0;const manualSender=async()=>{manualCalls++;return 'mock-only';};
+    db.prepare("UPDATE turnover_group_deliveries SET attempted_at=? WHERE owner=?").run(new Date(Date.now()-60_000).toISOString(),owner);
     await Promise.all([sendManualAlert(owner,input,manualSender),sendManualAlert(owner,input,manualSender)]);
     const delivered=await sendManualAlert(owner,input,manualSender);
     assert.equal(delivered.state,'complete');assert.equal(delivered.groups.filter(g=>g.state==='accepted').length,2);
@@ -153,9 +154,66 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
     }
     const interruptedInput={...input,requestId:randomUUID()},hashInput={...interruptedInput,groupIds:[...interruptedInput.groupIds].sort()};
     const {createHash}=await import('node:crypto');
-    db.prepare("INSERT INTO manual_alert_deliveries VALUES(?,?,?,?,?,?,'sending',?,0)").run(...robotScope(owner),interruptedInput.requestId,createHash('sha256').update(JSON.stringify(hashInput)).digest('hex'),code,JSON.stringify({...partial,state:'sending',groups:[{...partial.groups[0],state:'pending'},{...partial.groups[1],state:'unconfirmed'}]}));
+    db.prepare("INSERT INTO manual_alert_deliveries (owner,client_id,robot_code,request_id,payload_hash,warehouse_code,state,result,attempted_at) VALUES(?,?,?,?,?,?,'sending',?,0)").run(...robotScope(owner),interruptedInput.requestId,createHash('sha256').update(JSON.stringify(hashInput)).digest('hex'),code,JSON.stringify({...partial,state:'sending',groups:[{...partial.groups[0],state:'pending'},{...partial.groups[1],state:'unconfirmed'}]}));
     const interrupted=await sendManualAlert(owner,interruptedInput,manualSender);assert.equal(interrupted.state,'complete');assert.match(interrupted.message,/任务已中断/);assert.equal(manualCalls,currentPreview.messages.length*2,'进程中断后查询也不恢复发送');
   } finally {names.forEach((n,i)=>{if(old[i]===undefined)delete process.env[n];else process.env[n]=old[i];});}
+});
+
+test('手动与自动预警交错时同群只投放一次，失败和新快照不被旧手动记录阻挡',async()=>{
+  const db=sqlite(),code='OVERLAP',names=['DINGTALK_CLIENT_ID','DINGTALK_CLIENT_SECRET','DINGTALK_ROBOT_CODE'],old=names.map(n=>process.env[n]);
+  names.forEach(n=>process.env[n]='overlap-fake');
+  async function fixture(owner:string) {
+    await addWarehouse(owner,code,'重叠发送测试仓');
+    for(let i=0;i<8;i++) {
+      const date='2026-10-0'+(i+1),id=owner+'-'+date;
+      db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,1,1,'{}',0,0,?,'auto:v1')").run(id,owner,date,date+'T00:00:23Z',code);
+      db.prepare("INSERT INTO stock_entries VALUES(?,'SKU','真实商品名称','Pcs',?,1,1)").run(id,String(100-4*i));
+      db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,id);
+    }
+    await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[]}));
+    db.prepare("INSERT INTO dingtalk_groups (owner,client_id,robot_code,open_conversation_id,last_seen_at,enabled) VALUES(?,?,?,'overlap-group',?,1)").run(...robotScope(owner),new Date().toISOString());
+    await saveSettings(owner,true,'0','3',['overlap-group']);
+    const preview=await previewTurnoverAlert(owner,code,'3');assert.equal(preview.count,1);
+    return {requestId:randomUUID(),warehouseCode:code,snapshotId:preview.snapshotId,averageThreshold:'3',groupIds:['overlap-group']};
+  }
+  try {
+    for(const first of ['manual','automatic']) {
+      const owner='overlap-'+first,input=await fixture(owner);let calls=0;
+      let enter!:()=>void,release!:()=>void;
+      const entered=new Promise<void>(r=>{enter=r}),held=new Promise<void>(r=>{release=r});
+      const sender=async()=>{calls++;enter();await held;return 'mock-accepted';};
+      const active=first==='manual'?sendManualAlert(owner,input,sender):notifyAfterSnapshot(owner,input.snapshotId,code,sender);
+      await entered;
+      if(first==='manual') { await notifyAfterSnapshot(owner,input.snapshotId,code,sender);assert.equal(calls,1); }
+      else { const skipped=await sendManualAlert(owner,input,sender);assert.equal(skipped.groups[0].state,'skipped');assert.equal(skipped.groups[0].skipReason,'automatic');assert.match(skipped.message,/已防止重复发送/);assert.match(skipped.groups[0].error!,/同一份自动预警/); }
+      release();await active;assert.equal(calls,1,'在途任务不会导致两条路径重复发送');
+      await notifyAfterSnapshot(owner,input.snapshotId,code,sender);
+      await sendManualAlert(owner,input,sender);assert.equal(calls,1,'完成后重放或自动检查不再发送');
+      if(first==='manual') {
+        assert.equal(db.prepare('SELECT count(*) AS n FROM turnover_group_deliveries WHERE owner=?').get(owner)!.n,0,'手动不抢占当天自动名额');
+        const id=owner+'-2026-10-09';
+        db.prepare("INSERT INTO stock_snapshots SELECT ?,owner,'2026-10-09','2026-10-09T00:00:23Z',status,page_count,record_count,goods_count,totals,zero_count,negative_count,scope_key,scope_label,scope_count,warehouse_code,warehouse_name,coverage,catalog_hash,unavailable_skus FROM stock_snapshots WHERE id=?").run(id,input.snapshotId);
+        db.prepare("INSERT INTO stock_entries VALUES(?,'SKU','真实商品名称','Pcs','68',1,1)").run(id);
+        db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,'2026-10-09',id);
+        await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[]}));
+        await notifyAfterSnapshot(owner,id,code,sender);assert.equal(calls,2,'新快照仍能自动通知');
+      } else {
+        db.prepare("UPDATE turnover_group_deliveries SET attempted_at=? WHERE owner=?").run(new Date(Date.now()-60_000).toISOString(),owner);
+        db.prepare('UPDATE manual_alert_deliveries SET attempted_at=0 WHERE owner=?').run(owner);
+        const explicit=await sendManualAlert(owner,{...input,requestId:randomUUID()},sender);assert.equal(explicit.groups[0].state,'accepted');assert.equal(calls,2,'冷却结束后仍支持主动再次通知');
+      }
+    }
+    const owner='overlap-rejected',input=await fixture(owner);let calls=0;
+    let enter!:()=>void,release!:()=>void;
+    const entered=new Promise<void>(r=>{enter=r}),held=new Promise<void>(r=>{release=r});
+    const active=sendManualAlert(owner,input,async()=>{calls++;enter();await held;throw new DingTalkCardError('钉钉拒绝测试',true);});
+    await entered;
+    const sender=async()=>{calls++;return 'mock-accepted';};
+    await sendDueAlerts('2026-10-08 12:00:00',sender);
+    assert.equal(calls,1);assert.equal(db.prepare('SELECT count(*) AS n FROM scheduled_alert_checks WHERE owner=?').get(owner)!.n,0,'手动在途时后台不提前确认已完成');
+    release();const rejected=await active;assert.equal(rejected.groups[0].state,'failed');
+    await sendDueAlerts('2026-10-08 12:00:15',sender);assert.equal(calls,2,'明确失败的手动记录不吞掉自动通知');
+  } finally { names.forEach((n,i)=>{if(old[i]===undefined)delete process.env[n];else process.env[n]=old[i];}); }
 });
 
 test('可编辑采集/预警时间：到点、采集中与旧数据不发，完整当天数据只发一次',async()=>{
@@ -323,7 +381,7 @@ test('销量月历读取历史月份、月末闭合基准及用户隔离，不�
 
 test('本地数据库迁移、事务回滚、队列去重与多仓库快照隔离',async()=>{
   const db=sqlite();
-  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,13);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,14);
   const plan=db.prepare("EXPLAIN QUERY PLAN SELECT id FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND coverage='auto:v1' AND status='complete' ORDER BY captured_at DESC,id DESC LIMIT 1").all('test-owner','TEST01');
   assert.ok(plan.some((r:{detail:string})=>r.detail.includes('idx_snapshots_warehouse_latest')));assert.ok(plan.every((r:{detail:string})=>!r.detail.includes('TEMP B-TREE')));
   await addWarehouse('test-owner','TEST01','测试仓');

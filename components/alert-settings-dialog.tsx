@@ -160,18 +160,18 @@ export function AlertSettingsDialog({ open, onOpenChange, initial, warehouseCode
           <section className="alert-send-card" aria-labelledby="alert-send-heading">
             <div className="alert-section-heading"><h3 id="alert-send-heading"><Warehouse size={16}/>{warehouseName} <span>{warehouseCode}</span></h3><Button type="button" variant="ghost" size="sm" onClick={() => void previewOnly()} disabled={busy || previewing || !!pendingRequest}>{previewing ? <LoaderCircle size={14} className="animate-spin"/> : <Eye size={14}/>}预览通知</Button></div>
             <p>发送给：{selectedNames.length ? selectedNames.join("、") : "请先勾选接收群"}</p>
-            <p>每款一行：商品编码、库存、均值、周转和近7天曲线。点击曲线查看详情，每张12款，完整发送全部预警货品。</p>
+            <p>商品名称显示在编码下方，库存、均值和周转分列展示。全部预警合并为一张可折叠卡片；手机点击“7天趋势”查看详情。</p>
             {!saved.cardConfigured && <p className="alert-warning">报表卡片可预览；云端配置卡片模板后启用卡片发送，当前仍发送文字通知。</p>}
             {preview && <div className="alert-preview"><div><strong>{preview.count} 款符合预警</strong><span>采集于 {time(preview.capturedAt)}</span></div>{preview.incomplete && <p className="alert-warning">库存采集不完整，暂不能发送。</p>}
               {preview.cards.length ? <><InventoryAlertCardPreview key={cardPart} card={preview.cards[cardPart - 1]}/><div className="alert-card-preview-pages"><Button type="button" variant="outline" size="sm" disabled={cardPart<=1} onClick={()=>setCardPart(p=>p-1)}>上一张</Button><span>{cardPart} / {preview.cards.length} 张 · {preview.cardConfigured ? "原生卡片发送" : "文字发送"}</span><Button type="button" variant="outline" size="sm" disabled={cardPart>=preview.cards.length} onClick={()=>setCardPart(p=>p+1)}>下一张</Button></div></> : <p>{preview.message}</p>}
             </div>}
           </section>
-          {result && <div className={`alert-result ${result.groups.some(g => g.state === "unconfirmed" || g.state === "failed") ? "alert-result-warning" : ""}`} role="status"><strong>{result.message}</strong><div>{result.groups.map(g => <span key={g.id}>{g.name} · {g.state === "accepted" ? "已受理" : g.state === "failed" ? "发送失败" : g.state === "unconfirmed" ? "未确认" : g.state === "skipped" ? "已跳过" : "等待发送"} {g.acceptedParts}/{g.totalParts}条{g.error && <small>{g.error}</small>}</span>)}</div></div>}
+          {result && <div className={`alert-result ${result.groups.some(g => g.state === "unconfirmed" || g.state === "failed") ? "alert-result-warning" : ""}`} role="status"><strong>{result.message}</strong><div>{result.groups.map(g => <span key={g.id}>{g.name} · {g.skipReason === "automatic" ? "已防重" : g.state === "accepted" ? "已受理" : g.state === "failed" ? "发送失败" : g.state === "unconfirmed" ? "未确认" : g.state === "skipped" ? "已跳过" : "等待发送"} {g.acceptedParts}/{g.totalParts}条{g.error && <small>{g.error}</small>}</span>)}</div></div>}
           {feedback && <p className="alert-success" role="status">{feedback}</p>}
           {error && <p className="alert-warning" role="alert">{error}</p>}
           {!result && saved.lastResult && <p className="alert-last-result">上次通知：{saved.lastResult}</p>}
         </div>
-        <footer className="alert-dialog-footer"><p>{pendingRequest ? `${pendingRequest.warehouseCode} 结果未确认，查询沿用原请求，不重复发送。` : "立即发送会保存当前设置；不占用自动通知次数。"}</p><div>
+        <footer className="alert-dialog-footer"><p>{pendingRequest ? `${pendingRequest.warehouseCode} 结果未确认，查询沿用原请求，不重复发送。` : "立即发送会保存当前设置；同一份数据与自动通知重叠时只投放一次。"}</p><div>
           <Button type="submit" variant="outline" disabled={busy || previewing || !!pendingRequest}>{saving ? "保存中…" : "保存设置"}</Button>
           <Button type="button" onClick={() => void send()} disabled={busy || previewing || !saved.robotConfigured || !selected.length}>{sending ? <LoaderCircle className="animate-spin"/> : <Send/>}{sending ? "发送中…" : pendingRequest ? "查询发送结果" : "立即发送预警"}</Button>
         </div></footer>

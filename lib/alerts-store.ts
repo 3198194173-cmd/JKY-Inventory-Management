@@ -68,7 +68,7 @@ export async function notifyAfterSnapshot(owner: string, snapshotId: string, cod
   }
   const scope = robotScope(owner);
   const groups = current.groupState.groups.filter(g => g.enabled);
-  let acceptedCount = 0, uncertainCount = 0;
+  let acceptedCount = 0, uncertainCount = 0, deferred = false;
   for (const group of groups) {
   // Each selected group has its own daily claim; one failed group does not block other groups.
   const claimed = await database().prepare(`INSERT OR IGNORE INTO turnover_group_deliveries
@@ -77,9 +77,22 @@ export async function notifyAfterSnapshot(owner: string, snapshotId: string, cod
       (SELECT 1 FROM alert_settings WHERE owner=? AND enabled=1 AND turnover_average_threshold=?)
       AND EXISTS (SELECT 1 FROM dingtalk_groups WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND enabled=1 AND active=1)
       AND NOT EXISTS (SELECT 1 FROM turnover_alert_deliveries WHERE owner=? AND warehouse_code=? AND date=?)
-      AND NOT EXISTS (SELECT 1 FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND status='complete' AND coverage='auto:v1' AND captured_at>?)`)
-    .bind(...scope,group.id,code,preview.date,snapshotId,current.turnoverAverageThreshold,preview.count,new Date().toISOString(),owner,current.turnoverAverageThreshold,...scope,group.id,owner,code,preview.date,owner,code,preview.capturedAt).run();
-  if (!claimed.meta.changes) continue;
+      AND NOT EXISTS (SELECT 1 FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND status='complete' AND coverage='auto:v1' AND captured_at>?)
+      AND NOT EXISTS (SELECT 1 FROM manual_alert_deliveries m, json_each(m.result,'$.groups') g
+        WHERE m.owner=? AND m.client_id=? AND m.robot_code=? AND m.warehouse_code=?
+          AND m.snapshot_id=? AND m.average_threshold=? AND json_extract(g.value,'$.id')=?
+          AND json_extract(g.value,'$.state') IN ('pending','unconfirmed','accepted'))`)
+    .bind(...scope,group.id,code,preview.date,snapshotId,current.turnoverAverageThreshold,preview.count,new Date().toISOString(),owner,current.turnoverAverageThreshold,...scope,group.id,owner,code,preview.date,owner,code,preview.capturedAt,...scope,code,snapshotId,current.turnoverAverageThreshold,group.id).run();
+  if (!claimed.meta.changes) {
+    // Keep checking until an overlapping manual task finishes. A definite
+    // rejection must not make the scheduler permanently mark this report done.
+    if (sqlite().prepare(`SELECT 1 FROM manual_alert_deliveries m, json_each(m.result,'$.groups') g
+      WHERE m.owner=? AND m.client_id=? AND m.robot_code=? AND m.warehouse_code=?
+        AND m.snapshot_id=? AND m.average_threshold=? AND m.state='sending'
+        AND json_extract(g.value,'$.id')=? AND json_extract(g.value,'$.state') IN ('pending','unconfirmed','accepted')`)
+      .get(...scope,code,snapshotId,current.turnoverAverageThreshold,group.id)) deferred = true;
+    continue;
+  }
   await database().prepare("UPDATE alert_settings SET last_result=? WHERE owner=?").bind(code+"：周转预警发送中",owner).run();
   try {
     await sendInventoryReport({clientId:scope[1],clientSecret:env.DINGTALK_CLIENT_SECRET!,robotCode:scope[2],openConversationId:group.id},preview,sender);
@@ -97,4 +110,5 @@ export async function notifyAfterSnapshot(owner: string, snapshotId: string, cod
   }
   }
   if (acceptedCount || uncertainCount) await database().prepare("UPDATE alert_settings SET last_result=? WHERE owner=?").bind(`${code}：${preview.count} 款预警，钉钉已受理 ${acceptedCount} 个群${uncertainCount ? `，${uncertainCount} 个群发送未确认，请核对群消息；今天不自动重发` : "；每群每天一次，以群内消息为准"}`,owner).run();
+  return { deferred };
 }
