@@ -13,7 +13,7 @@ type Row=Record<string,string|number|null>;
 function fixture(state='1',remaining='1000',count=1){
   const received=String(1000-Number(remaining));
   const parent:Row={inId:'90071992547409931',inNo:'RK-old',inWarehouseCode:'A',inStatus:state,status:'2',skuCount:String(1000*count),innerCount:String(Number(received)*count),uninnerCount:String(Number(remaining)*count)};
-  const rows=Array.from({length:count},(_,i)=>({...parent,inDetailId:'detail-'+i,goodsNo:'G'+i,goodsName:'商品'+i,skuId:'sku'+i,unitName:'Pcs',skuCount:'1000',innerCount:received,uninnerCount:remaining}));
+  const rows:Row[]=Array.from({length:count},(_,i)=>({...parent,inDetailId:'detail-'+i,goodsNo:'G'+i,goodsName:'商品'+i,skuId:'sku'+i,unitName:'Pcs',skuCount:'1000',innerCount:received,uninnerCount:remaining}));
   const calls:Record<string,unknown>[]=[];
   const fetcher=(async(_url:unknown,init:RequestInit)=>{const params=new URLSearchParams(String(init.body)),args=JSON.parse(params.get('bizcontent')!);calls.push(args);let data:Row[]=[];
     if(params.get('method')==='erp.stockin.get')data=(!args.inStatus||args.inStatus===state)&&(!args.inNo||args.inNo===parent.inNo)?[parent]:[];
