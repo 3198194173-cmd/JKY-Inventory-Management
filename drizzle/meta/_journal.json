@@ -99,6 +99,13 @@
       "when": 1791270000006,
       "tag": "0013_manual_alert_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1791270000007,
+      "tag": "0014_warehouse_alert_settings",
+      "breakpoints": true
     }
   ]
 }

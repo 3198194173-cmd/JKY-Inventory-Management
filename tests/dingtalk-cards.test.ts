@@ -218,3 +218,17 @@ test('循环文字使用官方 loop 上下文，两个商品分别渲染真实�
     assert.deepEqual(values.slice(0,2).map(row=>name.props.text!.content.replace(/\$\{loop\.(\w+)\}/g,(_match,key)=>row[key])),values.slice(0,2).map(row=>row.goodsName));
   }
 });
+
+test('编码名称复制和报告下载使用原生动作，下载按钮随链接显隐',()=>{
+  const t=JSON.parse(readFileSync('docs/dingtalk-inventory-card.json','utf8'));
+  const e=JSON.parse(t.editorData),xml=t.widgetInfo.replace(/&#039;/g,"'");
+  assert.match(xml,/@dtCopy{/);assert.match(xml,/exportUrl/);
+  assert.equal(nativeCardParams(card).exportUrl,'');
+  assert.equal(nativeCardParams({...card,exportUrl:'https://inventory.example.com/api/alerts/reports/test'}).exportUrl,'https://inventory.example.com/api/alerts/reports/test');
+  const nodes: {id:string;props:{actionType?:string;copyValue?:{content:string};visible?:{condition?:{conditions:{variable:string;op:string}[]}}};children?:unknown[]}[]=[];
+  function walk(n:unknown){const node=n as typeof nodes[number];nodes.push(node);node.children?.forEach(walk);}walk(e.schema.componentsTree[0]);
+  for(const id of ['node_inventory_code','node_inventory_name','node_inventory_mobile_code','node_inventory_mobile_name']){
+    const copy=nodes.find(n=>n.id===id+'_copy')!;assert.equal(copy.props.actionType,'copy');assert.ok(copy.props.copyValue!.content.startsWith('$'+'{loop.'));
+  }
+  for(const env of ['desktop','mobile']){const button=nodes.find(n=>n.id==='node_inventory_export_'+env)!;assert.equal(button.props.actionType,'url');assert.equal(button.props.visible!.condition!.conditions[0].variable,'exportUrl');assert.equal(button.props.visible!.condition!.conditions[0].op,'isNotEmpty');}
+});

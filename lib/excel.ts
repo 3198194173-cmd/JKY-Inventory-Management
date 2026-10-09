@@ -67,3 +67,25 @@ export function inventoryWorkbook(view:InventoryView,rows:(StockRow & {metrics?:
   }
   return zipTextFiles(files);
 }
+
+// Immutable card export: use the same rows and seven dates that were delivered.
+export function alertWorkbook(card: import("./dingtalk-card-data").TurnoverCard): Uint8Array {
+  const labels=["商品编码","商品名称","库存","销售均值","库存周转（天）",...card.dates];
+  const column=(i:number)=>String.fromCharCode(65+i);
+  let rows=`<row r="1" ht="26" customHeight="1">${labels.map((label,i)=>cell(`${column(i)}1`,label,1)).join("")}</row>`;
+  card.rows.forEach((row,index)=>{
+    const r=index+2,values=[row.quantity,row.average,row.turnover,...row.sales];
+    rows+=`<row r="${r}" ht="44" customHeight="1">${cell(`A${r}`,row.goodsNo,3)}${cell(`B${r}`,row.goodsName,3)}${values.map((v,i)=>v==null||v==="—"?cell(`${column(i+2)}${r}`,"",3):numericCell(`${column(i+2)}${r}`,v,2,3)).join("")}</row>`;
+  });
+  const ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+  const metadata=[["报告",card.title],["采集与仓库",card.summary],["商品数",String(card.rows.length)],["规则与口径",card.footer],["日期范围",`${card.dates[0]} ~ ${card.dates.at(-1)}`],["说明","数据固定于报告生成时，已应用发送名称排除；缺失销量留空。"]];
+  return zipTextFiles({
+    "[Content_Types].xml":`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
+    "_rels/.rels":`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    "xl/workbook.xml":`<workbook xmlns="${ns}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="预警明细" sheetId="1" r:id="rId1"/><sheet name="报告说明" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+    "xl/_rels/workbook.xml.rels":`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+    "xl/styles.xml":`<styleSheet xmlns="${ns}"><fonts count="2"><font><sz val="11"/><name val="等线"/></font><font><b/><sz val="11"/><color rgb="FF334155"/><name val="等线"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF0F4FC"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" applyAlignment="1"><alignment vertical="center" horizontal="right"/></xf><xf numFmtId="49" fontId="0" fillId="0" borderId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`,
+    "xl/worksheets/sheet1.xml":`<worksheet xmlns="${ns}"><dimension ref="A1:L${card.rows.length+1}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="1" width="25" customWidth="1"/><col min="2" max="2" width="62" customWidth="1"/><col min="3" max="12" width="15" customWidth="1"/></cols><sheetData>${rows}</sheetData><autoFilter ref="A1:L${card.rows.length+1}"/></worksheet>`,
+    "xl/worksheets/sheet2.xml":`<worksheet xmlns="${ns}"><cols><col min="1" max="1" width="22" customWidth="1"/><col min="2" max="2" width="100" customWidth="1"/></cols><sheetData>${metadata.map(([label,value],i)=>`<row r="${i+1}" ht="35" customHeight="1">${cell(`A${i+1}`,label,1)}${cell(`B${i+1}`,value,3)}</row>`).join("")}</sheetData></worksheet>`
+  });
+}

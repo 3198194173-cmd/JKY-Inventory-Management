@@ -3,7 +3,7 @@ import { recentSalesDates } from "./inventory-metrics";
 import { TURNOVER_ALERT_DAYS } from "./turnover-alert";
 
 export type TurnoverCard = {
-  title: string; summary: string; footer: string; dates: string[];
+  title: string; summary: string; footer: string; dates: string[]; exportUrl?: string;
   totalCount: number; part: number; totalParts: number;
   rows: { goodsNo: string; goodsName: string; unitName: string; quantity: string; average: string; turnover: string; sales: (string | null)[] }[];
 };
@@ -17,7 +17,7 @@ export const NATIVE_TREND_CONFIG = {
   // Hiding both axes disables the native detail tooltip; retain the value axis.
   xAxisOptions: { label: false }, yAxisOptions: { label: true },
 };
-export function turnoverCards(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string): TurnoverCard[] {
+export function turnoverCards(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string, turnoverDays = String(TURNOVER_ALERT_DAYS)): TurnoverCard[] {
   const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(capturedAt));
   const dates = recentSalesDates(date).reverse();
   const time = new Date(capturedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
@@ -25,7 +25,7 @@ export function turnoverCards(rows: InventoryView["rows"], threshold: string, wa
   return [{
     title: "库存周转预警",
     summary: `${warehouse.replace(/[\r\n\t]/g, " ")} · ${time} · 共 ${rows.length} 款`,
-    footer: `均值 > ${threshold} · 周转 < ${TURNOVER_ALERT_DAYS}天 · 净销量含退货，按库存与入库核算`,
+    footer: `销售均值 > ${threshold} · 周转 < ${turnoverDays}天 · 净销量含退货，按库存与入库核算`,
     dates, totalCount: rows.length, part: 1, totalParts: 1,
     rows: rows.map(row => ({
       goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName, quantity: row.quantity, average: row.metrics?.average7 ?? "—", turnover: row.metrics?.turnoverDays ?? "—",
@@ -55,7 +55,7 @@ export function nativeCardParams(card: TurnoverCard): Record<string, string> {
   });
   return { title: card.title, summary: card.summary, footer: card.footer,
     detailTitle: `查看全部 ${card.totalCount} 款预警商品（点击展开／收起）`,
-    rows: JSON.stringify(rows), config: JSON.stringify({ autoLayout: true }) };
+    exportUrl: card.exportUrl || "", rows: JSON.stringify(rows), config: JSON.stringify({ autoLayout: true }) };
 }
 
 export function normalizeCardTemplateId(input: string): string {

@@ -22,17 +22,17 @@ export function alertMessage(rows: StockRow[], threshold: string, capturedAt: st
   return [`【仓库库存预警】${WAREHOUSE_NAME}`, `采集时间：${capturedAt}`, `可订购量 ≤ ${threshold}：${rows.length} 个货品`, ...lines, ...(rows.length > 20 ? [`另有 ${rows.length - 20} 个货品，请打开库存分析网页查看。`] : []), "口径：完整库存采集后的可订购量；未接入在途数量。"].join("\n");
 }
 
-export function turnoverAlertRows(rows: InventoryView["rows"], threshold: string) {
-  return rows.filter(row=>turnoverAlert(row.metrics,row.quantity,threshold))
+export function turnoverAlertRows(rows: InventoryView["rows"], threshold: string, turnoverDays = String(TURNOVER_ALERT_DAYS)) {
+  return rows.filter(row=>turnoverAlert(row.metrics,row.quantity,threshold,turnoverDays))
     .sort((a,b)=>compareQuantity(a.metrics!.turnoverDays!,b.metrics!.turnoverDays!) || a.goodsNo.localeCompare(b.goodsNo));
 }
 const cleanLine = (value: string, length: number) => Array.from(value.replace(/[\r\n\t]+/g," ")).slice(0,length).join("");
 export function turnoverAlertMessage(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string) {
   return turnoverAlertMessages(rows,threshold,warehouse,capturedAt).join("\n\n");
 }
-export function turnoverAlertMessages(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string) {
+export function turnoverAlertMessages(rows: InventoryView["rows"], threshold: string, warehouse: string, capturedAt: string, turnoverDays = String(TURNOVER_ALERT_DAYS)) {
   const time = new Date(capturedAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai",hour12:false});
-  const header = [`【库存周转预警】${cleanLine(warehouse,80)}`,`${time} · 共 ${rows.length} 款`, `均值 > ${threshold}，周转 < ${TURNOVER_ALERT_DAYS}天`].join("\n");
+  const header = [`【库存周转预警】${cleanLine(warehouse,80)}`,`${time} · 共 ${rows.length} 款`, `销售均值 > ${threshold}，周转 < ${turnoverDays}天`].join("\n");
   const parts: string[][] = []; let lines: string[] = [], bytes = Buffer.byteLength(header)+100;
   rows.forEach((r,i)=>{
     const line=`${i+1}. ${cleanLine(r.goodsNo,60)}｜库存${r.quantity}｜${r.metrics!.turnoverDays}天`;

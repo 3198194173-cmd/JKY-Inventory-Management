@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import { env } from "./runtime";
 import { sqlite } from "./sqlite.mjs";
-import { previewTurnoverAlert, settings } from "./alerts-store";
+import { previewTurnoverAlert, settings, alertRuleHash, legacyAverageThreshold } from "./alerts-store";
 import { robotScope } from "./dingtalk-groups-store";
 import { sendRobotMessage } from "./dingtalk";
 import { DingTalkCardError, sendInventoryReport } from "./dingtalk-cards";
-import { normalizeTurnoverThreshold } from "./turnover-alert";
+import { attachReportExport } from "./alert-report-export";
+import { normalizeTurnoverDays, normalizeExcludedNames, normalizeTurnoverThreshold } from "./turnover-alert";
 
 export type ManualAlertRequest = {
   requestId: string; warehouseCode: string; snapshotId: string;
-  averageThreshold: string; groupIds: string[];
+  averageThreshold: string; turnoverDays?: string; excludedNameKeywords?: string[]; groupIds: string[];
 };
 export type ManualAlertResult = {
   state: "sending" | "complete"; count: number;
@@ -28,7 +29,7 @@ function validateRequest(value: unknown): ManualAlertRequest {
   if (typeof body.warehouseCode !== "string" || !body.warehouseCode || body.warehouseCode.length > 50 || typeof body.snapshotId !== "string" || !body.snapshotId || body.snapshotId.length > 100) throw new ManualAlertError("请选择已采集的仓库");
   if (!Array.isArray(body.groupIds) || !body.groupIds.length || body.groupIds.length > 1000 || body.groupIds.some(id => typeof id !== "string" || !id || id.length > 512)) throw new ManualAlertError("请勾选接收预警的群");
   return { requestId: body.requestId, warehouseCode: body.warehouseCode, snapshotId: body.snapshotId,
-    averageThreshold: normalizeTurnoverThreshold(body.averageThreshold), groupIds: [...new Set(body.groupIds as string[])].sort() };
+    averageThreshold: normalizeTurnoverThreshold(body.averageThreshold), turnoverDays: normalizeTurnoverDays(body.turnoverDays ?? "30"), excludedNameKeywords: normalizeExcludedNames(body.excludedNameKeywords ?? []), groupIds: [...new Set(body.groupIds as string[])].sort() };
 }
 
 // A persisted request owns its send attempts, even if the HTTP connection is lost.
@@ -37,8 +38,9 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   const request = validateRequest(input), db = sqlite(), scope = robotScope(owner);
   const hash = createHash("sha256").update(JSON.stringify(request)).digest("hex");
   const lookup = () => db.prepare("SELECT payload_hash,result,attempted_at FROM manual_alert_deliveries WHERE owner=? AND client_id=? AND robot_code=? AND request_id=?").get(...scope, request.requestId) as { payload_hash: string; result: string; attempted_at: number } | undefined;
+  const legacyHash = !("turnoverDays" in (input as Record<string,unknown>)) && !("excludedNameKeywords" in (input as Record<string,unknown>)) ? createHash("sha256").update(JSON.stringify({requestId:request.requestId,warehouseCode:request.warehouseCode,snapshotId:request.snapshotId,averageThreshold:request.averageThreshold,groupIds:request.groupIds})).digest("hex") : null;
   const replay = (record: NonNullable<ReturnType<typeof lookup>>) => {
-    if (record.payload_hash !== hash) throw new ManualAlertError("该发送请求的内容已改变，请重新预览", 409);
+    if (record.payload_hash !== hash && record.payload_hash !== legacyHash) throw new ManualAlertError("该发送请求的内容已改变，请重新预览", 409);
     const result = JSON.parse(record.result) as ManualAlertResult;
     const deadline = 60_000 + result.groups.reduce((total,g)=>total+g.totalParts*31_000,0);
     if (result.state === "sending" && Date.now()-record.attempted_at > deadline) {
@@ -51,11 +53,12 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   };
   const existing = lookup();
   if (existing) return replay(existing);
-  const current = await settings(owner);
+  const current = await settings(owner,request.warehouseCode);
   if (!current.robotConfigured) throw new ManualAlertError("请先配置钉钉机器人应用凭证");
   const groups = current.groupState.groups.filter(group => group.enabled);
-  if (current.turnoverAverageThreshold !== request.averageThreshold || JSON.stringify(groups.map(g => g.id).sort()) !== JSON.stringify(request.groupIds)) throw new ManualAlertError("预警规则或接收群已变化，请重新预览并保存", 409);
-  const preview = await previewTurnoverAlert(owner, request.warehouseCode, request.averageThreshold);
+  if (alertRuleHash(current) !== alertRuleHash({turnoverAverageThreshold:request.averageThreshold,turnoverDays:request.turnoverDays!,excludedNameKeywords:request.excludedNameKeywords!}) || JSON.stringify(groups.map(g => g.id).sort()) !== JSON.stringify(request.groupIds)) throw new ManualAlertError("预警规则或接收群已变化，请重新预览并保存", 409);
+  const preview = await previewTurnoverAlert(owner, request.warehouseCode);
+  if (preview.ruleHash !== alertRuleHash(current)) throw new ManualAlertError("预警规则已变化，请重新预览",409);
   if (preview.snapshotId !== request.snapshotId) throw new ManualAlertError("仓库数据已更新，请重新预览后发送", 409);
   if (preview.incomplete) throw new ManualAlertError("本次库存采集不完整，暂不能发送预警");
   if (!preview.count) throw new ManualAlertError("当前仓库没有符合预警条件的货品，无需发送");
@@ -66,29 +69,33 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   try {
     const concurrent = lookup();
     if (concurrent) { db.exec("COMMIT"); return replay(concurrent); }
-    const recent = db.prepare("SELECT state,attempted_at,result FROM manual_alert_deliveries WHERE owner=? AND client_id=? AND robot_code=? ORDER BY attempted_at DESC LIMIT 1").get(...scope) as { state: string; attempted_at: number; result: string } | undefined;
+    const recent = db.prepare("SELECT state,attempted_at,result FROM manual_alert_deliveries WHERE owner=? AND client_id=? AND robot_code=? AND warehouse_code=? ORDER BY attempted_at DESC LIMIT 1").get(...scope,request.warehouseCode) as { state: string; attempted_at: number; result: string } | undefined;
     const maxRunTime = recent ? 60_000 + (JSON.parse(recent.result) as ManualAlertResult).groups.reduce((total,g)=>total+g.totalParts*31_000,0) : 0;
     if (recent && (now - recent.attempted_at < COOLDOWN_MS || (recent.state === "sending" && now - recent.attempted_at < maxRunTime))) {
       // An unfinished run requires checking its result instead of starting another send.
       throw new ManualAlertError(recent.state === "sending" ? "已有通知正在发送，请等待结果" : "距离上次发送尝试不足30秒，请稍后再试", 429);
     }
     db.prepare(`INSERT INTO manual_alert_deliveries
-      (owner,client_id,robot_code,request_id,payload_hash,warehouse_code,state,result,attempted_at,snapshot_id,average_threshold)
-      VALUES(?,?,?,?,?,?,'sending',?,?,?,?)`).run(...scope, request.requestId, hash, request.warehouseCode, JSON.stringify(result), now, request.snapshotId, request.averageThreshold);
+      (owner,client_id,robot_code,request_id,payload_hash,warehouse_code,state,result,attempted_at,snapshot_id,average_threshold,rule_hash)
+      VALUES(?,?,?,?,?,?,'sending',?,?,?,?,?)`).run(...scope, request.requestId, hash, request.warehouseCode, JSON.stringify(result), now, request.snapshotId, request.averageThreshold, preview.ruleHash);
     db.exec("COMMIT");
   } catch (error) { if (db.isTransaction) db.exec("ROLLBACK"); throw error; }
   const persist = () => db.prepare("UPDATE manual_alert_deliveries SET state=?,result=? WHERE owner=? AND client_id=? AND robot_code=? AND request_id=?").run(result.state, JSON.stringify(result), ...scope, request.requestId);
   const secret = env.DINGTALK_CLIENT_SECRET!;
   for (const group of result.groups) {
-    const selected = db.prepare("SELECT 1 FROM dingtalk_groups WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND active=1 AND enabled=1").get(...scope, group.id);
+    const selected = db.prepare(`SELECT 1 FROM warehouse_alert_groups s JOIN dingtalk_groups g
+      ON g.owner=s.owner AND g.client_id=s.client_id AND g.robot_code=s.robot_code AND g.open_conversation_id=s.open_conversation_id
+      JOIN warehouse_alert_settings a ON a.owner=s.owner AND a.warehouse_code=s.warehouse_code
+      WHERE s.owner=? AND s.client_id=? AND s.robot_code=? AND s.warehouse_code=? AND s.open_conversation_id=? AND g.active=1 AND a.revision=?`)
+      .get(...scope,request.warehouseCode,group.id,current.revision);
     if (!selected || robotScope(owner).some((value, i) => value !== scope[i])) { group.state = "skipped"; persist(); continue; }
     // The worker may have claimed this same report while the dialog saved settings.
     // A manual claim is already persisted, so subsequent worker claims will skip it.
     const automatic = db.prepare(`SELECT state FROM turnover_group_deliveries
       WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=?
-        AND warehouse_code=? AND snapshot_id=? AND average_threshold=?
+        AND warehouse_code=? AND snapshot_id=? AND (rule_hash=? OR (rule_hash='' AND average_threshold=?))
         AND (attempted_at>=? OR state='sending')`).get(...scope, group.id, request.warehouseCode,
-          request.snapshotId, request.averageThreshold, new Date(Date.now()-COOLDOWN_MS).toISOString()) as { state: string } | undefined;
+          request.snapshotId, preview.ruleHash, legacyAverageThreshold(current), new Date(Date.now()-COOLDOWN_MS).toISOString()) as { state: string } | undefined;
     if (automatic) {
       group.state = "skipped";
       group.skipReason = "automatic";
@@ -99,9 +106,9 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
     // Persist uncertainty before the external call: a crash cannot cause a retry.
     group.state = "unconfirmed"; persist();
     try {
-      await sendInventoryReport({ clientId: scope[1], clientSecret: secret, robotCode: scope[2], openConversationId: group.id }, preview, sender, parts=>{group.acceptedParts=parts;persist();});
+      await sendInventoryReport({ clientId: scope[1], clientSecret: secret, robotCode: scope[2], openConversationId: group.id }, sender===sendRobotMessage?attachReportExport(owner,request.warehouseCode,preview):preview, sender, parts=>{group.acceptedParts=parts;persist();});
       group.state = "accepted";
-      db.prepare("UPDATE alert_settings SET last_sent_at=? WHERE owner=?").run(new Date().toISOString(), owner);
+      db.prepare("UPDATE warehouse_alert_settings SET last_sent_at=? WHERE owner=? AND warehouse_code=?").run(new Date().toISOString(), owner, request.warehouseCode);
     } catch (error) {
       if (error instanceof DingTalkCardError && error.rejected) group.state = "failed";
       // Only expose our sanitized errors, never upstream bodies or credentials.
@@ -118,6 +125,6 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   const skipped = result.groups.filter(g => g.state === "skipped" && !g.skipReason).length;
   result.message = `${request.warehouseCode}：${preview.count} 款预警，钉钉已受理 ${accepted} 个群${failed ? `，${failed} 个群发送失败，请查看下方错误` : ""}${uncertain ? `，${uncertain} 个群未确认，请先核对群消息` : accepted ? "，请到群内查看" : ""}${duplicates ? `；${duplicates} 个群已有同一份自动预警，本次已防止重复发送，请查看群说明` : ""}${skipped ? `；${skipped} 个群因勾选或成员关系变化已跳过` : ""}。`;
   persist();
-  db.prepare("UPDATE alert_settings SET last_result=? WHERE owner=?").run("手动发送 · " + result.message, owner);
+  db.prepare("UPDATE warehouse_alert_settings SET last_result=? WHERE owner=? AND warehouse_code=?").run("手动发送 · " + result.message, owner, request.warehouseCode);
   return result;
 }

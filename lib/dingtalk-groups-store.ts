@@ -7,11 +7,15 @@ export type DingTalkGroup = { id: string; name: string; enabled: boolean };
 export type DingTalkGroupState = { groups: DingTalkGroup[]; lastSyncedAt: string | null; error: string | null; syncing: boolean };
 export function robotScope(owner: string): [string, string, string] { return [owner, process.env.DINGTALK_CLIENT_ID || "", process.env.DINGTALK_ROBOT_CODE || ""]; }
 
-export function groupState(owner: string): DingTalkGroupState {
+export function groupState(owner: string, warehouseCode?: string): DingTalkGroupState {
   if (!serverConfig().robotConfigured) return { groups: [], lastSyncedAt: null, error: null, syncing: false };
   const db = sqlite(), scope = robotScope(owner);
   const state = db.prepare("SELECT * FROM dingtalk_group_sync WHERE owner=? AND client_id=? AND robot_code=?").get(...scope);
-  const rows = db.prepare("SELECT open_conversation_id,name,enabled FROM dingtalk_groups WHERE owner=? AND client_id=? AND robot_code=? AND active=1 ORDER BY name,open_conversation_id").all(...scope);
+  const rows = warehouseCode === undefined
+    ? db.prepare("SELECT open_conversation_id,name,enabled FROM dingtalk_groups WHERE owner=? AND client_id=? AND robot_code=? AND active=1 ORDER BY name,open_conversation_id").all(...scope)
+    : db.prepare(`SELECT g.open_conversation_id,g.name,EXISTS(SELECT 1 FROM warehouse_alert_groups s
+      WHERE s.owner=g.owner AND s.client_id=g.client_id AND s.robot_code=g.robot_code AND s.open_conversation_id=g.open_conversation_id AND s.warehouse_code=?) AS enabled
+      FROM dingtalk_groups g WHERE g.owner=? AND g.client_id=? AND g.robot_code=? AND g.active=1 ORDER BY g.name,g.open_conversation_id`).all(warehouseCode,...scope);
   return { groups: rows.map((r: {open_conversation_id: string; name: string; enabled: number}) => ({ id: String(r.open_conversation_id), name: String(r.name), enabled: !!r.enabled })), lastSyncedAt: state?.last_synced_at as string || null, error: state?.error as string || null, syncing: Number(state?.lease_until || 0) > Date.now() };
 }
 
@@ -34,6 +38,7 @@ export async function syncRobotGroups(owner: string, options: { force?: boolean;
       if (!db.prepare("SELECT 1 FROM dingtalk_group_sync WHERE owner=? AND client_id=? AND robot_code=? AND lease=?").get(...scope, lease)) { db.exec("ROLLBACK"); return groupState(owner); }
       // Preserve choices for still-present groups; removed and rejoined groups require a new opt-in.
       db.prepare(`UPDATE dingtalk_groups SET active=0,enabled=0 WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id NOT IN (SELECT value FROM json_each(?))`).run(...scope, JSON.stringify(ids));
+      db.prepare(`DELETE FROM warehouse_alert_groups WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id NOT IN (SELECT value FROM json_each(?))`).run(...scope,JSON.stringify(ids));
       for (const id of ids) db.prepare(`INSERT INTO dingtalk_groups (owner,client_id,robot_code,open_conversation_id,last_seen_at) VALUES (?,?,?,?,?)
         ON CONFLICT(owner,client_id,robot_code,open_conversation_id) DO UPDATE SET active=1,last_seen_at=excluded.last_seen_at`).run(...scope, id, seen);
       db.prepare("UPDATE dingtalk_group_sync SET last_synced_at=?,error=NULL WHERE owner=? AND client_id=? AND robot_code=? AND lease=?").run(seen, ...scope, lease);

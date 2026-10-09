@@ -64,3 +64,8 @@ export function multiplyQuantityByInteger(value: string, multiplier: number): st
   const parsed = parts(value);
   return format(parsed.integer * BigInt(multiplier), parsed.scale);
 }
+
+export function multiplyQuantity(left: string, right: string): string {
+  const a = parts(left), b = parts(right);
+  return format(a.integer * b.integer, a.scale + b.scale);
+}
