@@ -22,6 +22,7 @@ try {
   start();await ready();
   let r=await fetch(url+'/',{redirect:'manual',headers:{'oai-authenticated-user-id':'forged','oai-authenticated-user-email':'fake@example.com'}});
   assert.equal(r.status,307);assert.equal(r.headers.get('location'),'/login');
+  r=await fetch(url+'/api/transit?warehouseCode=TEST02');assert.equal(r.ok,false,'在途记录需要登录');
   r=await fetch(url+'/api/inventory');assert.equal(r.ok,false);
   r=await fetch(url+'/api/sales-calendar?warehouseCode=TEST02&goodsNo=TEST-GOODS&month=2026-10');assert.equal(r.ok,false,'月历需要登录');
   r=await fetch(url+'/api/session',{method:'POST',headers:{origin:'https://evil.example'},body:new URLSearchParams({username:'admin',password}),redirect:'manual'});assert.equal(r.ok,false);
@@ -75,6 +76,9 @@ try {
   assert.equal(state,'complete',output);
   start();await ready();
   r=await fetch(url+'/api/inventory?warehouseCode=TEST02',{headers:{cookie}});const inventory=await r.json();assert.equal(inventory.rows[0].quantity,'17.25');
+  assert.equal(inventory.transitStatus.status,'complete');assert.equal(inventory.rows[0].transit.quantity,'50');
+  r=await fetch(url+'/api/transit?warehouseCode=TEST02',{headers:{cookie}});assert.equal(r.ok,true);const transit=await r.json();assert.equal(transit.documents[0].no,'RK-TEST');assert.equal(transit.goods[0].quantity,'50');
+  r=await fetch(url+'/api/transit?warehouseCode=NOT-OWNED',{headers:{cookie}});assert.equal(r.ok,false);
   assert.equal(inventory.rows[0].metrics.average7,null);
   assert.equal(inventory.rows[0].metrics.reason,'insufficient_data');
   r=await fetch(url+'/',{headers:{cookie}});const pageHtml=await r.text();assert.equal(r.status,200);

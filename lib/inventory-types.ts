@@ -1,9 +1,11 @@
 import type { ScopeInfo } from "./stock-scope";
 import type { InventoryMetrics } from "./inventory-metrics";
 import type { InboundReconciliation } from "./inbound";
+import type { TransitMetric, TransitGoods } from './transit';
 export type WarehouseInfo = { code: string; name: string; warehouseId: string | null; dailyTime: string; timeZone: string };
 export type UnavailableSku = { skuId: string; goodsNo: string; goodsName: string; skuName: string; skuBarcode: string; unitName: string; reason: string };
 export type StockRow = {
+  transit?: TransitMetric;
   goodsNo: string;
   goodsName: string;
   unitName: string;
@@ -23,6 +25,8 @@ export type SnapshotInfo = {
 };
 
 export type InventoryView = {
+  transitStatus?: {status:string;checkedAt:string|null;error:string|null};
+  transitOnly?: TransitGoods[];
   warehouseCode: string;
   warehouseName: string;
   source: "live" | "sample";

@@ -1,3 +1,4 @@
+import { enrichTransit,transitOnlyGoods } from './transit-store';
 import { runtimeDatabase, env } from "./runtime";
 import { workerActive } from "./local-jobs";
 import { compareQuantity } from "./decimal";
@@ -128,7 +129,9 @@ export async function loadInventory(owner: string, query: { source?: string; war
   const inbound = await loadInboundReconciliations(owner, warehouse.code, daily, result.results.map(r => r.goods_no));
   const currentInbound = query.compact ? new Map<string,InboundReconciliation>() : await loadCurrentInboundReconciliations(owner, warehouse.code, latest.id, result.results.map(r => r.goods_no));
   const snapshotInfo = (s:SnapshotRecord) => query.compact ? {...mapSnapshot({...s,unavailable_skus:"[]"}),unavailableSkus:undefined} : mapSnapshot(s);
-  return { ...base, snapshot: snapshotInfo(latest), snapshots: daily.map(snapshotInfo), salesDates, unavailableSkus:JSON.parse(latest.unavailable_skus || "[]"), rows: result.results.map(r => analyzedEntry(r, history.get(r.goods_no) || [], latest.date, salesDates, inbound.get(r.goods_no), currentInbound.get(r.goods_no),query.compact)), totalRows, goodsCount: latest.goods_count, page, totalsByUnit: JSON.parse(latest.totals), zeroCount: latest.zero_count, negativeCount: latest.negative_count };
+  const analyzed=result.results.map(r => analyzedEntry(r, history.get(r.goods_no) || [], latest.date, salesDates, inbound.get(r.goods_no), currentInbound.get(r.goods_no),query.compact));
+  const transitStatus=enrichTransit(owner,warehouse.code,latest.id,analyzed);
+  return { ...base, snapshot: snapshotInfo(latest), snapshots: daily.map(snapshotInfo), salesDates, unavailableSkus:JSON.parse(latest.unavailable_skus || "[]"), rows: analyzed, transitStatus, totalRows, goodsCount: latest.goods_count, page, totalsByUnit: JSON.parse(latest.totals), zeroCount: latest.zero_count, negativeCount: latest.negative_count };
 }
 
 export async function acquireRun(owner: string, code = WAREHOUSE_CODE, trigger = "manual", requestedId?: string): Promise<string> {
@@ -188,6 +191,8 @@ export async function allRows(owner: string, code = WAREHOUSE_CODE, days = 14, c
     const currentInbound = compact ? new Map<string,InboundReconciliation>() : await loadCurrentInboundReconciliations(owner, code, view.snapshot!.id, batch.map(r => r.goods_no));
     rows.push(...batch.map(r => analyzedEntry(r, history.get(r.goods_no) || [], view.snapshot!.date, view.salesDates || [], inbound.get(r.goods_no), currentInbound.get(r.goods_no),compact)));
   }
+  view.transitStatus=enrichTransit(owner,code,view.snapshot.id,rows);
+  view.transitOnly=transitOnlyGoods(owner,code,view.snapshot.id);
   return { view, rows };
 }
 export async function inboundRunProgress(id: string, done: number, total: number, requests = 0) {

@@ -95,7 +95,7 @@ export async function collectWarehouseStock(appkey: string, secret: string, code
   };
   let stockPages = 0;
   if (barcodes.length) {
-    const result = await collectStock(appkey, secret, (pages, records, goods) => onPage(catalog.pageCount + pages, records, goods), stockFetcher, scope, { code, id: catalog.id, name: catalog.name }, verify, state, allowUnavailable, 2);
+    const result = await collectStock(appkey, secret, (pages, records, goods) => onPage(catalog.pageCount + pages, records, goods), stockFetcher, scope, { code, id: catalog.id, name: catalog.name }, verify, state, true, 2);
     stockPages = result.pageCount;
   }
   for (const goodsNo of new Set(catalog.rows.filter(r => !seen.has(identity(r))).map(r => field(r,"goodsNo")))) {
@@ -113,12 +113,15 @@ export async function collectWarehouseStock(appkey: string, secret: string, code
     if (!ended) throw new ApiFailure("单个货品查询超过分页保护上限，本次未发布");
     await onPage(catalog.pageCount + stockPages, state.recordCount, state.goods.size);
   }
-  const unavailable: UnavailableSku[] = catalog.rows.filter(row => !seen.has(identity(row))).map(row => ({skuId:field(row,"skuId"),goodsNo:field(row,"goodsNo"),goodsName:field(row,"goodsName"),skuName:typeof row.skuName === "string" ? row.skuName : "",skuBarcode:typeof row.skuBarcode === "string" ? row.skuBarcode.trim() : "",unitName:field(row,"unitName"),reason:row.skuBarcode ? "按条码及货品编码查询均未返回可购数量" : "无条码；按货品编码查询未返回可购数量"}));
+  // Combination codes without a purchasable-stock result are outside the
+  // user's inventory scope. Never manufacture zero or sum component stock.
+  const missing = catalog.rows.filter(row => !seen.has(identity(row)));
+  const unavailable: UnavailableSku[] = missing.filter(row => !field(row, "goodsNo").includes("+")).map(row => ({skuId:field(row,"skuId"),goodsNo:field(row,"goodsNo"),goodsName:field(row,"goodsName"),skuName:typeof row.skuName === "string" ? row.skuName : "",skuBarcode:typeof row.skuBarcode === "string" ? row.skuBarcode.trim() : "",unitName:field(row,"unitName"),reason:row.skuBarcode ? "按条码及货品编码查询均未返回可购数量" : "无条码；按货品编码查询未返回可购数量"}));
   if (unavailable.length && !allowUnavailable) throw new ApiFailure(`有 ${unavailable.length} 个规格未返回可购数量（包括无条码规格），本次未发布；缺失不当作 0`);
   if (!state.recordCount) throw new ApiFailure("该仓库未取得任何可核验的可购库存，本次未保存");
-  if (state.recordCount + unavailable.length !== expected.size) throw new ApiFailure("库存规格数量与目录不一致，本次未发布");
+  if (state.recordCount + missing.length !== expected.size) throw new ApiFailure("库存规格数量与目录不一致，本次未发布");
   // Never publish a misleading partial total for a goodsNo with one missing variant.
-  const incompleteGoods = new Set(unavailable.map(row => row.goodsNo));
+  const incompleteGoods = new Set(missing.map(row => field(row, "goodsNo")));
   const rows = aggregatedRows(state).filter(row => !incompleteGoods.has(row.goodsNo));
   if (!rows.length) throw new ApiFailure("没有规格齐全的可核验货品，本次未保存");
   return { rows, pageCount: catalog.pageCount + stockPages, recordCount:state.recordCount, duplicateCount:state.duplicateCount, catalog, scope, unavailable };

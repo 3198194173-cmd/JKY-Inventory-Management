@@ -191,3 +191,18 @@ test("迁移保存旧数据，多仓库隔离、每日基准不覆盖、1000条�
   }
   assert.equal(addQuantity("0.1","0.2"),"0.3"); db.close();
 });
+
+
+test("组合编码仅采用可购接口返回值；未返回不记缺失、不补零，普通商品仍核验",async()=>{
+  const combination={...catalogRow("2"),goodsNo:"PART-A+PART-B",skuBarcode:null};
+  const catalog=async(_a:string,_s:string,_c:string,_p:number,_f?:typeof fetch,cursor?:string)=>cursor==="0"?[catalogRow("1"),combination]:[];
+  const stock=async(_a:string,_s:string,page:number,_f?:typeof fetch,_b?:string[],_c?:string,goodsNo?:string)=>page||goodsNo?[]:[{...catalogRow("1"),orderAbleQuantity:"7"}];
+  const result=await collectWarehouseStock("fake","fake","CK_ALT",async()=>{},catalog,stock);
+  assert.deepEqual(result.rows.map(r=>[r.goodsNo,r.quantity]),[["g1","7"]]);assert.deepEqual(result.unavailable,[]);
+  const withBarcode={...combination,skuBarcode:"combo-barcode"};
+  const catalogWithBarcode=async(_a:string,_s:string,_c:string,_p:number,_f?:typeof fetch,cursor?:string)=>cursor==="0"?[catalogRow("1"),withBarcode]:[];
+  assert.equal((await collectWarehouseStock("fake","fake","CK_ALT",async()=>{},catalogWithBarcode,stock)).unavailable.length,0);
+  const withStock=await collectWarehouseStock("fake","fake","CK_ALT",async()=>{},catalog,async(...args:Parameters<typeof stock>)=>args[6]?args[2]?[]:[{...combination,orderAbleQuantity:"3"}]:stock(...args));
+  assert.equal(withStock.rows.find(r=>r.goodsNo===combination.goodsNo)?.quantity,"3");
+  await assert.rejects(()=>collectWarehouseStock("fake","fake","CK_ALT",async()=>{},catalog,async()=>{throw new Error("接口失败");}),/接口失败/);
+});

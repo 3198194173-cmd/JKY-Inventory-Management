@@ -25,14 +25,15 @@ export function inventoryWorkbook(view:InventoryView,rows:(StockRow & {metrics?:
   let data=`<row r="1" ht="30" customHeight="1">${headers.map((label,i)=>cell(`${String.fromCharCode(65+i)}1`,label,base.styles[`${String.fromCharCode(65+i)}1` as keyof typeof base.styles]||0)).join("")}</row>`;
   const dates = view.snapshot ? recentSalesDates(view.snapshot.date) : [];
   rows.forEach((row,index)=>{ const r=index+2;
-    const metricCell = (column:"D"|"F",value:string|null|undefined) => value == null ? `<c r="${column}${r}" s="${base.styles[`${column}2` as keyof typeof base.styles] || base.styles.C2}"/>` : numericCell(`${column}${r}`,value,base.styles.C2,base.styles.A2);
-    const blanks=["G","H"].map(c=>`<c r="${c}${r}" s="${base.styles[`${c}2` as keyof typeof base.styles] || base.styles.C2}"/>`).join("");
+    const metricCell = (column:"D"|"F"|"G"|"H",value:string|null|undefined) => value == null ? `<c r="${column}${r}" s="${base.styles[`${column}2` as keyof typeof base.styles] || base.styles.C2}"/>` : numericCell(`${column}${r}`,value,base.styles.C2,base.styles.A2);
+    const blanks=metricCell("G",row.transit?.quantity)+metricCell("H",row.transit?.replenishment);
     data+=`<row r="${r}" ht="23" customHeight="1">${cell(`A${r}`,row.goodsNo,base.styles.A2)}${cell(`B${r}`,row.goodsName,base.styles.B2)}${numericCell(`C${r}`,row.quantity,base.styles.C2,base.styles.A2)}${metricCell("D",row.metrics?.average7)}${cell(`E${r}`,dates.length ? `${dates[6]} ~ ${dates[0]}` : "",base.styles.A2)}${metricCell("F",row.metrics?.turnoverDays)}${blanks}</row>`;
   });
-  files["xl/worksheets/sheet1.xml"]=replaceData(files["xl/worksheets/sheet1.xml"],data,rows.length+1,"H");
+  for(const [i,g] of (view.transitOnly||[]).entries()){const r=rows.length+i+2;data+=`<row r="${r}">${cell(`A${r}`,g.goodsNo,base.styles.A2)}${cell(`B${r}`,g.goodsName,base.styles.B2)}${numericCell(`G${r}`,g.quantity,base.styles.C2,base.styles.A2)}</row>`;}
+  files["xl/worksheets/sheet1.xml"]=replaceData(files["xl/worksheets/sheet1.xml"],data,rows.length+(view.transitOnly?.length||0)+1,"H");
   const sourceLink="https://open.jackyun.com/developer/refactored/apidocinfo.html?id=erp-stock.stock.skulist&name=true";
   const notes=[
-    ["数据性质",view.source === "sample" ? "用户提供的 12 条历史测试样本，非全仓数据；测试应用 22914895。" : "erp.stockquantity.get 游标取得仓库 SKU，erp-stock.stock.skulist 按条码或货品编码查询并核验可购数量。仅统计规格齐全的已核验货品；未取得库存的记录另列，不填零。"],
+    ["数据性质",view.source === "sample" ? "用户提供的 12 条历史测试样本，非全仓数据；测试应用 22914895。" : "erp.stockquantity.get 游标取得仓库 SKU，erp-stock.stock.skulist 按条码或货品编码查询并核验可购数量。仅统计规格齐全的已核验货品；未返回可购库存的组合编码跳过；其他未取得库存的记录另列，不填零。"],
     ["自动 SKU 清单",view.snapshot?.scope ? `${view.snapshot.scope.label}，${view.snapshot.scope.count} 个 SKU。` : "历史测试样本，范围未确认。"],
     ["未取得库存的 SKU",`${view.unavailableSkus?.length || 0} 个；不计入库存或销售差额，含缺失规格的货品不展示部分合计。`],
     ["仓库",`${view.warehouseName}（${view.warehouseCode}）`],
@@ -42,9 +43,10 @@ export function inventoryWorkbook(view:InventoryView,rows:(StockRow & {metrics?:
     ["网页销售口径","上次每日基准库存 + 两次采集区间内入库 − 本次每日基准库存，记在上次基准日期；按仓库和采集区间分页获取全部入库（含归档），按货品编码汇总；负销量按退货/回补计入净销量；未完成入库核验的日期不算销量。"],
     ["单位合计",Object.entries(view.totalsByUnit).map(([u,q])=>`${q} ${u}`).join("；")],
     ["近7天销量均值","固定为最近采集日期之前7个完整日期的净销量总和÷7，包含负值退货/回补；缺日、缺货品、单位变化或入库未核验不计算。不随网页日期范围改变。"],
-    ["库存周转","当前库存÷近7天未四舍五入的均值；结果保留2位小数。均值为零或负数、负库存、数据不足或待核验入库时为空。此值为预计库存可支撑天数。"],
+    ["库存周转","当前库存÷近7天未四舍五入的均值；结果保留2位小数。均值为零或负数、数据不足或待核验入库时为空。负库存保留负周转。此值为预计库存可支撑天数。"],
     ["指标性质","均值和周转为库存消耗估算；全部可比较日期已核验区间实际入库。销售出库、退货、调拨及可订购量变动仍可能影响结果，不等同准确订单销量或销售金额。"],
-    ["未接入的字段","在途及建议补货尚未接入；缺失数据不填成0。"],
+    ["在途与补货","在途取已核验申请单剩余数量；部分入库保留剩余，完成/关闭单不计。补货=max(0,30×未舍入销售均值－库存－在途)，显示2位小数；未核验或均值无效留空。只有在途、未取得库存的商品保留行，库存和补货留空。"],
+    ["在途采集状态",`${view.transitStatus?.status||"未接入"} · ${view.transitStatus?.checkedAt||""} · ${view.transitStatus?.error||""}`],
     ["数值精度","数量超过 Excel 的 15 位有效数字限制时存为文本，以保留原始精度。"],
     ["原始来源",view.source === "sample" ? "资料/响应样本/库存查询_原始样本.json" : "吉客云官方 erp-stock.stock.skulist 实时采集"],
     ["接口文档",sourceLink],

@@ -171,3 +171,13 @@ export const inboundReconciliations = sqliteTable("inbound_reconciliations", {
   error: text("error"),
   checkedAt: text("checked_at").notNull(),
 }, t => [primaryKey({ columns: [t.owner,t.warehouseCode,t.goodsNo,t.beforeSnapshotId,t.afterSnapshotId] }),index("idx_inbound_owner_warehouse_date").on(t.owner,t.warehouseCode,t.date)]);
+
+export const transitSnapshots = sqliteTable("transit_snapshots", {
+  stockSnapshotId: text("stock_snapshot_id").primaryKey().references(() => snapshots.id, {onDelete:"cascade"}),
+  owner: text("owner").notNull(),
+  warehouseCode: text("warehouse_code").notNull(),
+  capturedAt: text("captured_at").notNull(),
+  status: text("status").notNull(),
+  payload: text("payload"),
+  error: text("error"),
+}, t => [index("transit_history").on(t.owner,t.warehouseCode,t.capturedAt)]);
