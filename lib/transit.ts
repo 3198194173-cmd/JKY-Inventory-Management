@@ -4,9 +4,9 @@ import { parseLosslessJson } from './lossless-json';
 import type { InventoryMetrics } from './inventory-metrics';
 
 export type TransitLine = { id:string; goodsNo:string; goodsName:string; skuId:string; unitName:string; applied:string; received:string; remaining:string };
-export type TransitDocument = { id:string; no:string; state:string; audit:string; source:string; applyDate:string; modifiedAt:string; lines:TransitLine[]; error?:string; receipts?:{no:string; goodsNo:string; skuId:string; unitName:string; quantity:string; time:string}[]; receiptStatus?:string };
+export type TransitDocument = { id:string; no:string; inType?:string; state:string; audit:string; source:string; applyDate:string; modifiedAt:string; lines:TransitLine[]; error?:string; receipts?:{no:string; goodsNo:string; skuId:string; unitName:string; quantity:string; time:string}[]; receiptStatus?:string };
 export type TransitGoods = { goodsNo:string; goodsName:string; unitName:string; quantity:string };
-export type TransitResult = { startedAt:string; completedAt:string; from:string; documents:TransitDocument[]; goods:TransitGoods[]; issues:string[]; requests:number };
+export type TransitResult = { scope?:'transfer-v1'; startedAt:string; completedAt:string; from:string; documents:TransitDocument[]; goods:TransitGoods[]; issues:string[]; requests:number };
 export type TransitMetric = { quantity:string|null; replenishment:string|null; coverageDays:string|null; reason:string|null };
 const text=(value:unknown)=>value==null?'':String(value);
 const closed=(d:TransitDocument)=>d.audit==='3';
@@ -18,12 +18,14 @@ export function transitMetric(quantity:string|null, stock:string, metrics?:Inven
   const available=addQuantity(stock,quantity);
   // Use the exact seven-day total, not the rounded displayed average.
   const deficit=subtractQuantity(multiplyQuantityByInteger(metrics.total7,30),multiplyQuantityByInteger(available,7));
-  return {quantity,replenishment:compareQuantity(deficit,'0')>0?divideQuantity(deficit,'7',0):'0',coverageDays:divideQuantity(multiplyQuantityByInteger(available,7),metrics.total7),reason:null};
+  // User-defined amount = (stock + transit) / daily average * 30.
+  // daily average = total7 / 7; round only the final amount, and floor at zero.
+  return {quantity,replenishment:compareQuantity(deficit,'0')>0&&compareQuantity(available,'0')>0?divideQuantity(multiplyQuantityByInteger(available,210),metrics.total7,0):'0',coverageDays:divideQuantity(multiplyQuantityByInteger(available,7),metrics.total7),reason:null};
 }
 
 export async function collectTransit(appkey:string,secret:string,warehouseCode:string,previous:TransitDocument[]=[],fetcher:typeof fetch=fetch,onProgress:(requests:number)=>Promise<void>=async()=>{},from='2020-01-01 00:00:00'):Promise<TransitResult> {
   const startedAt=new Date().toISOString(),until=shanghaiTimestamp(new Date(startedAt));
-  const result:TransitResult={startedAt,completedAt:'',from,documents:[],goods:[],issues:[],requests:0};
+  const result:TransitResult={scope:'transfer-v1',startedAt,completedAt:'',from,documents:[],goods:[],issues:[],requests:0};
   type Row=Record<string,unknown>;
   async function pages(method:string,args:Row,key:string):Promise<Row[]> {
     const collected:Row[]=[],identities=new Set<string>();
@@ -57,29 +59,37 @@ export async function collectTransit(appkey:string,secret:string,warehouseCode:s
   }
   const range={applyDateFrom:from,applyDateTo:until,isNotification:0,isListLogistic:0};
   const parents=new Map<string,Row>();
-  for(const state of ['1','2'])for(const row of await pages('erp.stockin.get',{...range,inStatus:state},'inId')){
+  for(const state of ['1','2'])for(const row of await pages('erp.stockin.get',{...range,inType:'102',inStatus:state},'inId')){
+    if(text(row.inType)!=='102')throw new Error('调拨入库类型筛选未生效');
     if(text(row.inStatus)!==state)throw new Error('入库状态筛选未生效');
     if(parents.has(text(row.inId)))throw new Error('采集时申请单状态发生变化，请重试');
     parents.set(text(row.inId),row);
   }
   // A missing waiting item may be complete/closed or inaccessible. Recheck its
   // identity without a status filter; disappearance alone never means zero.
-  for(const prior of previous.filter(d=>isOutstanding(d)||d.error||d.receiptStatus?.includes("待核验")))if(!parents.has(prior.id)){
-    const rows=await pages('erp.stockin.get',{...range,inNo:prior.no},'inId');
+  for(const prior of previous.filter(d=>(!d.inType||d.inType==='102')&&(isOutstanding(d)||d.error||d.receiptStatus?.includes("待核验"))))if(!parents.has(prior.id)){
+    const rows=await pages('erp.stockin.get',{...range,inNo:prior.no,...(prior.inType?{inType:'102'}:{})},'inId');
     const exact=rows.find(r=>text(r.inId)===prior.id&&text(r.inNo)===prior.no);
     if(rows.some(r=>text(r.inNo)!==prior.no))throw new Error('申请单号筛选未生效');
-    if(exact)parents.set(prior.id,exact);
+    // Legacy snapshots lack a type: classify them once before applying the new scope.
+    if(exact){
+      const type=text(exact.inType);
+      if(!/^\d+$/.test(type))throw new Error('旧申请单入库类型缺失，无法核验');
+      if(type==='102')parents.set(prior.id,exact);
+      else if(prior.inType)throw new Error('调拨入库类型筛选未生效');
+    }
     else {const message=`${prior.no} 未查到，不能确认完成`;result.documents.push({...prior,error:message});result.issues.push(message);}
   }
-  const cols='inId,inNo,inDetailId,inWarehouseCode,inStatus,status,goodsNo,goodsName,skuId,unitName,skuCount,innerCount,uninnerCount,applyDate,gmtModified,relDataId';
+  const cols='inId,inNo,inDetailId,inWarehouseCode,inType,inStatus,status,goodsNo,goodsName,skuId,unitName,skuCount,innerCount,uninnerCount,applyDate,gmtModified,relDataId';
   for(const parent of parents.values()){
-    const doc:TransitDocument={id:text(parent.inId),no:text(parent.inNo),state:text(parent.inStatus),audit:text(parent.status),source:text(parent.relDataId),applyDate:text(parent.applyDate),modifiedAt:text(parent.gmtModified),lines:[]};
+    const doc:TransitDocument={id:text(parent.inId),no:text(parent.inNo),inType:text(parent.inType),state:text(parent.inStatus),audit:text(parent.status),source:text(parent.relDataId),applyDate:text(parent.applyDate),modifiedAt:text(parent.gmtModified),lines:[]};
     result.documents.push(doc);
     try{
       if(!doc.no||!['0','1','2','3','10'].includes(doc.audit)||!['1','2','3'].includes(doc.state))throw new Error('未知入库状态');
-      const rows=await pages('erp.stockin.get.v2',{...range,inNo:doc.no,cols},'inDetailId');
+      const rows=await pages('erp.stockin.get.v2',{...range,inType:'102',inNo:doc.no,cols},'inDetailId');
       if(!rows.length)throw new Error('申请明细为空，无法核验');
       for(const row of rows){
+        if(text(row.inType)!=='102')throw new Error('申请明细不是调拨入库');
         if(text(row.inNo)!==doc.no||text(row.inId)!==doc.id||text(row.inStatus)!==doc.state||text(row.status)!==doc.audit)throw new Error('主表与明细身份或状态不同步');
         const line:TransitLine={id:text(row.inDetailId),goodsNo:text(row.goodsNo),goodsName:text(row.goodsName),skuId:text(row.skuId),unitName:text(row.unitName),applied:normalizeQuantity(row.skuCount),received:normalizeQuantity(row.innerCount),remaining:normalizeQuantity(row.uninnerCount)};
         if(!line.goodsNo||!line.skuId||!line.unitName)throw new Error('明细缺少商品、规格或单位');
