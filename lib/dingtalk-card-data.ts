@@ -5,7 +5,7 @@ import { TURNOVER_ALERT_DAYS } from "./turnover-alert";
 export type TurnoverCard = {
   title: string; summary: string; footer: string; dates: string[]; exportUrl?: string;
   totalCount: number; part: number; totalParts: number;
-  rows: { goodsNo: string; goodsName: string; unitName: string; quantity: string; average: string; turnover: string; sales: (string | null)[] }[];
+  rows: { goodsNo: string; goodsName: string; unitName: string; quantity: string; average: string; turnover: string; transit?: string | null; replenishment?: string | null; sales: (string | null)[] }[];
 };
 // Inline native charts and the web detail panel do not share a renderer.
 // Supply the native protocol's padding/scale fields as well as web axis options.
@@ -29,6 +29,7 @@ export function turnoverCards(rows: InventoryView["rows"], threshold: string, wa
     dates, totalCount: rows.length, part: 1, totalParts: 1,
     rows: rows.map(row => ({
       goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName, quantity: row.quantity, average: row.metrics?.average7 ?? "—", turnover: row.metrics?.turnoverDays ?? "—",
+      transit: row.transit?.quantity ?? null, replenishment: row.transit?.replenishment ?? null,
       sales: dates.map(day => row.sales?.[day] ?? null),
     })),
   }];
@@ -50,6 +51,7 @@ export function nativeCardParams(card: TurnoverCard): Record<string, string> {
     const chartData = segment === 0 ? data.map(({ x, y }) => ({ x, y })) : data;
     return { goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName,
       quantity: row.quantity, average: row.average, turnover: row.turnover,
+      copyText: productCopyText(row), transit: transitText(row), replenishment: replenishmentText(row),
       chart: { type: "lineChart", data: chartData, config: NATIVE_TREND_CONFIG },
     };
   });
@@ -67,4 +69,12 @@ export function normalizeCardTemplateId(input: string): string {
 
 export function cardTemplateId(): string {
   return normalizeCardTemplateId(process.env.DINGTALK_CARD_TEMPLATE_ID || "");
+}
+
+export function productCopyText(row: Pick<TurnoverCard['rows'][number], 'goodsNo' | 'goodsName'>): string {
+  return [row.goodsNo, row.goodsName].filter(Boolean).join('\n');
+}
+export function transitText(row: TurnoverCard['rows'][number]): string { return row.transit ?? '待核验'; }
+export function replenishmentText(row: TurnoverCard['rows'][number]): string {
+  return row.replenishment == null ? '—' : row.replenishment === '0' ? '无需补货' : row.replenishment;
 }

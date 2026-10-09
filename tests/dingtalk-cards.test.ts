@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { turnoverCards, cardTemplateId, normalizeCardTemplateId, nativeCardParams } from "../lib/dingtalk-card-data";
 import { turnoverCardSvg, renderTurnoverCard } from "../lib/dingtalk-card-image";
 import { DingTalkCardError, sendRobotCard, sendInventoryReport } from "../lib/dingtalk-cards";
+import { alertWorkbook } from "../lib/excel";
 import { turnoverAlertRows } from "../lib/dingtalk";
 import type { InventoryView } from "../lib/inventory-types";
 
@@ -169,7 +170,7 @@ test('原生卡片桌面保留表格、手机完整编码与原生趋势入口�
   assert.equal(nodes.filter(n=>n.componentName==='Image').length,0);
   const loop=nodes.find(n=>n.componentName==='Loop')!,chart=nodes.find(n=>n.componentName==='Chart')!;
   assert.equal(loop.props.listData?.variable,'rows');assert.equal(chart.props.data?.variable,'rows[0].chart');assert.equal(chart.props.enableDetail,true);
-  assert.equal(chart.props.height,64);assert.equal(loop.children!.length,1);assert.equal(loop.children![0].props.direction,'horizontal');assert.equal(loop.children![0].children!.length,5);
+  assert.equal(chart.props.height,64);assert.equal(loop.children!.length,1);assert.equal(loop.children![0].props.direction,'horizontal');assert.equal(loop.children![0].children!.length,7);
   const mobileLoop=nodes.find(n=>n.id==='node_inventory_mobile_rows')!;
   assert.equal(mobileLoop.props.listData?.variable,'rows');assert.equal(mobileLoop.children![0].props.direction,'vertical');
   const entry=nodes.find(n=>n.id==='node_inventory_mobile_chart_cell')! as unknown as {props:{url:{variable:string}};children:TemplateNode[]};
@@ -184,7 +185,7 @@ test('原生卡片桌面保留表格、手机完整编码与原生趋势入口�
   assert.equal(new Set(nodes.map(n=>n.id)).size,nodes.length);
   const desktopLayout=nodes.find(n=>n.id==='node_inventory_desktop_layout')!,mobileLayout=nodes.find(n=>n.id==='node_inventory_mobile_layout')!;
   const layouts=[desktopLayout,mobileLayout] as unknown as {props:{isFixedWidth:boolean;width:number;visible:{condition:{conditions:{type:string;platform:string[]}[]}}}}[];
-  assert.equal(layouts[0].props.isFixedWidth,true);assert.equal(layouts[0].props.width,640);
+  assert.equal(layouts[0].props.isFixedWidth,true);assert.equal(layouts[0].props.width,800);
   assert.equal(layouts[1].props.isFixedWidth,false,'手机不能继承桌面的固定宽度');
   for(const [layout,platform] of layouts.map((layout,i)=>[layout,i===0?['pc']:['ios','android']] as const)){
     assert.deepEqual(layout.props.visible.condition.conditions,[{type:'env',platform,version:Object.fromEntries(platform.map(p=>[p,{op:'all'}]))}]);
@@ -210,7 +211,7 @@ test('循环文字使用官方 loop 上下文，两个商品分别渲染真实�
     assert.ok(xml.includes(`@subdata{'${field}'}`));
   }
   const loopTexts=nodes.filter(n=>n.componentName==='BaseText'&&n.props.text?.content.includes('loop.'));
-  assert.equal(loopTexts.length,10);assert.doesNotMatch(exported.editorData,/\$\{rows\[0\]\./);
+  assert.equal(loopTexts.length,14);assert.doesNotMatch(exported.editorData,/\$\{rows\[0\]\./);
   for(const id of ['node_inventory_name','node_inventory_mobile_name']) {
     const name=nodes.find(n=>n.id===id)!;
     assert.equal(name.props.text!.content,'${loop.goodsName}');
@@ -222,20 +223,47 @@ test('循环文字使用官方 loop 上下文，两个商品分别渲染真实�
 test('编码名称复制和报告下载使用原生动作，下载按钮随链接显隐',()=>{
   const t=JSON.parse(readFileSync('docs/dingtalk-inventory-card.json','utf8'));
   const e=JSON.parse(t.editorData),xml=t.widgetInfo.replace(/&#039;/g,"'");
-  assert.equal((xml.match(/onTap="@dtCopy{/g)||[]).length,4);
+  assert.equal((xml.match(/onTap="@dtCopy{/g)||[]).length,2);
   assert.doesNotMatch(xml,/点击复制商品/);assert.match(xml,/exportUrl/);
   assert.equal(nativeCardParams(card).exportUrl,'');
   assert.equal(nativeCardParams({...card,exportUrl:'https://inventory.example.com/api/alerts/reports/test'}).exportUrl,'https://inventory.example.com/api/alerts/reports/test');
   const nodes: {id:string;componentName:string;props:{hoverText?:{content:string};text?:{content:string};actionType?:string;copyValue?:{content:string};visible?:{condition?:{conditions:{variable:string;op:string}[]}}};children?:unknown[]}[]=[];
   function walk(n:unknown){const node=n as typeof nodes[number];nodes.push(node);node.children?.forEach(walk);}walk(e.schema.componentsTree[0]);
-  for(const id of ['node_inventory_code','node_inventory_name','node_inventory_mobile_code','node_inventory_mobile_name']){
+  for(const id of ['node_inventory_code','node_inventory_mobile_code']){
     const copy=nodes.find(n=>n.id===id+'_copy')!;
-    const field=id.endsWith('_code')?'goodsNo':'goodsName';
+
     assert.equal(copy.componentName,'SingleButton','复制动作绑定官方独立按钮，避免悬停文字拦截外层点击');
     assert.equal(copy.props.actionType,'copy');
-    assert.equal(copy.props.copyValue!.content,'${loop.'+field+'}');
-    assert.equal(copy.props.text!.content,field==='goodsNo'?'复制编码':'复制名称');
+    assert.equal(copy.props.copyValue!.content,'${loop.copyText}');
+    assert.equal(copy.props.text!.content,'复制');
     assert.equal(nodes.find(n=>n.id===id)!.props.hoverText!.content,'');
   }
   for(const env of ['desktop','mobile']){const button=nodes.find(n=>n.id==='node_inventory_export_'+env)!;assert.equal(button.props.actionType,'url');assert.equal(button.props.visible!.condition!.conditions[0].variable,'exportUrl');assert.equal(button.props.visible!.condition!.conditions[0].op,'isNotEmpty');}
+});
+
+test('卡片复制内容与在途/补货和网页一致，保留未核验与零的区别',()=>{
+  const input=rows(3);
+  input[0].goodsName='手机壳 & 配件';
+  input[0].transit={quantity:'200',replenishment:'720',coverageDays:'24',reason:null};
+  input[1].transit={quantity:'0',replenishment:'0',coverageDays:'30',reason:null};
+  const report=turnoverCards(input,'3','测试仓','2026-10-08T00:00:23Z')[0];
+  const payload=JSON.parse(nativeCardParams(report).rows);
+  assert.equal(payload[0].copyText,input[0].goodsNo+'\n手机壳 & 配件');
+  assert.equal(payload[0].transit,'200');assert.equal(payload[0].replenishment,'720');
+  assert.equal(payload[1].transit,'0');assert.equal(payload[1].replenishment,'无需补货');
+  assert.equal(payload[2].transit,'待核验');assert.equal(payload[2].replenishment,'—');
+  assert.equal(report.rows[1].replenishment,'0');
+  const old=structuredClone(report);delete old.rows[0].transit;delete old.rows[0].replenishment;
+  assert.equal(JSON.parse(nativeCardParams(old).rows)[0].transit,'待核验');
+});
+
+test('预警Excel新增在途和补货列，零值与缺失不同且销量列不移错',()=>{
+  const report=structuredClone(card);report.rows[0].transit='200';report.rows[0].replenishment='720';report.rows[1].transit='0';report.rows[1].replenishment='0';
+  const zip=Buffer.from(alertWorkbook(report));let offset=0,xml='';
+  while(zip.readUInt32LE(offset)===0x04034b50){const size=zip.readUInt32LE(offset+18),nameLength=zip.readUInt16LE(offset+26),extra=zip.readUInt16LE(offset+28),start=offset+30+nameLength+extra;const name=zip.subarray(offset+30,offset+30+nameLength).toString();if(name==='xl/worksheets/sheet1.xml')xml=zip.subarray(start,start+size).toString();offset=start+size;}
+  assert.match(xml,/A1:N6/);assert.match(xml,/在途数量/);assert.match(xml,/建议补货 \/ 30天/);
+  assert.match(xml,/<c r="F2"[^>]*><v>200<\/v>/);assert.match(xml,/<c r="G2"[^>]*><v>720<\/v>/);
+  assert.match(xml,/<c r="F3"[^>]*><v>0<\/v>/);assert.match(xml,/<c r="G3"[^>]*><v>0<\/v>/);
+  assert.match(xml,/<c r="F4"[^>]*t="inlineStr"><is><t xml:space="preserve"><\/t>/);
+  assert.match(xml,/<c r="H2"[^>]*><v>3<\/v>/);
 });

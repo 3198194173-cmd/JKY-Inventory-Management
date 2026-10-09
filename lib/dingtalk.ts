@@ -35,7 +35,7 @@ export function turnoverAlertMessages(rows: InventoryView["rows"], threshold: st
   const header = [`【库存周转预警】${cleanLine(warehouse,80)}`,`${time} · 共 ${rows.length} 款`, `销售均值 > ${threshold}，周转 < ${turnoverDays}天`].join("\n");
   const parts: string[][] = []; let lines: string[] = [], bytes = Buffer.byteLength(header)+100;
   rows.forEach((r,i)=>{
-    const line=`${i+1}. ${cleanLine(r.goodsNo,60)}｜库存${r.quantity}｜${r.metrics!.turnoverDays}天`;
+    const line=`${i+1}. ${cleanLine(r.goodsNo,60)}｜库存${r.quantity}｜${r.metrics!.turnoverDays}天｜在途${r.transit?.quantity ?? "待核验"}｜建议补货/30天 ${r.transit?.replenishment == null ? "—" : r.transit.replenishment === "0" ? "无需补货" : r.transit.replenishment}`;
     const size=Buffer.byteLength(line)+1;
     // Keep each part conservatively small; retain every row and its global number.
     if (lines.length && bytes+size>3500) {parts.push(lines);lines=[];bytes=Buffer.byteLength(header)+100;}

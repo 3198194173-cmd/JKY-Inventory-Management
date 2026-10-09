@@ -178,7 +178,7 @@ export function AlertSettingsDialog({ open, onOpenChange, initial, warehouseCode
           <section className="alert-send-card" aria-labelledby="alert-send-heading">
             <div className="alert-section-heading"><h3 id="alert-send-heading"><Warehouse size={16}/>{warehouseName} <span>{warehouseCode}</span></h3><Button type="button" variant="ghost" size="sm" onClick={() => void previewOnly()} disabled={busy || previewing || !!pendingRequest}>{previewing ? <LoaderCircle size={14} className="animate-spin"/> : <Eye size={14}/>}预览通知</Button></div>
             <p>发送给：{selectedNames.length ? selectedNames.join("、") : "请先勾选接收群"}</p>
-            <p>商品名称显示在编码下方，库存、销售均值和周转分列展示。全部预警合并为一张可折叠卡片；手机点击“7天趋势”查看详情。</p>
+            <p>商品名称显示在编码下方，库存、销售均值、周转、在途数量和建议补货分列展示；点击“复制”同时复制编码与名称。全部预警合并为一张可折叠卡片；手机点击“7天趋势”查看详情。</p>
             {!saved.exportAvailable && <p>卡片下载按钮需配置可访问的网站地址；这里可直接导出当前预警 Excel。</p>}
             {!saved.cardConfigured && <p className="alert-warning">报表卡片可预览；云端配置卡片模板后启用卡片发送，当前仍发送文字通知。</p>}
             {preview && <div className="alert-preview"><div><strong>符合规则 {preview.eligibleCount} 款 · 排除 {preview.excludedCount} 款 · 发送 {preview.count} 款</strong><span>采集于 {time(preview.capturedAt)}</span></div>{preview.incomplete && <p className="alert-warning">库存采集不完整，暂不能发送。</p>}
