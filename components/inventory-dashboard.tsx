@@ -14,6 +14,7 @@ import type { InventoryView, RunInfo, WarehouseInfo } from "@/lib/inventory-type
 import type { AlertSettings } from "@/lib/alerts-store";
 import type { InventoryMetrics } from "@/lib/inventory-metrics";
 import { compareQuantity } from "@/lib/decimal";
+import { TransitStatusBadge } from '@/components/transit-status-badge';
 import { TransitHistory } from '@/components/transit-history';
 import { SalesCalendar } from "@/components/sales-calendar";
 import { SalesTrend } from "@/components/sales-trend";
@@ -54,7 +55,7 @@ async function apiJson<T>(response: Response): Promise<T> {
 }
 const ROW_HEIGHT = 57, OVERSCAN = 8;
 const InventoryDataRow = memo(function InventoryDataRow({row,index,dates,threshold,turnoverDays,onSelect,onTransit}:{row:InventoryView["rows"][number];index:number;dates:string[];threshold:string|null;turnoverDays:string;onSelect:(row:InventoryView["rows"][number])=>void;onTransit:(goodsNo:string)=>void}) {
-  return <TableRow aria-rowindex={index+2} onClick={() => onSelect(row)} className="compact-data-row"><TableCell className="compact-index">{index+1}</TableCell><TableCell className="compact-goods"><div className="compact-goods-content"><button type="button" onClick={e => { e.stopPropagation(); onSelect(row); }} title={row.goodsName}><strong>{row.goodsNo}</strong><span>{row.goodsName}</span></button>{row.transit?.quantity != null && compareQuantity(row.transit.quantity,"0") > 0 && <em className="compact-awaiting-inbound" title={`尚有 ${quantity(row.transit.quantity)} ${row.unitName} 等待入库，含部分入库后的剩余数量`}>等待入库</em>}</div></TableCell><TableCell className="compact-current" title="上次采集的可订购量（orderAbleQuantity）；再次采集才更新"><strong className={compareQuantity(row.quantity,"0") < 0 && (threshold !== null && turnoverAlert(row.metrics,row.quantity,threshold,turnoverDays)) ? "compact-turnover-warning" : undefined}>{quantity(row.quantity)}</strong></TableCell><TableCell className="compact-metric"><MetricValue metrics={row.metrics} field="average7"/></TableCell><TableCell className="compact-trend"><SalesTrend compact samples={dates.map(date=>({date,value:row.sales?.[date] ?? null}))}/></TableCell>{dates.map(date => <TableCell key={date} className={`compact-date ${hasInbound(row,date) ? "compact-inbound-day" : ""}`}><SalesValue row={row} date={date}/></TableCell>)}<TableCell className="compact-turnover"><MetricValue metrics={row.metrics} field="turnoverDays" warningTitle={threshold !== null && turnoverAlert(row.metrics,row.quantity,threshold,turnoverDays) ? `周转预警：销量均值 > ${threshold} 且库存周转 < ${turnoverDays}天；按未舍入值判断` : undefined}/></TableCell><TableCell className="compact-metric"><button type="button" className="transit-link" title={row.transit?.reason || "查看在途申请单与历史"} onClick={e=>{e.stopPropagation();onTransit(row.goodsNo);}}>{row.transit?.quantity==null?"待核验":quantity(row.transit.quantity)}</button></TableCell><TableCell className="compact-metric compact-replenishment" title={row.transit?.reason || `含在途可支撑 ${row.transit?.coverageDays} 天；补货=（库存+在途）÷未舍入销量均值×30，仅不足30天时计算，最低0，四舍五入为整数`}>{row.transit?.replenishment==null?"—":row.transit.replenishment==="0"?"无需补货":quantity(row.transit.replenishment)}</TableCell></TableRow>;
+  return <TableRow aria-rowindex={index+2} onClick={() => onSelect(row)} className="compact-data-row"><TableCell className="compact-index">{index+1}</TableCell><TableCell className="compact-goods"><div className="compact-goods-content"><button type="button" onClick={e => { e.stopPropagation(); onSelect(row); }} title={row.goodsName}><strong>{row.goodsNo}</strong><span>{row.goodsName}</span></button><TransitStatusBadge transit={row.transit} unitName={row.unitName}/></div></TableCell><TableCell className="compact-current" title="上次采集的可订购量（orderAbleQuantity）；再次采集才更新"><strong className={compareQuantity(row.quantity,"0") < 0 && (threshold !== null && turnoverAlert(row.metrics,row.quantity,threshold,turnoverDays)) ? "compact-turnover-warning" : undefined}>{quantity(row.quantity)}</strong></TableCell><TableCell className="compact-metric"><MetricValue metrics={row.metrics} field="average7"/></TableCell><TableCell className="compact-trend"><SalesTrend compact samples={dates.map(date=>({date,value:row.sales?.[date] ?? null}))}/></TableCell>{dates.map(date => <TableCell key={date} className={`compact-date ${hasInbound(row,date) ? "compact-inbound-day" : ""}`}><SalesValue row={row} date={date}/></TableCell>)}<TableCell className="compact-turnover"><MetricValue metrics={row.metrics} field="turnoverDays" warningTitle={threshold !== null && turnoverAlert(row.metrics,row.quantity,threshold,turnoverDays) ? `周转预警：销量均值 > ${threshold} 且库存周转 < ${turnoverDays}天；按未舍入值判断` : undefined}/></TableCell><TableCell className="compact-metric"><button type="button" className="transit-link" title={row.transit?.reason || "查看在途申请单与历史"} onClick={e=>{e.stopPropagation();onTransit(row.goodsNo);}}>{row.transit?.quantity==null?"待核验":quantity(row.transit.quantity)}</button></TableCell><TableCell className="compact-metric compact-replenishment" title={row.transit?.reason || `含在途可支撑 ${row.transit?.coverageDays} 天；补货=（库存+在途）÷未舍入销量均值×30，仅不足30天时计算，最低0，四舍五入为整数`}>{row.transit?.replenishment==null?"—":row.transit.replenishment==="0"?"无需补货":quantity(row.transit.replenishment)}</TableCell></TableRow>;
 });
 const InventoryRows = memo(function InventoryRows({view,dates,threshold,turnoverDays,onSelect,onTransit,scrollRef}:{view:InventoryView;dates:string[];threshold:string|null;turnoverDays:string;onSelect:(row:InventoryView["rows"][number])=>void;onTransit:(goodsNo:string)=>void;scrollRef:RefObject<HTMLDivElement|null>}) {
   const [viewport,setViewport]=useState({top:0,height:600});
@@ -118,6 +119,22 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     fetch(`/api/sync?${new URLSearchParams({warehouseCode:code})}`, {signal:controller.signal}).then(r => apiJson<{runs:RunInfo[]}>(r)).then(d => receiveRuns(d.runs)).catch(e => { if(e.name !== "AbortError") setError(e.message); });
     return () => controller.abort();
   },[recordsOpen,code,refresh,receiveRuns]);
+  useEffect(() => {
+    const controller=new AbortController();let busy=false;
+    async function refreshTransit(){
+      if(document.hidden||loading||running||busy)return;
+      busy=true;
+      try{
+        const response=await fetch(`/api/inventory?${new URLSearchParams({warehouseCode:code,q:query,days,page:String(page),pageSize,sort,sortDate})}`,{signal:controller.signal});
+        const next=await apiJson<InventoryView>(response);
+        if(!controller.signal.aborted)setView(next);
+      }catch{/* Preserve the current page during a temporary network failure. */}
+      finally{busy=false;}
+    }
+    const timer=window.setInterval(refreshTransit,60000);
+    document.addEventListener('visibilitychange',refreshTransit);
+    return()=>{controller.abort();window.clearInterval(timer);document.removeEventListener('visibilitychange',refreshTransit);};
+  },[code,query,days,page,pageSize,sort,sortDate,loading,running,refresh]);
   useEffect(() => {
     if (!running) return;
     let stopped = false;
@@ -199,7 +216,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
         <Select value={days} onValueChange={v => { if(v) { setDays(v); if (sort.startsWith("sales_")) { setSort("code"); setSortDate(""); } setPage(1); } }}><SelectTrigger className="compact-days" aria-label="销售日期范围"><SelectValue>近 {days} 天</SelectValue></SelectTrigger><SelectContent><SelectItem value="7">近 7 天</SelectItem><SelectItem value="14">近 14 天</SelectItem><SelectItem value="30">近 30 天</SelectItem></SelectContent></Select>
         <div className="compact-actions"><Button variant="outline" onClick={download} disabled={exporting || !view.snapshot || loading}>{exporting ? <LoaderCircle className="animate-spin"/> : <ArrowDownToLine/>}导出 Excel</Button><Button onClick={sync} disabled={running || !view.configured || loading}>{running ? <LoaderCircle className="animate-spin"/> : <RefreshCw/>}{running ? "采集中" : "采集库存"}</Button></div>
       </div>
-      <div className="compact-status"><span>{view.snapshot ? `更新于 ${time(view.snapshot.capturedAt)}` : "暂无完整采集"}{loading && <LoaderCircle size={13} className="animate-spin"/>}</span><button type="button" onClick={() => setCollectionOpen(true)} title="编辑当前仓库的每日采集时间">每天 {view.dailyTime || "08:00"} · {view.scheduleActive ? "云端定时已启用" : "云端定时未运行"}</button></div>
+      <div className="compact-status"><span>{view.snapshot ? `库存更新于 ${time(view.snapshot.capturedAt)}` : "暂无完整采集"}{view.transitStatus?.checkedAt && ` · 在途检测于 ${time(view.transitStatus.checkedAt)}（每小时）`}{loading && <LoaderCircle size={13} className="animate-spin"/>}</span><button type="button" onClick={() => setCollectionOpen(true)} title="编辑当前仓库的每日采集时间">每天 {view.dailyTime || "08:00"} · {view.scheduleActive ? "云端定时已启用" : "云端定时未运行"}</button></div>
       {(latestRun?.status === "running" || latestRun?.status === "queued") && <p className="compact-feedback" role="status"><LoaderCircle size={14} className="animate-spin"/> {latestRun.message || "正在采集"} · 已处理 {latestRun.pageCount} 页。采集中可查看最近已保存的库存，入库核验结束后自动刷新统计。</p>}
       {latestRun?.status === "failed" && !error && <p className="compact-feedback compact-error" role="alert">最近一次采集失败：{latestRun.message || "请重试"}。当前展示上次成功库存。</p>}
       {error && !addOpen && <p className="compact-feedback compact-error" role="alert">{error}</p>}{notice && <p className="compact-feedback" role="status">{notice}</p>}

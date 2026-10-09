@@ -2,6 +2,7 @@ import { sqlite } from '../lib/sqlite.mjs';
 import { enqueueDaily } from '../lib/local-jobs';
 import { syncWarehouse } from '../lib/sync-warehouse';
 import { acquireRun, failRun } from '../lib/inventory-store';
+import { checkDueTransit } from '../lib/scheduled-transit';
 import { sendDueAlerts } from '../lib/scheduled-alerts';
 
 type Job = {id:string;owner:string;warehouse_code:string;trigger:string;run_id:string|null};
@@ -37,12 +38,19 @@ function checkAlerts() {
   lastAlertCheck=Date.now();
   alertTask=sendDueAlerts().catch(()=>console.error('自动预警检查失败，请在网页查看通知状态')).finally(()=>{alertTask=undefined;});
 }
+let transitTask: Promise<void> | undefined, lastTransitCheck=0;
+function checkTransit(){
+  if(!scheduled||stopping||transitTask||Date.now()-lastTransitCheck<30000)return;
+  lastTransitCheck=Date.now();
+  transitTask=checkDueTransit(undefined,undefined,()=>stopping).catch(()=>console.error('每小时在途检测失败')).finally(()=>{transitTask=undefined;});
+}
 process.on('SIGTERM',()=>{stopping=true;});
 process.on('SIGINT',()=>{stopping=true;});
 try {
   while (!stopping) {
     if (scheduled && process.env.JACKYUN_APP_SECRET) enqueueDaily();
     checkAlerts();
+    checkTransit();
     active = db.prepare("UPDATE local_jobs SET state='running',updated_at=? WHERE id=(SELECT id FROM local_jobs WHERE state='queued' ORDER BY created_at LIMIT 1) RETURNING *").get(now()) as Job | undefined;
     if (active) {
       try {
@@ -57,4 +65,4 @@ try {
       active = undefined;
     } else await new Promise(r=>setTimeout(r,2000));
   }
-} finally { clearInterval(timer); await alertTask; db.prepare('DELETE FROM local_worker WHERE id=1').run(); }
+} finally { await transitTask; await alertTask; clearInterval(timer); db.prepare('DELETE FROM local_worker WHERE id=1').run(); }

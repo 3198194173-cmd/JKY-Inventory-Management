@@ -148,6 +148,15 @@ try {
   // API above; visual checks use the isolated preview warehouse.
   assert.equal(r.status,200);assert.doesNotMatch(sortedHtml,/>已核验<\/small>/);
   r=await fetch(url+'/api/export?warehouseCode=TEST02',{headers:{cookie}});assert.equal(r.ok,true);assert.ok((await r.arrayBuffer()).byteLength>1000);
+  // Hourly-only worker detects completion without another stock collection.
+  await stop(worker);
+  let stockCount;
+  {const db=new DatabaseSync(path);db.prepare("UPDATE local_worker SET heartbeat='2000-01-01T00:00:00Z'").run();db.prepare('UPDATE warehouses SET schedule_enabled=0').run();db.prepare('UPDATE transit_checks SET last_attempt=0,lease_until=0').run();stockCount=db.prepare('SELECT count(*) AS n FROM stock_snapshots').get().n;db.close();}
+  worker=spawn(process.execPath,['--import','./tests/mock-jackyun.mjs','build-node/worker.mjs'],{env:{...env,INVENTORY_SCHEDULE_ENABLED:'true',JACKYUN_APP_SECRET:'test-only-fake-secret',MOCK_TRANSIT_COMPLETED:'true'},stdio:['ignore','pipe','pipe']});worker.stderr.on('data',d=>output+=d);
+  let completed;
+  for(let i=0;i<60;i++){r=await fetch(url+'/api/inventory?warehouseCode=TEST02&q=TEST-GOODS',{headers:{cookie}});completed=(await r.json()).rows[0]?.transit;if(completed?.completedAt)break;await sleep(250);}
+  assert.ok(completed?.completedAt,output);assert.equal(completed.quantity,'0');
+  {const db=new DatabaseSync(path);assert.equal(db.prepare('SELECT count(*) AS n FROM stock_snapshots').get().n,stockCount);assert.ok(db.prepare("SELECT count(*) AS n FROM transit_snapshots WHERE warehouse_code='TEST02'").get().n>=3);db.close();}
   r=await fetch(url+'/api/session',{method:'DELETE',headers});assert.equal(r.ok,true);
   r=await fetch(url+'/api/inventory',{headers:{cookie}});assert.equal(r.ok,false);
   console.log('PASS: 登录/伪造身份拒绝/同源校验/队列去重/重启持久化/独立worker失败回报/网页关闭后采集/worker自动入库修正/Excel导出/退出失效');

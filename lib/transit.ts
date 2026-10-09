@@ -7,7 +7,7 @@ export type TransitLine = { id:string; goodsNo:string; goodsName:string; skuId:s
 export type TransitDocument = { id:string; no:string; inType?:string; state:string; audit:string; source:string; applyDate:string; modifiedAt:string; lines:TransitLine[]; error?:string; receipts?:{no:string; goodsNo:string; skuId:string; unitName:string; quantity:string; time:string}[]; receiptStatus?:string };
 export type TransitGoods = { goodsNo:string; goodsName:string; unitName:string; quantity:string };
 export type TransitResult = { scope?:'transfer-v1'; startedAt:string; completedAt:string; from:string; documents:TransitDocument[]; goods:TransitGoods[]; issues:string[]; requests:number };
-export type TransitMetric = { quantity:string|null; replenishment:string|null; coverageDays:string|null; reason:string|null };
+export type TransitMetric = { completedAt?:string; quantity:string|null; replenishment:string|null; coverageDays:string|null; reason:string|null };
 const text=(value:unknown)=>value==null?'':String(value);
 const closed=(d:TransitDocument)=>d.audit==='3';
 export const isOutstanding=(d:TransitDocument)=>!closed(d)&&['1','2'].includes(d.state);

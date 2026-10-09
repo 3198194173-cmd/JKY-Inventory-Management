@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdirSync} from 'node:fs';
+import {mkdirSync,readFileSync} from 'node:fs';
+import {DatabaseSync} from 'node:sqlite';
 import {resolve} from 'node:path';
 import {collectTransit,transitMetric} from '../lib/transit';
-import {syncTransit,enrichTransit,loadTransitHistory,transitOnlyGoods} from '../lib/transit-store';
+import {syncTransit,enrichTransit,loadTransitHistory,transitOnlyGoods,transitSnapshot} from '../lib/transit-store';
 import {sqlite} from '../lib/sqlite.mjs';
 import {inventoryWorkbook} from '../lib/excel';
 import {addWarehouse} from '../lib/inventory-store';
+import {checkDueTransit} from '../lib/scheduled-transit';
 import type {InventoryView} from '../lib/inventory-types';
 
 type Row=Record<string,string|number|null>;
@@ -75,7 +77,7 @@ test('在途按仓库和快照隔离、失败保留历史；仅在途商品不�
   enrichTransit('owner','B','b1',rows);assert.equal(rows[0].transit?.quantity,null);
   assert.equal(transitOnlyGoods('owner','A','s1')[0].quantity,'1000');assert.equal(loadTransitHistory('owner','A').goods[0].stock,null);
   await syncTransit('owner','A','s2','key','secret',async()=>{},async()=>{throw new Error('离线');});
-  enrichTransit('owner','A','s2',rows);assert.equal(rows[0].transit?.quantity,null);enrichTransit('owner','A','s1',rows);assert.equal(rows[0].transit?.quantity,'1000');
+  enrichTransit('owner','A','s2',rows);assert.equal(rows[0].transit?.quantity,null);assert.equal(transitSnapshot('owner','A','s1').data?.goods[0].quantity,'1000');
   assert.throws(()=>loadTransitHistory('other','A'),/仓库/);
   assert.equal(db.prepare('SELECT count(*) AS n FROM transit_snapshots').get()!.n,2);
 });
@@ -134,13 +136,82 @@ test('调拨筛选拒绝不符类型；旧采购单退出在途，旧调拨单�
 });
 
 test('旧全类型快照不作为当前调拨在途，历史仍可查看',async()=>{
-  const db=sqlite();
+  const db=sqlite();await addWarehouse('legacy-owner','A','A');
   const legacy=await collectTransit('k','s','A',[],fixture().fetcher);delete legacy.scope;
   for(const doc of legacy.documents)delete doc.inType;
-  db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES('legacy','owner','2026-10-07','2026-10-07T00:00:00Z','complete',1,1,1,'{}',0,0,'A','auto:v1')").run();
-  db.prepare('INSERT INTO transit_snapshots VALUES(?,?,?,?,?,?,?)').run('legacy','owner','A','2026-10-07T00:00:00Z','complete',JSON.stringify(legacy),null);
+  db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES('legacy','legacy-owner','2026-10-07','2026-10-07T00:00:00Z','complete',1,1,1,'{}',0,0,'A','auto:v1')").run();
+  db.prepare('INSERT INTO transit_snapshots VALUES(?,?,?,?,?,?,?,?)').run('legacy','legacy','legacy-owner','A','2026-10-07T00:00:00Z','complete',JSON.stringify(legacy),null);
   const rows:InventoryView['rows']=[{goodsNo:'G0',goodsName:'g',unitName:'Pcs',quantity:'100',skuCount:1,history:{}}];
-  enrichTransit('owner','A','legacy',rows);assert.equal(rows[0].transit?.quantity,null);assert.match(rows[0].transit?.reason||'',/重新采集/);
-  assert.equal(transitOnlyGoods('owner','A','legacy').length,0);
-  const history=loadTransitHistory('owner','A','2026-10-07');assert.equal(history.scope,undefined);assert.equal(history.goods[0].quantity,'1000');
+  enrichTransit('legacy-owner','A','legacy',rows);assert.equal(rows[0].transit?.quantity,null);assert.match(rows[0].transit?.reason||'',/重新采集/);
+  assert.equal(transitOnlyGoods('legacy-owner','A','legacy').length,0);
+  const history=loadTransitHistory('legacy-owner','A','2026-10-07');assert.equal(history.scope,undefined);assert.equal(history.goods[0].quantity,'1000');
+});
+
+
+test('每小时检测独立留存：完成绿标24小时、重复不续期、新等待优先、关闭不误报',async()=>{
+  const db=sqlite(),owner='hourly';await addWarehouse(owner,'A','A');
+  db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES('hour-stock',?,'2026-10-09',?,'complete',1,1,1,'{}',0,0,'A','auto:v1')").run(owner,new Date().toISOString());
+  const waiting=await collectTransit('k','s','A',[],fixture().fetcher);
+  const done=await collectTransit('k','s','A',waiting.documents,fixture('3','0').fetcher);
+  const rows:InventoryView['rows']=[{goodsNo:'G0',goodsName:'g',unitName:'Pcs',quantity:'100',skuCount:1,history:{}}];
+  const sync=(capture:typeof waiting)=>syncTransit(owner,'A','hour-stock','k','s',async()=>{},async()=>capture);
+  const refresh=()=>{enrichTransit(owner,'A','hour-stock',rows);return rows[0].transit!;};
+  await sync(waiting);assert.equal(refresh().quantity,'1000');assert.equal(refresh().completedAt,undefined);
+  await sync(done);const firstMark=refresh().completedAt;assert.ok(firstMark);assert.equal(refresh().quantity,'0');
+  await sync(done);assert.equal(refresh().completedAt,firstMark);
+  await sync({...done,documents:[],goods:[]});assert.equal(refresh().completedAt,firstMark);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM transit_snapshots WHERE owner=?').get(owner)!.n,4);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM stock_snapshots WHERE owner=?').get(owner)!.n,1);
+  db.prepare('UPDATE transit_completion_marks SET completed_at=? WHERE owner=?').run(new Date(Date.now()-86400001).toISOString(),owner);
+  assert.equal(refresh().completedAt,undefined);
+  await sync(waiting);await sync(done);assert.ok(refresh().completedAt);
+  await sync(waiting);assert.equal(refresh().quantity,'1000');assert.equal(refresh().completedAt,undefined);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM transit_completion_marks WHERE owner=?').get(owner)!.n,0);
+  const closed={...done,documents:done.documents.map(d=>({...d,audit:'3'}))};await sync(closed);assert.equal(refresh().completedAt,undefined);
+  await sync(waiting);
+  await syncTransit(owner,'A','hour-stock','k','s',async()=>{},async()=>{throw Error('离线');});assert.equal(refresh().completedAt,undefined);assert.equal(refresh().quantity,null);
+  await sync(done);assert.ok(refresh().completedAt);
+  await sync(waiting);
+  await sync({...done,issues:['其他单据尚未核验']});assert.equal(refresh().completedAt,undefined);
+  await syncTransit(owner,'A','hour-stock','k','s',async()=>{},async(k,secret,code,previous)=>{
+    assert.equal(previous?.find(d=>d.id===waiting.documents[0].id)?.state,'1');
+    return collectTransit(k,secret,code,previous,fixture('3','0').fetcher);
+  });assert.ok(refresh().completedAt);
+  // Completing one document while a second application is outstanding stays yellow.
+  await sync(waiting);const another={...waiting.documents[0],id:'another',no:'RK-another'};
+  await sync({...waiting,documents:[...done.documents,another]});assert.equal(refresh().quantity,'1000');assert.equal(refresh().completedAt,undefined);
+});
+
+test('检测租约防并发，每小时限制跨调用保留，失败不忙循环',async()=>{
+  const owner='hourly',db=sqlite();let calls=0;let release!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  const waiting=await collectTransit('k','s','A',[],fixture().fetcher);
+  const first=syncTransit(owner,'A','hour-stock','k','s',async()=>{},async()=>{calls++;await gate;return waiting;});
+  await syncTransit(owner,'A','hour-stock','k','s',async()=>{},async()=>{calls++;return waiting;});assert.equal(calls,1);release();await first;
+  await syncTransit(owner,'A','hour-stock','k','s',async()=>{},async()=>{calls++;return waiting;},true);assert.equal(calls,1);
+  db.prepare('UPDATE transit_checks SET last_attempt=? WHERE owner=?').run(Date.now()-3600001,owner);
+  await syncTransit(owner,'A','hour-stock','k','s',async()=>{},async()=>{calls++;throw Error('离线');},true);assert.equal(calls,2);
+  await syncTransit(owner,'A','hour-stock','k','s',async()=>{},async()=>{calls++;return waiting;},true);assert.equal(calls,2);
+  // Startup scans all warehouses; inventory's daily schedule is independent.
+  db.prepare("UPDATE warehouses SET schedule_enabled=0 WHERE owner=?").run(owner);
+  db.prepare('UPDATE transit_checks SET last_attempt=? WHERE owner=?').run(Date.now()-3600001,owner);
+  let selected=false;
+  await checkDueTransit(async(o,c,id,k,secret,progress,collector,due)=>{if(o===owner){selected=true;assert.equal(c,'A');assert.equal(id,'hour-stock');assert.equal(due,true);}return 'test';},{configured:true,appkey:'k',secret:'s',robotConfigured:false});
+  assert.equal(selected,true);
+});
+
+
+test('升级在途表保留旧记录和外键，允许同库存快照多次检测',()=>{
+  const db=new DatabaseSync(':memory:');
+  try{
+    db.exec('PRAGMA foreign_keys=ON;CREATE TABLE stock_snapshots(id TEXT PRIMARY KEY);');
+    db.exec(readFileSync('drizzle/0015_transit_snapshots.sql','utf8'));
+    db.prepare('INSERT INTO stock_snapshots VALUES(?)').run('old-stock');
+    db.prepare('INSERT INTO transit_snapshots VALUES(?,?,?,?,?,?,?)').run('old-stock','owner','A','2026-10-09T00:00:00Z','complete','{"goods":[]}',null);
+    db.exec(readFileSync('drizzle/0016_hourly_transit.sql','utf8'));
+    const row=db.prepare('SELECT * FROM transit_snapshots').get()!;assert.equal(row.stock_snapshot_id,'old-stock');assert.equal(row.payload,'{"goods":[]}');
+    db.prepare('INSERT INTO transit_snapshots VALUES(?,?,?,?,?,?,?,?)').run('hourly','old-stock','owner','A','2026-10-09T01:00:00Z','failed',null,'离线');
+    assert.equal(db.prepare('SELECT count(*) AS n FROM transit_snapshots').get()!.n,2);
+    assert.equal(db.prepare('PRAGMA foreign_key_check').all().length,0);
+  }finally{db.close();}
 });
