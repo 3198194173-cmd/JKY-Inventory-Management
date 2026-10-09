@@ -222,13 +222,20 @@ test('循环文字使用官方 loop 上下文，两个商品分别渲染真实�
 test('编码名称复制和报告下载使用原生动作，下载按钮随链接显隐',()=>{
   const t=JSON.parse(readFileSync('docs/dingtalk-inventory-card.json','utf8'));
   const e=JSON.parse(t.editorData),xml=t.widgetInfo.replace(/&#039;/g,"'");
-  assert.match(xml,/@dtCopy{/);assert.match(xml,/exportUrl/);
+  assert.equal((xml.match(/onTap="@dtCopy{/g)||[]).length,4);
+  assert.doesNotMatch(xml,/点击复制商品/);assert.match(xml,/exportUrl/);
   assert.equal(nativeCardParams(card).exportUrl,'');
   assert.equal(nativeCardParams({...card,exportUrl:'https://inventory.example.com/api/alerts/reports/test'}).exportUrl,'https://inventory.example.com/api/alerts/reports/test');
-  const nodes: {id:string;props:{actionType?:string;copyValue?:{content:string};visible?:{condition?:{conditions:{variable:string;op:string}[]}}};children?:unknown[]}[]=[];
+  const nodes: {id:string;componentName:string;props:{hoverText?:{content:string};text?:{content:string};actionType?:string;copyValue?:{content:string};visible?:{condition?:{conditions:{variable:string;op:string}[]}}};children?:unknown[]}[]=[];
   function walk(n:unknown){const node=n as typeof nodes[number];nodes.push(node);node.children?.forEach(walk);}walk(e.schema.componentsTree[0]);
   for(const id of ['node_inventory_code','node_inventory_name','node_inventory_mobile_code','node_inventory_mobile_name']){
-    const copy=nodes.find(n=>n.id===id+'_copy')!;assert.equal(copy.props.actionType,'copy');assert.ok(copy.props.copyValue!.content.startsWith('$'+'{loop.'));
+    const copy=nodes.find(n=>n.id===id+'_copy')!;
+    const field=id.endsWith('_code')?'goodsNo':'goodsName';
+    assert.equal(copy.componentName,'SingleButton','复制动作绑定官方独立按钮，避免悬停文字拦截外层点击');
+    assert.equal(copy.props.actionType,'copy');
+    assert.equal(copy.props.copyValue!.content,'${loop.'+field+'}');
+    assert.equal(copy.props.text!.content,field==='goodsNo'?'复制编码':'复制名称');
+    assert.equal(nodes.find(n=>n.id===id)!.props.hoverText!.content,'');
   }
   for(const env of ['desktop','mobile']){const button=nodes.find(n=>n.id==='node_inventory_export_'+env)!;assert.equal(button.props.actionType,'url');assert.equal(button.props.visible!.condition!.conditions[0].variable,'exportUrl');assert.equal(button.props.visible!.condition!.conditions[0].op,'isNotEmpty');}
 });
