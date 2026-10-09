@@ -54,7 +54,12 @@ test('30天补货使用未舍入均值、缺失不算零、负库存保留',()=>
   assert.deepEqual(transitMetric('50','100',metrics),{quantity:'50',coverageDays:'15',replenishment:'150',reason:null});
   assert.equal(transitMetric('300','100',metrics).replenishment,'0');assert.equal(transitMetric('0','-10',metrics).replenishment,'310');
   assert.equal(transitMetric(null,'100',metrics).replenishment,null);assert.equal(transitMetric('0','100',{...metrics,total7:'0'}).replenishment,null);
-  assert.equal(transitMetric('0','0',{...metrics,total7:'1',average7:'0.14'}).replenishment,'4.29');
+  assert.equal(transitMetric('0','0',{...metrics,total7:'1',average7:'0.14'}).replenishment,'4');
+  assert.equal(transitMetric('0','265.43',metrics).replenishment,'35');
+  assert.equal(transitMetric('0','265.51',metrics).replenishment,'34');
+  assert.equal(transitMetric('0','299.5',metrics).replenishment,'1');
+  assert.equal(transitMetric('0','299.5001',metrics).replenishment,'0');
+  assert.equal(transitMetric('0','300.5',metrics).replenishment,'0');
 });
 
 mkdirSync('.sites-runtime/tests',{recursive:true});
@@ -105,7 +110,7 @@ test('关闭申请不计在途，审核状态或计量单位未知时不发布�
 
 
 test('导出在途和补货数值，未取得库存的在途商品不填零库存',()=>{
-  const rows=[{goodsNo:'WITH-STOCK',goodsName:'商品',unitName:'Pcs',quantity:'100',skuCount:1,history:{},transit:{quantity:'50',replenishment:'150',coverageDays:'15',reason:null}}];
+  const rows=[{goodsNo:'WITH-STOCK',goodsName:'商品',unitName:'Pcs',quantity:'100.5',skuCount:1,history:{},transit:transitMetric('50','100.5',{total7:'70',average7:'10',validDays:7,basis:'inventory_difference',reason:null,turnoverDays:'10.05'})}];
   const view={warehouseCode:'A',warehouseName:'A',source:'live',snapshot:null,snapshots:[],rows,configured:true,robotConfigured:false,totalRows:1,goodsCount:1,page:1,pageSize:100,totalsByUnit:{Pcs:'100'},zeroCount:0,negativeCount:0,transitOnly:[{goodsNo:'ONLY-TRANSIT',goodsName:'在途商品',unitName:'Pcs',quantity:'80'}]} as InventoryView;
   const xml=new TextDecoder().decode(inventoryWorkbook(view,rows));
   assert.match(xml,/<c r="G2"[^>]*t="n"><v>50<\/v>/);assert.match(xml,/<c r="H2"[^>]*t="n"><v>150<\/v>/);

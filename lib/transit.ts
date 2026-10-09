@@ -18,7 +18,7 @@ export function transitMetric(quantity:string|null, stock:string, metrics?:Inven
   const available=addQuantity(stock,quantity);
   // Use the exact seven-day total, not the rounded displayed average.
   const deficit=subtractQuantity(multiplyQuantityByInteger(metrics.total7,30),multiplyQuantityByInteger(available,7));
-  return {quantity,replenishment:compareQuantity(deficit,'0')>0?divideQuantity(deficit,'7',2):'0',coverageDays:divideQuantity(multiplyQuantityByInteger(available,7),metrics.total7),reason:null};
+  return {quantity,replenishment:compareQuantity(deficit,'0')>0?divideQuantity(deficit,'7',0):'0',coverageDays:divideQuantity(multiplyQuantityByInteger(available,7),metrics.total7),reason:null};
 }
 
 export async function collectTransit(appkey:string,secret:string,warehouseCode:string,previous:TransitDocument[]=[],fetcher:typeof fetch=fetch,onProgress:(requests:number)=>Promise<void>=async()=>{},from='2020-01-01 00:00:00'):Promise<TransitResult> {
