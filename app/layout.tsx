@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "./inventory-tweaks.css";
 import "./compact-inventory.css";
+import "./inventory-light.css";
 
 export const metadata: Metadata = {
   title: "仓库数据 · 库存与销售",

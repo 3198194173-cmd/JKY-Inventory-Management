@@ -185,7 +185,7 @@ test('原生卡片桌面保留表格、手机完整编码与原生趋势入口�
   assert.equal(new Set(nodes.map(n=>n.id)).size,nodes.length);
   const desktopLayout=nodes.find(n=>n.id==='node_inventory_desktop_layout')!,mobileLayout=nodes.find(n=>n.id==='node_inventory_mobile_layout')!;
   const layouts=[desktopLayout,mobileLayout] as unknown as {props:{isFixedWidth:boolean;width:number;visible:{condition:{conditions:{type:string;platform:string[]}[]}}}}[];
-  assert.equal(layouts[0].props.isFixedWidth,true);assert.equal(layouts[0].props.width,800);
+  assert.equal(layouts[0].props.isFixedWidth,false,"桌面宽度跟随聊天卡片容器，不能超过客户端边界");assert.equal(layouts[0].props.width,640);
   assert.equal(layouts[1].props.isFixedWidth,false,'手机不能继承桌面的固定宽度');
   for(const [layout,platform] of layouts.map((layout,i)=>[layout,i===0?['pc']:['ios','android']] as const)){
     assert.deepEqual(layout.props.visible.condition.conditions,[{type:'env',platform,version:Object.fromEntries(platform.map(p=>[p,{op:'all'}]))}]);

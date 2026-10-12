@@ -18,7 +18,8 @@ export function salesTrendOption(samples:TrendSample[],compact=false):EChartsOpt
   const points=trendSamples(samples);
   return {
     animation:false,
-    color:['#5470c6'],
+    textStyle:{fontFamily:'"Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif'},
+    color:['#3b73e8'],
     grid:{left:compact?3:42,right:compact?3:16,top:compact?6:18,bottom:compact?5:28},
     tooltip:{trigger:'axis',renderMode:'html',appendTo:()=>document.body,
       extraCssText:'z-index:10000;pointer-events:none;',axisPointer:{type:'line'},

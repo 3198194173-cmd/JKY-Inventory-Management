@@ -45,7 +45,7 @@ export function inventoryWorkbook(view:InventoryView,rows:(StockRow & {metrics?:
     ["近7天销量均值","固定为最近采集日期之前7个完整日期的净销量总和÷7，包含负值退货/回补；缺日、缺货品、单位变化或入库未核验不计算。不随网页日期范围改变。"],
     ["库存周转","当前库存÷近7天未四舍五入的均值；结果保留2位小数。均值为零或负数、数据不足或待核验入库时为空。负库存保留负周转。此值为预计库存可支撑天数。"],
     ["指标性质","均值和周转为库存消耗估算；全部可比较日期已核验区间实际入库。销售出库、退货、调拨及可订购量变动仍可能影响结果，不等同准确订单销量或销售金额。"],
-    ["在途与补货","在途仅统计调拨入库（inType=102），取已核验申请单剩余数量；部分入库保留剩余，完成/关闭单不计。仅（库存+在途）÷未舍入销售均值<30天时，补货=（库存+在途）÷该均值×30，最低0，四舍五入为整数；达到30天为0；未核验或均值无效留空。只有在途、未取得库存的商品保留行，库存和补货留空。"],
+    ["在途与补货","在途仅统计调拨入库（inType=102），取已核验申请单剩余数量；部分入库保留剩余，完成/关闭单不计。仅（库存+在途）÷未舍入销售均值<30天时，补货=30×该均值−当前库存−在途数量，最低0，四舍五入为整数；达到30天为0；未核验或均值无效留空。只有在途、未取得库存的商品保留行，库存和补货留空。"],
     ["在途采集状态",`${view.transitStatus?.status||"未接入"} · ${view.transitStatus?.checkedAt||""} · ${view.transitStatus?.error||""}`],
     ["数值精度","数量超过 Excel 的 15 位有效数字限制时存为文本，以保留原始精度。"],
     ["原始来源",view.source === "sample" ? "资料/响应样本/库存查询_原始样本.json" : "吉客云官方 erp-stock.stock.skulist 实时采集"],
@@ -80,7 +80,7 @@ export function alertWorkbook(card: import("./dingtalk-card-data").TurnoverCard)
     rows+=`<row r="${r}" ht="44" customHeight="1">${cell(`A${r}`,row.goodsNo,3)}${cell(`B${r}`,row.goodsName,3)}${values.map((v,i)=>v==null||v==="—"?cell(`${column(i+2)}${r}`,"",3):numericCell(`${column(i+2)}${r}`,v,2,3)).join("")}</row>`;
   });
   const ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-  const metadata=[["报告",card.title],["采集与仓库",card.summary],["商品数",String(card.rows.length)],["规则与口径",card.footer],["日期范围",`${card.dates[0]} ~ ${card.dates.at(-1)}`],["说明","数据固定于报告生成时，已应用发送名称排除；缺失销量或未核验在途/补货留空；零为已核验数值。建议补货=（库存+在途）÷未舍入销售均值×30，仅覆盖天数<30时计算，最低0，四舍五入为整数。"]];
+  const metadata=[["报告",card.title],["采集与仓库",card.summary],["商品数",String(card.rows.length)],["规则与口径",card.footer],["日期范围",`${card.dates[0]} ~ ${card.dates.at(-1)}`],["说明","数据固定于报告生成时，已应用发送名称排除；缺失销量或未核验在途/补货留空；零为已核验数值。建议补货=30×未舍入销售均值−当前库存−在途数量，最低0，四舍五入为整数。"]];
   return zipTextFiles({
     "[Content_Types].xml":`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
     "_rels/.rels":`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,

@@ -89,7 +89,7 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: Arial, Helvetica, sans-serif;
+  --font-sans: var(--inventory-font);
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
 }
@@ -133,12 +133,12 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--inventory-font);
 }
 
 /* Inventory workspace: the table remains the primary work surface. */
 :root { color-scheme:light; --background:#fff; --foreground:#1c293b; --card:#fff; --popover:#fff; --popover-foreground:#1c293b; --primary:#4169e1; --primary-foreground:#fff; --muted:#f3f5f8; --muted-foreground:#738094; --border:#e6eaf0; --input:#e1e6ed; --ring:#4169e1; }
-body { margin:0; font-family:Inter,"Segoe UI","Microsoft YaHei",Arial,sans-serif; background:#f6f8fb; }
+body { margin:0; font-family:var(--inventory-font); background:#f6f8fb; }
 button,a,input { -webkit-tap-highlight-color:transparent; }
 button { cursor:pointer; } button:disabled { cursor:not-allowed; } button:focus-visible,a:focus-visible,tr:focus-visible { outline:2px solid #4169e1; outline-offset:3px; }
 .inventory-shell { display:flex; min-height:100vh; font-size:16px; }

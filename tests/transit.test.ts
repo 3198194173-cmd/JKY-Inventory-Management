@@ -51,17 +51,22 @@ test('仓库不一致、权限受限、重复页及请求失败拒绝发布部�
   await assert.rejects(collectTransit('key','secret','A',[],(async()=>Response.json({code:200,result:{data:[],noPrivilegeItem:['quantity']}})) as typeof fetch),/权限/);
   const repeated=fixture();await assert.rejects(collectTransit('key','secret','A',[],(async()=>Response.json({code:200,result:{data:[repeated.parent]}})) as typeof fetch),/重复/);
 });
-test('补货按库存加在途除以均值乘30，精确判断不足30天并取整',()=>{
+test('补货按30天销售均值减库存与在途，最低0且仅最终结果四舍五入',()=>{
   const metrics={total7:'70',average7:'10',validDays:7,basis:'inventory_difference',reason:null,turnoverDays:'10'} as const;
-  assert.deepEqual(transitMetric('50','100',metrics),{quantity:'50',coverageDays:'15',replenishment:'450',reason:null});
-  assert.equal(transitMetric('300','100',metrics).replenishment,'0');assert.equal(transitMetric('0','-10',metrics).replenishment,'0');
+  assert.deepEqual(transitMetric('50','100',metrics),{quantity:'50',coverageDays:'15',replenishment:'150',reason:null});
+  assert.equal(transitMetric('300','100',metrics).replenishment,'0');assert.equal(transitMetric('0','-10',metrics).replenishment,'310');
+  assert.equal(transitMetric('0','0',metrics).replenishment,'300');
   assert.equal(transitMetric(null,'100',metrics).replenishment,null);assert.equal(transitMetric('0','100',{...metrics,total7:'0'}).replenishment,null);
-  assert.equal(transitMetric('0','1',{...metrics,total7:'1',average7:'0.14'}).replenishment,'210');
-  assert.equal(transitMetric('0','0.1667',metrics).replenishment,'1');
-  assert.equal(transitMetric('0','0.1666',metrics).replenishment,'0');
-  assert.equal(transitMetric('0','299.5',metrics).replenishment,'899');
-  assert.equal(transitMetric('0','299.999',metrics).replenishment,'900');
+  assert.equal(transitMetric('0','1',{...metrics,total7:'1',average7:'0.14'}).replenishment,'3');
+  assert.equal(transitMetric('0','0',{...metrics,total7:'1',average7:'0.14'}).replenishment,'4');
+  assert.equal(transitMetric('0','299.4999',metrics).replenishment,'1');
+  assert.equal(transitMetric('0','299.5',metrics).replenishment,'1');
+  assert.equal(transitMetric('0','299.5001',metrics).replenishment,'0');
+  assert.equal(transitMetric('0','299.999',metrics).replenishment,'0');
   assert.equal(transitMetric('0','300',metrics).replenishment,'0');
+  assert.equal(transitMetric('0.25','299.25',metrics).replenishment,'1');
+  assert.equal(transitMetric('0','100',{...metrics,total7:'-7',average7:'-1'}).replenishment,null);
+  assert.equal(transitMetric('0','100',{...metrics,validDays:6}).replenishment,null);
 });
 
 mkdirSync('.sites-runtime/tests',{recursive:true});
@@ -115,7 +120,7 @@ test('导出在途和补货数值，未取得库存的在途商品不填零库�
   const rows=[{goodsNo:'WITH-STOCK',goodsName:'商品',unitName:'Pcs',quantity:'100.5',skuCount:1,history:{},transit:transitMetric('50','100.5',{total7:'70',average7:'10',validDays:7,basis:'inventory_difference',reason:null,turnoverDays:'10.05'})}];
   const view={warehouseCode:'A',warehouseName:'A',source:'live',snapshot:null,snapshots:[],rows,configured:true,robotConfigured:false,totalRows:1,goodsCount:1,page:1,pageSize:100,totalsByUnit:{Pcs:'100'},zeroCount:0,negativeCount:0,transitOnly:[{goodsNo:'ONLY-TRANSIT',goodsName:'在途商品',unitName:'Pcs',quantity:'80'}]} as InventoryView;
   const xml=new TextDecoder().decode(inventoryWorkbook(view,rows));
-  assert.match(xml,/<c r="G2"[^>]*t="n"><v>50<\/v>/);assert.match(xml,/<c r="H2"[^>]*t="n"><v>452<\/v>/);
+  assert.match(xml,/<c r="G2"[^>]*t="n"><v>50<\/v>/);assert.match(xml,/<c r="H2"[^>]*t="n"><v>150<\/v>/);
   const row=xml.match(/<row r="3">.*?ONLY-TRANSIT.*?<\/row>/)?.[0];assert.ok(row);assert.match(row,/<c r="G3"[^>]*><v>80<\/v>/);assert.doesNotMatch(row,/<c r="[CDH]3"/);
 });
 

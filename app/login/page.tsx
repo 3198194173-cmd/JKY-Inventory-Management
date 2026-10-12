@@ -1,14 +1,17 @@
+import { Warehouse } from "lucide-react";
+
 export const dynamic = 'force-dynamic';
 export default async function Login({searchParams}: {searchParams:Promise<{error?:string}>}) {
   const {error} = await searchParams;
-  return <main style={{maxWidth:400,margin:'12vh auto',padding:32,background:'white',borderRadius:16}}>
-    <h1 style={{fontSize:24,fontWeight:700,marginBottom:12}}>仓库数据 · 登录</h1>
-    <p style={{marginBottom:24,color:'#64748b'}}>登录后查看库存与销售分析。</p>
-    {error && <p role="alert" style={{color:'#dc2626',marginBottom:16}}>登录失败或尝试过于频繁，请检查账号密码后稍后重试。</p>}
+  return <main className="inventory-login"><section className="inventory-login-card" aria-label="登录仓库数据">
+    <div className="inventory-login-brand"><span className="compact-logo"><Warehouse size={21}/></span><strong>仓库数据</strong></div>
+    <h1>登录工作台</h1>
+    <p>查看仓库库存、销售与在途数据。</p>
+    {error && <p role="alert">登录失败或尝试过于频繁，请检查账号密码后稍后重试。</p>}
     <form method="post" action="/api/session">
-      <label>账号<input name="username" required autoComplete="username" maxLength={100} style={{display:'block',border:'1px solid #cbd5e1',padding:10,width:'100%',margin:'8px 0 16px'}}/></label>
-      <label>密码<input name="password" type="password" required autoComplete="current-password" maxLength={1024} style={{display:'block',border:'1px solid #cbd5e1',padding:10,width:'100%',margin:'8px 0 24px'}}/></label>
-      <button type="submit" style={{background:'#4263eb',color:'white',padding:12,borderRadius:8,width:'100%'}}>登录</button>
+      <label>账号<input name="username" required autoComplete="username" maxLength={100} placeholder="请输入账号"/></label>
+      <label>密码<input name="password" type="password" required autoComplete="current-password" maxLength={1024} placeholder="请输入密码"/></label>
+      <button type="submit">登录</button>
     </form>
-  </main>;
+  </section></main>;
 }
