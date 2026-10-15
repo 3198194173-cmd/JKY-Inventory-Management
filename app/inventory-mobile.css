@@ -1,4 +1,9 @@
 /* Mobile renders the same data as cards; the desktop table keeps its existing layout. */
+.compact-feedback-details{padding:0 18px;color:#73839a;font-size:12px;border-top:1px solid #edf1f6}
+.compact-feedback-details summary{cursor:pointer;min-height:40px;display:flex;align-items:center;gap:6px}
+.compact-feedback-details summary::before{content:'›';transition:transform .15s}
+.compact-feedback-details[open] summary::before{transform:rotate(90deg)}
+.compact-feedback-details p{padding:0 0 12px;line-height:1.8;overflow-wrap:anywhere}
 @media (max-width: 760px) {
   .compact-app { padding: 0 10px max(18px, env(safe-area-inset-bottom)); }
   .compact-header { margin-inline: -10px; margin-bottom: 10px; padding-inline: 14px; }
@@ -85,4 +90,43 @@
   .sales-calendar-dialog { max-height: calc(100dvh - 24px); overflow-y: auto; }
   .sales-calendar-analysis-pane { max-height: none; overflow: visible; }
   .sales-calendar-toolbar>button { width: 44px; height: 44px; }
+}
+
+/* Keep the primary data visible sooner: one sorter, three toolbar rows. */
+@media(max-width:760px){
+  .compact-header{padding-top:10px;gap:4px 10px;margin-bottom:4px}
+  .compact-header .compact-navigation{gap:0;justify-content:space-between}
+  .compact-navigation [data-slot="button"],.compact-nav-active{padding-inline:6px;gap:4px;font-size:11px}
+  .compact-navigation .compact-nav-collection{display:none}
+  .account-bar{margin-bottom:6px}
+  .account-identity{min-height:36px;font-size:11px}
+  .compact-toolbar{display:grid;grid-template-columns:minmax(0,1fr) 96px;padding:12px 12px 8px;gap:8px}
+  .compact-warehouse{grid-column:1/-1;grid-row:1}
+  .compact-search{grid-column:1;grid-row:2;min-width:0}
+  .compact-search input{padding-right:8px}
+  .compact-actions{grid-column:2;grid-row:2;display:flex;gap:8px;width:96px;margin:0}
+  .compact-actions [data-slot="button"]{padding:0;width:44px;min-width:44px;height:44px;flex:none}
+  .compact-actions .compact-action-label{display:none}
+  .compact-toolbar .compact-sort{grid-column:1;grid-row:3;width:100%!important;min-width:0}
+  .compact-native-sort{height:44px;border:1px solid #dfe6ef;border-radius:8px;background:#fff;padding:0 12px;color:#42536b;font-size:16px;outline:none}
+  .compact-native-sort:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+  .compact-toolbar .compact-days{grid-column:2;grid-row:3;width:96px!important;min-width:0;padding-inline:10px}
+  .compact-status{display:flex;align-items:center;justify-content:space-between;flex-wrap:nowrap;padding:0 12px 6px;gap:6px;font-size:10px;line-height:1.5}
+  .compact-status>span{min-width:0;flex:1}
+  .compact-status button{min-height:36px;flex-shrink:0;white-space:nowrap;font-size:10px}
+  .compact-overview{padding-bottom:10px;gap:6px}
+  .compact-stat{min-height:62px;padding:8px 3px;border-radius:8px}
+  .compact-stat strong{font-size:21px;line-height:1.2}
+  .compact-stat>div>span{font-size:10px;line-height:1.6}
+  .compact-stat small{font-size:9px;line-height:1.5}
+  .compact-feedback-details{padding:0 12px;font-size:11px}
+  .compact-feedback-details summary{min-height:36px}
+  .inventory-mobile-help summary{min-height:38px}
+  .inventory-mobile-count{padding-bottom:8px;font-size:10px}
+  .inventory-mobile-products{gap:10px}
+  .inventory-mobile-card{padding:14px}
+  .inventory-mobile-stock{margin:12px 0}
+  .inventory-mobile-metrics>div{padding:9px 10px}
+  .inventory-mobile-sales{margin-top:12px}
+  .compact-footnote{display:none}
 }

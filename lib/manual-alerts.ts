@@ -10,6 +10,7 @@ import { sendRobotMessage } from "./dingtalk";
 import { DingTalkCardError, sendInventoryReport } from "./dingtalk-cards";
 import { attachReportExport } from "./alert-report-export";
 import { normalizeTurnoverDays, normalizeExcludedNames, normalizeTurnoverThreshold } from "./turnover-alert";
+import { claimSharedAlert, finishSharedAlert, sharedReportHash } from './shared-alert-deliveries';
 
 export type ManualAlertRequest = {
   requestId: string; warehouseCode: string; snapshotId: string;
@@ -17,7 +18,7 @@ export type ManualAlertRequest = {
 };
 export type ManualAlertResult = {
   state: "sending" | "complete"; count: number;
-  groups: { id: string; name: string; acceptedParts: number; totalParts: number; state: "pending" | "accepted" | "unconfirmed" | "failed" | "skipped"; skipReason?: "automatic"; error?: string }[];
+  groups: { id: string; name: string; acceptedParts: number; totalParts: number; state: "pending" | "accepted" | "unconfirmed" | "failed" | "skipped"; skipReason?: "automatic"|"shared"; error?: string }[];
   message: string;
 };
 export class ManualAlertError extends Error {
@@ -86,6 +87,7 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   } catch (error) { if (db.isTransaction) db.exec("ROLLBACK"); throw error; }
   const persist = () => db.prepare("UPDATE manual_alert_deliveries SET state=?,result=? WHERE owner=? AND client_id=? AND robot_code=? AND request_id=?").run(result.state, JSON.stringify(result), ...scope, request.requestId);
   const secret = env.DINGTALK_CLIENT_SECRET!;
+  const reportHash=sharedReportHash(preview);
   for (const group of result.groups) {
     const selected = db.prepare(`SELECT 1 FROM warehouse_alert_groups s JOIN dingtalk_groups g
       ON g.owner=s.owner AND g.client_id=s.client_id AND g.robot_code=s.robot_code AND g.open_conversation_id=s.open_conversation_id
@@ -107,14 +109,22 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
         : "同一份自动预警正在发送或结果未确认，请先核对群消息，本次不重复投放";
       persist(); continue;
     }
+    const shared=claimSharedAlert(scope,group.id,request.warehouseCode,reportHash);
+    if(!shared.token){
+      group.state='skipped';group.skipReason='shared';
+      group.error=shared.state==='accepted'?'同一仓库的相同预警已发送到此群（跨账户去重）':'同一仓库的相同预警正在发送或结果未确认，请先核对群消息；本次不重复发送';
+      persist();continue;
+    }
     // Persist uncertainty before the external call: a crash cannot cause a retry.
     group.state = "unconfirmed"; persist();
     try {
       await sendInventoryReport({ clientId: scope[1], clientSecret: secret, robotCode: scope[2], openConversationId: group.id }, sender===sendRobotMessage?attachReportExport(owner,request.warehouseCode,preview):preview, sender, parts=>{group.acceptedParts=parts;persist();},()=>assertDelivery(owner,request.warehouseCode,group.id,current.revision));
       group.state = "accepted";
+      finishSharedAlert(shared.token,'accepted',group.acceptedParts);
       db.prepare("UPDATE warehouse_alert_settings SET last_sent_at=? WHERE owner=? AND warehouse_code=?").run(new Date().toISOString(), owner, request.warehouseCode);
     } catch (error) {
       if (error instanceof DingTalkCardError && error.rejected) group.state = "failed";
+      finishSharedAlert(shared.token,error instanceof DingTalkCardError&&error.rejected&&group.acceptedParts===0?'rejected':'unconfirmed',group.acceptedParts);
       // Only expose our sanitized errors, never upstream bodies or credentials.
       if (error instanceof Error && error.message.startsWith("钉钉")) group.error = error.message;
       else group.error = "钉钉发送未确认：未取得有效受理回执，请先核对群消息；本次不会自动重发";
@@ -126,8 +136,10 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
   const uncertain = result.groups.filter(g => g.state === "unconfirmed").length;
   const failed = result.groups.filter(g => g.state === "failed").length;
   const duplicates = result.groups.filter(g => g.skipReason === "automatic").length;
+  const sharedDuplicates=result.groups.filter(g=>g.skipReason==='shared').length;
   const skipped = result.groups.filter(g => g.state === "skipped" && !g.skipReason).length;
   result.message = `${request.warehouseCode}：${preview.count} 款预警，钉钉已受理 ${accepted} 个群${failed ? `，${failed} 个群发送失败，请查看下方错误` : ""}${uncertain ? `，${uncertain} 个群未确认，请先核对群消息` : accepted ? "，请到群内查看" : ""}${duplicates ? `；${duplicates} 个群已有同一份自动预警，本次已防止重复发送，请查看群说明` : ""}${skipped ? `；${skipped} 个群因勾选或成员关系变化已跳过` : ""}。`;
+  if(sharedDuplicates)result.message+=` ${sharedDuplicates} 个群的同仓库相同预警已防重（含跨账户）。`;
   persist();
   db.prepare("UPDATE warehouse_alert_settings SET last_result=? WHERE owner=? AND warehouse_code=?").run("手动发送 · " + result.message, owner, request.warehouseCode);
   return result;

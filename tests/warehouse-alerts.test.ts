@@ -101,6 +101,8 @@ test('两个仓库分别到点采集、分别到点预警，名称排除同样�
   const db=sqlite(),sent:{group:string;text:string}[]=[];
   try {
     db.prepare("DELETE FROM manual_alert_deliveries WHERE owner='per-warehouse'").run();
+    // Reuse the inventory fixture with a fresh delivery history for time-bound checks.
+    db.prepare("DELETE FROM shared_alert_deliveries WHERE owner='per-warehouse'").run();
     const sender=async(c:{openConversationId:string},text:string)=>{sent.push({group:c.openConversationId,text});return 'mock';};
     await sendDueAlerts('2026-10-08 08:59:59',sender);assert.equal(sent.length,0);
     await sendDueAlerts('2026-10-08 09:00:00',sender);assert.equal(sent.length,1);assert.equal(sent[0].group,'group-a');assert.doesNotMatch(sent[0].text,/MAGNET/);

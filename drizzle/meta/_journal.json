@@ -134,6 +134,13 @@
       "when": 1792022400018,
       "tag": "0018_warehouse_sharing",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1792022400019,
+      "tag": "0019_shared_alert_deliveries",
+      "breakpoints": true
     }
   ]
 }

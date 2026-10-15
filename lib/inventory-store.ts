@@ -10,6 +10,7 @@ import { comparableDates, dailySales, reconciledSales } from "./daily-sales";
 import { loadCurrentInboundReconciliations, loadInboundReconciliations } from "./inbound-store";
 import type { InboundReconciliation } from "./inbound";
 import { inventoryMetrics } from "./inventory-metrics";
+import { compareInventoryMetric, metricSortLabels } from './inventory-sorting';
 import { reconciliationDiagnostic } from "./reconciliation-diagnostics";
 import type { InventoryView, RunInfo, SnapshotInfo, StockRow, WarehouseInfo, UnavailableSku } from "./inventory-types";
 import type { ScopeInfo } from "./stock-scope";
@@ -103,7 +104,19 @@ export async function loadInventory(owner: string, query: { source?: string; war
   const sort = asc || desc ? `sign ${asc ? "ASC" : "DESC"}, CASE WHEN sign > 0 THEN instr(quantity || '.', '.') - 1 WHEN sign < 0 THEN 2 - instr(quantity || '.', '.') ELSE 0 END ${asc ? "ASC" : "DESC"}, CASE WHEN sign > 0 THEN quantity END COLLATE BINARY ${asc ? "ASC" : "DESC"}, CASE WHEN sign < 0 THEN substr(quantity, 2) END COLLATE BINARY ${asc ? "DESC" : "ASC"}, goods_no COLLATE BINARY ASC` : "goods_no COLLATE BINARY ASC";
   const salesSort = ["sales_asc","sales_desc"].includes(query.sort || "") && salesDates.includes(query.sortDate || "");
   let result;
-  if (salesSort) {
+  if (query.sort && Object.hasOwn(metricSortLabels,query.sort)) {
+    const candidates=await database().prepare(`SELECT * FROM stock_entries WHERE ${where}`).bind(...parameters).all<EntryRecord>();
+    const metricDaily=daily.filter(s=>s.date>=new Date(Date.parse(latest.date+'T00:00:00Z')-7*86_400_000).toISOString().slice(0,10));
+    const sortable:{entry:EntryRecord;goodsNo:string;quantity:string;metrics:ReturnType<typeof inventoryMetrics>}[]=[];
+    // Bound memory and query bindings while computing the whole filtered warehouse.
+    for(let start=0;start<candidates.results.length;start+=1000){
+      const batch=candidates.results.slice(start,start+1000),goods=batch.map(r=>r.goods_no);
+      const history=await rowHistory(owner,metricDaily.map(s=>s.id),goods),corrections=await loadInboundReconciliations(owner,warehouse.code,metricDaily,goods);
+      for(const r of batch)sortable.push({entry:r,goodsNo:r.goods_no,quantity:r.quantity,metrics:inventoryMetrics((history.get(r.goods_no)||[]).map(v=>({date:v.date!,quantity:v.quantity,unitName:v.unit_name})),latest.date,r.quantity,r.unit_name,corrections.get(r.goods_no))});
+    }
+    sortable.sort((a,b)=>compareInventoryMetric(a,b,query.sort!.startsWith('average_')?'average':'turnover',query.sort!.endsWith('_asc')));
+    result={results:sortable.slice((page-1)*pageSize,page*pageSize).map(r=>r.entry)};
+  } else if (salesSort) {
     const before = daily.find(s => s.date === query.sortDate)!;
     const after = daily.find(s => s.date === new Date(Date.parse(query.sortDate! + "T00:00:00Z") + 86_400_000).toISOString().slice(0,10))!;
     const direction = query.sort === "sales_asc" ? "ASC" : "DESC";

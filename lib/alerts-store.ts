@@ -13,6 +13,8 @@ import { normalizeTurnoverThreshold, normalizeTurnoverDays, normalizeExcludedNam
 import { groupState, robotScope, validateGroupSelection, type DingTalkGroupState } from "./dingtalk-groups-store";
 import { sqlite } from "./sqlite.mjs";
 import { attachReportExport, reportExportBaseUrl } from "./alert-report-export";
+import { claimSharedAlert, finishSharedAlert, sharedReportHash } from './shared-alert-deliveries';
+import { DingTalkCardError } from './dingtalk-cards';
 
 export type AlertSettings = {
   warehouseCode: string; enabled: boolean; threshold: string; turnoverAverageThreshold: string;
@@ -96,7 +98,8 @@ export async function notifyAfterSnapshot(owner: string, snapshotId: string, cod
   if(preview.snapshotId!==snapshotId || preview.incomplete || preview.ruleHash!==alertRuleHash(current))return;
   const db=sqlite(),scope=robotScope(owner);
   if(!preview.count){db.prepare("UPDATE warehouse_alert_settings SET last_result=? WHERE owner=? AND warehouse_code=? AND revision=?").run(preview.message,owner,code,current.revision);return;}
-  let acceptedCount=0,uncertainCount=0,deferred=false;
+  let acceptedCount=0,uncertainCount=0,sharedCount=0,deferred=false;
+  const reportHash=sharedReportHash(preview);
   for(const group of current.groupState.groups.filter(g=>g.enabled)) {
     await assertDelivery(owner,code,group.id,current.revision);
     const claimed=db.prepare(`INSERT OR IGNORE INTO turnover_group_deliveries
@@ -120,18 +123,27 @@ export async function notifyAfterSnapshot(owner: string, snapshotId: string, cod
         .get(...scope,code,snapshotId,preview.ruleHash,legacyAverageThreshold(current),group.id))deferred=true;
       continue;
     }
+    const shared=claimSharedAlert(scope,group.id,code,reportHash);
+    if(!shared.token){
+      db.prepare("UPDATE turnover_group_deliveries SET state='shared' WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND warehouse_code=? AND date=?").run(...scope,group.id,code,preview.date);
+      sharedCount++;continue;
+    }
+    let acceptedParts=0;
     db.prepare("UPDATE warehouse_alert_settings SET last_result=? WHERE owner=? AND warehouse_code=?").run(code+"：周转预警发送中",owner,code);
     try {
       const report=sender===sendRobotMessage?attachReportExport(owner,code,preview):preview;
-      await sendInventoryReport({clientId:scope[1],clientSecret:env.DINGTALK_CLIENT_SECRET!,robotCode:scope[2],openConversationId:group.id},report,sender,undefined,()=>assertDelivery(owner,code,group.id,current.revision));
+      await sendInventoryReport({clientId:scope[1],clientSecret:env.DINGTALK_CLIENT_SECRET!,robotCode:scope[2],openConversationId:group.id},report,sender,parts=>{acceptedParts=parts;},()=>assertDelivery(owner,code,group.id,current.revision));
+      finishSharedAlert(shared.token,'accepted',acceptedParts);
       const accepted=new Date().toISOString();
       db.prepare("UPDATE turnover_group_deliveries SET state='accepted',accepted_at=? WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND warehouse_code=? AND date=?").run(accepted,...scope,group.id,code,preview.date);
       db.prepare("UPDATE warehouse_alert_settings SET last_sent_at=? WHERE owner=? AND warehouse_code=?").run(accepted,owner,code);acceptedCount++;
-    } catch {
+    } catch(error) {
+      finishSharedAlert(shared.token,error instanceof DingTalkCardError&&error.rejected&&acceptedParts===0?'rejected':'unconfirmed',acceptedParts);
       db.prepare("UPDATE turnover_group_deliveries SET state='unconfirmed' WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND warehouse_code=? AND date=?").run(...scope,group.id,code,preview.date);uncertainCount++;
     }
   }
   if(acceptedCount || uncertainCount)db.prepare("UPDATE warehouse_alert_settings SET last_result=? WHERE owner=? AND warehouse_code=?")
     .run(`${code}：${preview.count} 款预警，钉钉已受理 ${acceptedCount} 个群${uncertainCount?`，${uncertainCount} 个群发送未确认，请核对群消息；今天不自动重发`:"；每群每天一次，以群内消息为准"}`,owner,code);
+  if(sharedCount)db.prepare('UPDATE warehouse_alert_settings SET last_result=? WHERE owner=? AND warehouse_code=?').run(`${code}：钉钉已受理 ${acceptedCount} 个群${uncertainCount?`，${uncertainCount} 个群发送未确认`:''}；${sharedCount} 个群的同仓库相同预警已防重（含跨账户），正在发送或未确认的消息请先到群内核对。`,owner,code);
   return {deferred};
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowDownUp, ChartNoAxesCombined, ChevronDown, CircleHelp, Warehouse } from "lucide-react";
+import { ChartNoAxesCombined, ChevronDown, CircleHelp, Warehouse } from "lucide-react";
 import type { InventoryView } from "@/lib/inventory-types";
 import { INVENTORY_FIELD_HELP } from "@/lib/inventory-field-help";
 import { compareQuantity } from "@/lib/decimal";
@@ -17,9 +17,6 @@ type Props = {
   threshold: string | null;
   turnoverDays: string;
   loading: boolean;
-  sort: string;
-  sortDate: string;
-  onSortDate: (date: string) => void;
   onSelect: (row: Row, date?: string) => void;
   onTransit: (goodsNo: string) => void;
   onSync: () => void;
@@ -55,16 +52,11 @@ function ProductCard({ row, index, dates, threshold, turnoverDays, onSelect, onT
   </article>;
 }
 
-export function InventoryMobileList({ view, dates, threshold, turnoverDays, loading, sort, sortDate, onSortDate, onSelect, onTransit, onSync, canSync }: Props) {
+export function InventoryMobileList({ view, dates, threshold, turnoverDays, loading, onSelect, onTransit, onSync, canSync }: Props) {
   const [limit, setLimit] = useState(20);
   const shown = Math.min(limit, view.rows.length);
-  const sortingSales = sort.startsWith("sales_") && dates.includes(sortDate);
   const help = [["当前库存", INVENTORY_FIELD_HELP.quantity], ["销售均值", INVENTORY_FIELD_HELP.average], ["每日销量", "净销量=期初库存+区间实际入库−期末库存；实际入库来源 erp-busiorder.goodsdocin.search。日期为采集区间起始日，负值按退货/回补；缺失或未核验显示—。黄色日期格表示有入库，点日期查看计算与单据。"], ["库存周转", INVENTORY_FIELD_HELP.turnover], ["在途数量", INVENTORY_FIELD_HELP.transit], ["建议补货 / 30天", INVENTORY_FIELD_HELP.replenishment]];
   return <div className="inventory-mobile" aria-label="手机货品列表" aria-busy={loading}>
-    {!!dates.length && <div className="inventory-mobile-sort">
-      <label><ArrowDownUp size={16}/><span className="sr-only">按某日销量排序</span><select aria-label="按某日销量排序" value={sortingSales ? sortDate : ""} disabled={loading} onChange={e => { if(e.target.value) onSortDate(e.target.value); }}><option value="" disabled>按某日销量排序</option>{dates.map(date => <option key={date} value={date}>{date} 销量</option>)}</select></label>
-      <button type="button" disabled={!sortingSales || loading} onClick={() => onSortDate(sortDate)} aria-label="切换日期销量升降序">{sortingSales && sort === "sales_asc" ? "从小到大 ↑" : "从大到小 ↓"}</button>
-    </div>}
     <details className="inventory-mobile-help"><summary><CircleHelp size={15}/>指标与计算说明</summary><dl>{help.map(([label, description]) => <div key={label}><dt>{label}</dt><dd>{description}</dd></div>)}</dl></details>
     {!!view.rows.length && <p className="inventory-mobile-count">本页已显示 {shown} / {view.rows.length} 件<span>概览统计按整页计算</span></p>}
     <div className="inventory-mobile-products">{view.rows.slice(0, shown).map((row, i) => <ProductCard key={row.goodsNo} row={row} index={(view.page - 1) * view.pageSize + i + 1} dates={dates} threshold={threshold} turnoverDays={turnoverDays} onSelect={onSelect} onTransit={onTransit}/>)}</div>

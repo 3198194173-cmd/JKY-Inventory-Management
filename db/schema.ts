@@ -214,3 +214,7 @@ export const warehouseShareCandidates=sqliteTable('warehouse_share_candidates',{
 export const warehouseShares=sqliteTable('warehouse_shares',{
   requestId:text('request_id').primaryKey(),actorId:text('actor_id').notNull().references(()=>accounts.id),targetId:text('target_id').notNull().references(()=>accounts.id),requestHash:text('request_hash').notNull(),resultJson:text('result_json').notNull(),createdAt:text('created_at').notNull(),
 });
+
+export const sharedAlertDeliveries=sqliteTable('shared_alert_deliveries',{
+  clientId:text('client_id').notNull(),robotCode:text('robot_code').notNull(),groupId:text('group_id').notNull(),warehouseCode:text('warehouse_code').notNull(),reportHash:text('report_hash').notNull(),owner:text('owner').notNull(),claimToken:text('claim_token').notNull(),state:text('state').notNull(),acceptedParts:integer('accepted_parts').notNull().default(0),attemptedAt:text('attempted_at').notNull(),updatedAt:text('updated_at').notNull(),
+},t=>[primaryKey({columns:[t.clientId,t.robotCode,t.groupId,t.warehouseCode,t.reportHash]})]);

@@ -94,6 +94,9 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
     await Promise.all([notifyAfterSnapshot(owner,id,code,async (credentials,message)=>{targets.push(credentials.openConversationId);return sender(credentials,message);}),notifyAfterSnapshot(owner,id,code,sender)]);
     assert.equal(sent,4,'原群未确认不重发，新勾选群独立每日去重');assert.deepEqual([...new Set(targets)],['second-group']);
     await saveSettings(owner,false,'0','3',undefined,undefined,{warehouseCode:code});await notifyAfterSnapshot(owner,id,code,sender);assert.equal(sent,4);
+    // A new business report may be sent manually; identical prior reports now
+    // share the persistent cross-account deduplication key.
+    db.prepare("UPDATE stock_entries SET goods_name=goods_name||' 手动新版' WHERE snapshot_id=?").run(id);
     const currentPreview=await previewTurnoverAlert(owner,code,'3');
     const input={requestId:randomUUID(),warehouseCode:code,snapshotId:id,averageThreshold:'3',groupIds:['test-group','second-group']};
     let manualCalls=0;const manualSender=async()=>{manualCalls++;return 'mock-only';};
@@ -112,6 +115,7 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
     await assert.rejects(()=>sendManualAlert(owner,{...input,requestId:randomUUID()},manualSender),/不完整/);
     db.prepare("UPDATE stock_snapshots SET unavailable_skus='[]' WHERE id=?").run(id);
     db.prepare('UPDATE manual_alert_deliveries SET attempted_at=0 WHERE owner=?').run(owner);
+    db.prepare("UPDATE stock_entries SET goods_name=goods_name||' 分段新版' WHERE snapshot_id=?").run(id);
     const partialInput={...input,requestId:randomUUID()};let firstParts=0,otherParts=0;
     const partial=await sendManualAlert(owner,partialInput,async credentials=>{
       if(credentials.openConversationId==='test-group'){firstParts++;if(firstParts===2)throw Error('mock timeout');}else otherParts++;
@@ -122,6 +126,7 @@ test('周转群通知汇总全仓超过1000款，短消息、预览不发送及�
     assert.equal(otherParts,currentPreview.messages.length,'一个群的分条失败不影响其他群完整报告');
     await sendManualAlert(owner,partialInput,manualSender);assert.equal(manualCalls,currentPreview.messages.length*2,'部分受理不重试');
     db.prepare('UPDATE manual_alert_deliveries SET attempted_at=0 WHERE owner=?').run(owner);
+    db.prepare("UPDATE stock_entries SET goods_name=goods_name||' 拒绝新版' WHERE snapshot_id=?").run(id);
     const rejectedInput={...input,requestId:randomUUID()};let rejectedCalls=0;
     const rejection=async()=>{rejectedCalls++;throw new DingTalkCardError('钉钉卡片发送失败（HTTP 400；错误码：param.cardTemplateIdInvalid）',true);};
     const rejected=await sendManualAlert(owner,rejectedInput,rejection);
@@ -171,10 +176,11 @@ test('手动与自动预警交错时同群只投放一次，失败和新快照�
       db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,id);
     }
     await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[]}));
-    db.prepare("INSERT INTO dingtalk_groups (owner,client_id,robot_code,open_conversation_id,last_seen_at,enabled) VALUES(?,?,?,'overlap-group',?,1)").run(...robotScope(owner),new Date().toISOString());
-    await saveSettings(owner,true,'0','3',['overlap-group'],undefined,{warehouseCode:code});
+    const group='overlap-group-'+owner;
+    db.prepare("INSERT INTO dingtalk_groups (owner,client_id,robot_code,open_conversation_id,last_seen_at,enabled) VALUES(?,?,?,?,?,1)").run(...robotScope(owner),group,new Date().toISOString());
+    await saveSettings(owner,true,'0','3',[group],undefined,{warehouseCode:code});
     const preview=await previewTurnoverAlert(owner,code,'3');assert.equal(preview.count,1);
-    return {requestId:randomUUID(),warehouseCode:code,snapshotId:preview.snapshotId,averageThreshold:'3',groupIds:['overlap-group']};
+    return {requestId:randomUUID(),warehouseCode:code,snapshotId:preview.snapshotId,averageThreshold:'3',groupIds:[group]};
   }
   try {
     for(const first of ['manual','automatic']) {
@@ -200,7 +206,7 @@ test('手动与自动预警交错时同群只投放一次，失败和新快照�
       } else {
         db.prepare("UPDATE turnover_group_deliveries SET attempted_at=? WHERE owner=?").run(new Date(Date.now()-60_000).toISOString(),owner);
         db.prepare('UPDATE manual_alert_deliveries SET attempted_at=0 WHERE owner=?').run(owner);
-        const explicit=await sendManualAlert(owner,{...input,requestId:randomUUID()},sender);assert.equal(explicit.groups[0].state,'accepted');assert.equal(calls,2,'冷却结束后仍支持主动再次通知');
+        const explicit=await sendManualAlert(owner,{...input,requestId:randomUUID()},sender);assert.equal(explicit.groups[0].state,'skipped');assert.equal(explicit.groups[0].skipReason,'shared');assert.equal(calls,1,'冷却结束后同一份业务数据仍只发送一次');
       }
     }
     const owner='overlap-rejected',input=await fixture(owner);let calls=0;
@@ -381,7 +387,7 @@ test('销量月历读取历史月份、月末闭合基准及用户隔离，不�
 
 test('本地数据库迁移、事务回滚、队列去重与多仓库快照隔离',async()=>{
   const db=sqlite();
-  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,19);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,20);
   const plan=db.prepare("EXPLAIN QUERY PLAN SELECT id FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND coverage='auto:v1' AND status='complete' ORDER BY captured_at DESC,id DESC LIMIT 1").all('test-owner','TEST01');
   assert.ok(plan.some((r:{detail:string})=>r.detail.includes('idx_snapshots_warehouse_latest')));assert.ok(plan.every((r:{detail:string})=>!r.detail.includes('TEMP B-TREE')));
   await addWarehouse('test-owner','TEST01','测试仓');

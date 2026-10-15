@@ -82,6 +82,23 @@ try{
       const b=page.locator('.account-member').filter({has:page.getByRole('heading',{name:'员工乙',exact:true})});await b.getByRole('button',{name:'群授权（0）'}).click();await b.getByText('暂无企业群，请先同步企业群目录。').waitFor();await b.getByRole('button',{name:'取消',exact:true}).click();
       await page.goto(url+'/login');await page.getByRole('link',{name:'使用公司钉钉登录'}).waitFor();assert.equal(await page.locator('input[name=username]').count(),0);await page.screenshot({path:'outputs/account-login-mobile.png'});
       await context.addCookies([{name:'inventory_session',value:tokens.b,url}]);await page.goto(url+'/');await page.locator('.inventory-mobile-card').first().waitFor();assert.equal(await page.locator('.inventory-mobile-stock strong').first().innerText(),'456');assert.equal(await page.locator('.account-identity a').count(),0);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);await page.screenshot({path:'outputs/account-member-inventory-mobile.png'});
+      assert.equal(await page.locator('.inventory-mobile-sort').count(),0,'手机只保留一个排序入口');
+      for(const value of ['average_desc','average_asc','turnover_desc','turnover_asc']){
+        const response=page.waitForResponse(r=>r.url().includes('/api/inventory?')&&new URL(r.url()).searchParams.get('sort')===value);
+        await page.getByLabel('排序方式',{exact:true}).selectOption(value);assert.equal((await response).status(),200);
+      }
+      for(const width of [320,390,760]){
+        await page.setViewportSize({width,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+        const toolbar=await page.locator('.compact-toolbar').boundingBox();assert.ok(toolbar.height<=178,'手机工具栏压缩为三行');
+      }
+      await page.setViewportSize({width:390,height:844});assert.ok((await page.locator('.inventory-mobile-card').first().boundingBox()).y<600,'首件商品无需先滑过整屏工具栏');await page.screenshot({path:'outputs/inventory-mobile-optimized.png'});
+      await page.setViewportSize({width:1440,height:1000});await page.locator('.compact-table').waitFor();
+      for(const name of ['销售均值','库存周转']){
+        const button=page.getByRole('columnheader').getByRole('button',{name:new RegExp('^'+name)});
+        await Promise.all([page.waitForResponse(r=>r.url().includes('/api/inventory?')&&r.ok()),button.click()]);assert.match(await button.innerText(),/↓/);
+        await Promise.all([page.waitForResponse(r=>r.url().includes('/api/inventory?')&&r.ok()),button.click()]);assert.match(await button.innerText(),/↑/);
+      }
+      await page.screenshot({path:'outputs/inventory-desktop-sorting.png'});
       assert.deepEqual(errors,[]);
       console.log('PASS: 账户管理与登录页面桌面/390px浏览器检查，无脚本错误及横向溢出');
     }finally{await browser.close();}
