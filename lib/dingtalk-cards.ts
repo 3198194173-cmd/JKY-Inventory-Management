@@ -28,7 +28,7 @@ async function cardResponseError(response: Response, secrets: string[], template
   return new DingTalkCardError(`钉钉卡片发送失败（HTTP ${response.status}${code ? `；错误码：${code}` : ""}）${hint}${requestId ? `；请求编号：${requestId}` : ""}`, [400,401,403,404,422].includes(response.status));
 }
 
-export async function sendRobotCard(credentials: RobotCredentials, card: TurnoverCard, templateId: string, fetcher: typeof fetch = fetch): Promise<string> {
+export async function sendRobotCard(credentials: RobotCredentials, card: TurnoverCard, templateId: string, fetcher: typeof fetch = fetch, beforeDelivery?: () => Promise<void>): Promise<string> {
   let apiTemplateId: string;
   try { apiTemplateId = normalizeCardTemplateId(templateId); }
   catch { throw new DingTalkCardError("钉钉卡片尚未发送：模板 ID 格式无效，请从模板列表复制完整 ID", true); }
@@ -39,6 +39,7 @@ export async function sendRobotCard(credentials: RobotCredentials, card: Turnove
   let token: string;
   try { token = await appAccessToken(credentials, fetcher); }
   catch { throw new DingTalkCardError("钉钉卡片尚未发送：获取应用访问令牌失败，请检查应用凭证及服务器到钉钉的网络", true); }
+  await beforeDelivery?.();
   const outTrackId = randomUUID();
   let response: Response;
   try { response = await fetcher("https://api.dingtalk.com/v1.0/card/instances/createAndDeliver", {
@@ -59,13 +60,13 @@ export async function sendRobotCard(credentials: RobotCredentials, card: Turnove
   return outTrackId;
 }
 
-export async function sendInventoryReport(credentials: RobotCredentials, report: { messages: string[]; cards: TurnoverCard[] }, sender = sendRobotMessage, onAccepted?: (parts: number) => void) {
+export async function sendInventoryReport(credentials: RobotCredentials, report: { messages: string[]; cards: TurnoverCard[] }, sender = sendRobotMessage, onAccepted?: (parts: number) => void, beforeDelivery?: () => Promise<void>) {
   // Injected senders keep tests offline. Production only switches after a template is configured.
   const templateId = cardTemplateId();
-  if (!templateId || sender !== sendRobotMessage) return sendTurnoverReport(credentials, report.messages, sender, onAccepted);
+  if (!templateId || sender !== sendRobotMessage) return sendTurnoverReport(credentials, report.messages, sender, onAccepted, beforeDelivery);
   for (let i = 0; i < report.cards.length; i++) {
     if (i) await new Promise(resolve => setTimeout(resolve, 1000));
-    await sendRobotCard(credentials, report.cards[i], templateId);
+    await sendRobotCard(credentials, report.cards[i], templateId, fetch, beforeDelivery);
     onAccepted?.(i + 1);
   }
 }

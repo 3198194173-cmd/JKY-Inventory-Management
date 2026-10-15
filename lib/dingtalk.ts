@@ -44,11 +44,13 @@ export function turnoverAlertMessages(rows: InventoryView["rows"], threshold: st
   if(lines.length)parts.push(lines);
   return parts.map((part,i)=>[header,...(parts.length>1?[`第${i+1}/${parts.length}部分`]:[]),...part,"库存净消耗估算"].join("\n"));
 }
-export async function sendTurnoverReport(credentials: RobotCredentials, messages: string[], sender = sendRobotMessage, onAccepted?: (parts: number) => void) {
+export async function sendTurnoverReport(credentials: RobotCredentials, messages: string[], sender = sendRobotMessage, onAccepted?: (parts: number) => void, beforeDelivery?: () => Promise<void>) {
   for (let i=0;i<messages.length;i++) {
     // Pace real multi-part reports; tests inject a sender and never contact DingTalk.
     if (i && sender === sendRobotMessage) await new Promise(resolve=>setTimeout(resolve,1000));
-    await sender(credentials,messages[i]);
+    await beforeDelivery?.();
+    if(sender===sendRobotMessage)await sendRobotMessage(credentials,messages[i],fetch,beforeDelivery);
+    else await sender(credentials,messages[i]);
     onAccepted?.(i+1);
   }
 }
@@ -72,8 +74,9 @@ export async function appAccessToken(credentials: Pick<RobotCredentials, "client
   return token;
 }
 
-export async function sendRobotMessage(credentials: RobotCredentials, message: string, fetcher: typeof fetch = fetch): Promise<string> {
+export async function sendRobotMessage(credentials: RobotCredentials, message: string, fetcher: typeof fetch = fetch, beforeDelivery?: () => Promise<void>): Promise<string> {
   const token = await appAccessToken(credentials, fetcher);
+  await beforeDelivery?.();
   // No automatic retries: an uncertain response could already have sent a message.
   const response = await fetcher("https://api.dingtalk.com/v1.0/robot/groupMessages/send", { method: "POST", headers: { "Content-Type": "application/json", "x-acs-dingtalk-access-token": token }, body: JSON.stringify({ robotCode: credentials.robotCode, openConversationId: credentials.openConversationId, msgKey: "sampleText", msgParam: JSON.stringify({ content: message }) }), signal: AbortSignal.timeout(15_000) });
   const data = await responseJson(response);

@@ -1,12 +1,19 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { assertSameOrigin, errorResponse } from '@/lib/auth';
+import { assertSameOrigin, currentContext, errorResponse } from '@/lib/auth';
 import { createSession, revokeSession, sessionCookie, verifyPassword } from '@/lib/local-session';
 import { sqlite } from '@/lib/sqlite.mjs';
+import { localLoginEnabled, legacyAccount, audit } from '@/lib/accounts';
+import { workspaceCookie } from '@/lib/auth';
+
+export async function GET(){
+  try{const {actor,target}=await currentContext();return NextResponse.json({account:{id:actor.id,name:actor.display_name,role:actor.role},workspace:{id:target.id,name:target.display_name},managing:actor.id!==target.id},{headers:{'Cache-Control':'no-store'}});}catch(e){return errorResponse(e);}
+}
 
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
+    if(!localLoginEnabled())return errorResponse(new Error('账号密码登录已关闭，请使用公司钉钉登录'),403);
     if (Number(request.headers.get('content-length') || 0) > 8192) return errorResponse(new Error('请求过大'),413);
     const data = await request.formData(), username = String(data.get('username') || ''), password = String(data.get('password') || '');
     const account = process.env.INVENTORY_USERNAME || 'admin', now = Date.now(), db = sqlite();
@@ -20,6 +27,8 @@ export async function POST(request: Request) {
     if (old) revokeSession(old);
     const response = NextResponse.redirect(new URL('/',process.env.INVENTORY_SITE_URL || request.url),303);
     response.cookies.set(sessionCookie,createSession(),{httpOnly:true,sameSite:'strict',secure:(process.env.INVENTORY_SITE_URL || request.url).startsWith('https:'),path:'/',maxAge:86400});
+    response.cookies.delete(workspaceCookie);
+    const actor=legacyAccount();audit(actor.id,actor.id,'login_local');
     return response;
   } catch(error) { return errorResponse(error); }
 }
@@ -28,6 +37,6 @@ export async function DELETE(request: Request) {
     assertSameOrigin(request);
     const token = (await cookies()).get(sessionCookie)?.value;
     if (token) revokeSession(token);
-    const response = NextResponse.json({ok:true}); response.cookies.delete(sessionCookie); return response;
+    const response = NextResponse.json({ok:true}); response.cookies.delete(sessionCookie);response.cookies.delete(workspaceCookie); return response;
   } catch(error) { return errorResponse(error); }
 }

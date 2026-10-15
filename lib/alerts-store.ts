@@ -1,3 +1,5 @@
+import { ensureOwnerAccess } from "./dingtalk-login";
+import { assertDelivery } from "./notification-guard";
 import { createHash } from "node:crypto";
 import { env } from "./runtime";
 import { allRows, requireWarehouse } from "./inventory-store";
@@ -87,6 +89,7 @@ export async function previewTurnoverAlert(owner: string, code: string, threshol
     messages,message:messages.length?messages.join("\n\n"):eligible.length?"符合预警的商品均已按名称排除，无需发送。":"当前没有符合周转预警条件的货品。"};
 }
 export async function notifyAfterSnapshot(owner: string, snapshotId: string, code: string, sender = sendRobotMessage) {
+  await ensureOwnerAccess(owner);
   const current=await settings(owner,code);
   if(!current.enabled || !current.robotConfigured)return;
   const preview=await previewTurnoverAlert(owner,code);
@@ -95,6 +98,7 @@ export async function notifyAfterSnapshot(owner: string, snapshotId: string, cod
   if(!preview.count){db.prepare("UPDATE warehouse_alert_settings SET last_result=? WHERE owner=? AND warehouse_code=? AND revision=?").run(preview.message,owner,code,current.revision);return;}
   let acceptedCount=0,uncertainCount=0,deferred=false;
   for(const group of current.groupState.groups.filter(g=>g.enabled)) {
+    await assertDelivery(owner,code,group.id,current.revision);
     const claimed=db.prepare(`INSERT OR IGNORE INTO turnover_group_deliveries
       (owner,client_id,robot_code,open_conversation_id,warehouse_code,date,snapshot_id,average_threshold,matching_count,state,attempted_at,rule_hash)
       SELECT ?,?,?,?,?,?,?,?,?,'sending',?,? WHERE EXISTS
@@ -119,7 +123,7 @@ export async function notifyAfterSnapshot(owner: string, snapshotId: string, cod
     db.prepare("UPDATE warehouse_alert_settings SET last_result=? WHERE owner=? AND warehouse_code=?").run(code+"：周转预警发送中",owner,code);
     try {
       const report=sender===sendRobotMessage?attachReportExport(owner,code,preview):preview;
-      await sendInventoryReport({clientId:scope[1],clientSecret:env.DINGTALK_CLIENT_SECRET!,robotCode:scope[2],openConversationId:group.id},report,sender);
+      await sendInventoryReport({clientId:scope[1],clientSecret:env.DINGTALK_CLIENT_SECRET!,robotCode:scope[2],openConversationId:group.id},report,sender,undefined,()=>assertDelivery(owner,code,group.id,current.revision));
       const accepted=new Date().toISOString();
       db.prepare("UPDATE turnover_group_deliveries SET state='accepted',accepted_at=? WHERE owner=? AND client_id=? AND robot_code=? AND open_conversation_id=? AND warehouse_code=? AND date=?").run(accepted,...scope,group.id,code,preview.date);
       db.prepare("UPDATE warehouse_alert_settings SET last_sent_at=? WHERE owner=? AND warehouse_code=?").run(accepted,owner,code);acceptedCount++;

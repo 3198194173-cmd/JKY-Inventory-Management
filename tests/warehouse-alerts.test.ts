@@ -123,12 +123,12 @@ test('Excel 保存发送时的商品和销售日期，下载令牌校验且过�
     }
     process.env.INVENTORY_SITE_URL='https://inventory.example.com';
     const exported=attachReportExport('per-warehouse','A',report),token=new URL(exported.cards[0].exportUrl!).pathname.split('/').at(-1)!;
-    const snapshot=readReportExport(token)!;assert.equal(snapshot.warehouseCode,'A');assert.deepEqual(snapshot.card.rows,report.cards[0].rows);
-    report.cards[0].rows[0].goodsName='changed';assert.notEqual(readReportExport(token)!.card.rows[0].goodsName,'changed');
-    assert.equal(readReportExport('invalid'),null);assert.equal(readReportExport(token.slice(0,42)+(token[42]==='a'?'b':'a')),null);
+    const snapshot=readReportExport(token,{owner:"per-warehouse"})!;assert.equal(snapshot.warehouseCode,'A');assert.deepEqual(snapshot.card.rows,report.cards[0].rows);
+    report.cards[0].rows[0].goodsName='changed';assert.notEqual(readReportExport(token,{owner:"per-warehouse"})!.card.rows[0].goodsName,'changed');
+    assert.equal(readReportExport(token),null);assert.equal(readReportExport(token,{owner:'another-owner'}),null);assert.equal(readReportExport('invalid',{owner:'per-warehouse'}),null);assert.equal(readReportExport(token.slice(0,42)+(token[42]==='a'?'b':'a')),null);
     const card=snapshot.card;card.rows[0].goodsNo='0000123';card.rows[0].goodsName='=HYPERLINK("https://example.com")';card.rows[0].quantity='9007199254740993.125';card.rows[0].sales[0]='-2';card.rows[0].sales[1]=null;
     const bytes=alertWorkbook(card);writeFileSync('.sites-runtime/tests/alert-export.xlsx',bytes);
     assert.equal(Buffer.from(bytes).readUInt32LE(),0x04034b50);
-    sqlite().prepare('UPDATE alert_report_exports SET expires_at=0').run();assert.equal(readReportExport(token),null);
+    sqlite().prepare('UPDATE alert_report_exports SET expires_at=0').run();assert.equal(readReportExport(token,{owner:"per-warehouse"}),null);
   } finally {if(previous===undefined)delete process.env.INVENTORY_SITE_URL;else process.env.INVENTORY_SITE_URL=previous;}
 });

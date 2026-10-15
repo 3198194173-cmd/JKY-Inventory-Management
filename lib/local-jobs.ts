@@ -1,8 +1,10 @@
+import { assertOwnerActive } from "./accounts";
 import { sqlite } from './sqlite.mjs';
 import { randomUUID } from 'node:crypto';
 import { shanghaiTimestamp } from './jackyun';
 
 export function enqueue(owner: string, code: string, trigger = 'manual') {
+  assertOwnerActive(owner);
   const db = sqlite(), now = new Date().toISOString();
   const id = randomUUID();
   db.prepare("INSERT OR IGNORE INTO local_jobs(id,owner,warehouse_code,trigger,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(id,owner,code,trigger,now,now);
@@ -15,6 +17,7 @@ export function workerActive() {
 export function enqueueDaily(local = shanghaiTimestamp()) {
   const db=sqlite(),date=local.slice(0,10);
   for (const t of db.prepare('SELECT owner,code,daily_time FROM warehouses WHERE schedule_enabled=1').all()) {
+    try{assertOwnerActive(String(t.owner));}catch{continue;}
     if (local.slice(11,16) < String(t.daily_time)) continue;
     const done=db.prepare('SELECT 1 FROM daily_slots WHERE owner=? AND warehouse_code=? AND date=?').get(t.owner,t.code,date);
     const attempts=db.prepare('SELECT COUNT(*) AS n,MAX(updated_at) AS last FROM local_jobs WHERE owner=? AND warehouse_code=? AND trigger=?').get(t.owner,t.code,`daily:${date}`)!;

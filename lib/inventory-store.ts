@@ -1,3 +1,4 @@
+import { accountByOwner, companyLoginEnabled, legacyOwner } from "./accounts";
 import { enrichTransit,transitOnlyGoods } from './transit-store';
 import { runtimeDatabase, env } from "./runtime";
 import { workerActive } from "./local-jobs";
@@ -25,7 +26,7 @@ const mapWarehouse = (w: WarehouseRecord): WarehouseInfo => ({ code: w.code, nam
 export async function loadWarehouses(owner: string): Promise<WarehouseInfo[]> {
   const db = database();
   let result = await db.prepare("SELECT * FROM warehouses WHERE owner = ? ORDER BY created_at, code").bind(owner).all<WarehouseRecord>();
-  if (!result.results.some(w => w.code === WAREHOUSE_CODE)) {
+  if ((!companyLoginEnabled() && !accountByOwner(owner) || owner===legacyOwner()) && !result.results.some(w => w.code === WAREHOUSE_CODE)) {
     await db.prepare("INSERT OR IGNORE INTO warehouses (owner, code, name, warehouse_id, created_at) VALUES (?, ?, ?, ?, ?)").bind(owner, WAREHOUSE_CODE, WAREHOUSE_NAME, "2391620541187785472", new Date().toISOString()).run();
     result = await db.prepare("SELECT * FROM warehouses WHERE owner = ? ORDER BY created_at, code").bind(owner).all<WarehouseRecord>();
   }
@@ -78,7 +79,7 @@ function analyzedEntry(row: EntryRecord, values: EntryRecord[], date: string, sa
 
 export async function loadInventory(owner: string, query: { source?: string; warehouseCode?: string; q?: string; filter?: string; days?: number; page?: number; pageSize?: number; sort?: string; sortDate?: string; compact?: boolean } = {}): Promise<InventoryView> {
   const config = serverConfig(), warehouses = await loadWarehouses(owner);
-  const warehouse = warehouses.find(w => w.code === (query.warehouseCode || WAREHOUSE_CODE));
+  const warehouse = warehouses.find(w => w.code === (query.warehouseCode || warehouses[0]?.code));
   if (!warehouse) throw new Error("仓库尚未添加");
   const days = [7,14,30].includes(query.days || 0) ? query.days! : 14;
   const requestedPage = Math.max(1, Math.floor(query.page || 1)), pageSize = [100,200,500,1000].includes(query.pageSize || 0) ? query.pageSize! : 100;

@@ -1,3 +1,5 @@
+import { assertOwnerActive } from "./accounts";
+import { ensureOwnerAccess } from "./dingtalk-login";
 import { acquireRun, completeInventoryRun, failRun, inboundRunProgress, publishSnapshot, requireWarehouse, updateRun } from "./inventory-store";
 import { reconcileWarehouseInbound } from "./inbound-store";
 import { collectWarehouseStock } from "./warehouse-collector";
@@ -5,19 +7,22 @@ import { serverConfig } from "./server-config";
 import { syncTransit } from './transit-store';
 
 export async function syncWarehouse(owner: string, code: string, trigger = "manual", existingRunId?: string) {
+  await ensureOwnerAccess(owner);
   const registered = await requireWarehouse(owner, code);
   const config = serverConfig();
   if (!config.configured) throw new Error("尚未配置吉客云 AppSecret，请先完成服务端配置");
   const id = existingRunId || await acquireRun(owner, code, trigger);
   try {
-    const result = await collectWarehouseStock(config.appkey, config.secret, code, (pages, records, goods) => updateRun(id, pages, records, goods), undefined, undefined, registered.warehouseId, true);
+    const result = await collectWarehouseStock(config.appkey, config.secret, code, (pages, records, goods) => {assertOwnerActive(owner);return updateRun(id, pages, records, goods); }, undefined, undefined, registered.warehouseId, true);
     const scope = {key:result.scope.key,label:result.scope.label,count:result.catalog.rows.length};
+    await ensureOwnerAccess(owner);
     const captured = await publishSnapshot(owner, id, result.rows, result.pageCount, result.recordCount, result.duplicateCount, scope, result.catalog, result.unavailable, true);
     let inboundMessage: string;
     try {
-      const inbound = await reconcileWarehouseInbound(owner, code, config.appkey, config.secret, (done,total,requests) => inboundRunProgress(id,done,total,requests), undefined, id);
+      const inbound = await reconcileWarehouseInbound(owner, code, config.appkey, config.secret, (done,total,requests) => {assertOwnerActive(owner);return inboundRunProgress(id,done,total,requests);}, undefined, id);
       inboundMessage = inbound.checked ? `仓库入库核验 ${inbound.windows} 个区间、${inbound.checked} 个货品区间：已核算 ${inbound.verified}，未解释 ${inbound.unresolved}，查询失败 ${inbound.failed}（详情中列出）` : "无需新增入库核验";
     } catch { inboundMessage = "库存已保存；入库核验未完成，请再次采集重试，未核验日期不计算销量"; }
+    assertOwnerActive(owner);
     const transitMessage=await syncTransit(owner,code,id,config.appkey,config.secret,async requests=>{
       const {database}=await import('./inventory-store');
       await database().prepare("UPDATE sync_runs SET last_progress_at=?,message=? WHERE id=? AND status='running'").bind(new Date().toISOString(),`库存已保存；正在核验申请在途，已请求 ${requests} 次`,id).run();

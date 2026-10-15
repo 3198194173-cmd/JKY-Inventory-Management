@@ -1,3 +1,5 @@
+import { assertOwnerActive } from './accounts';
+import { ensureOwnerAccess } from './dingtalk-login';
 import { randomUUID } from 'node:crypto';
 import { compareQuantity } from './decimal';
 import { sqlite } from './sqlite.mjs';
@@ -13,6 +15,7 @@ export function transitSnapshot(owner:string,code:string,snapshotId?:string):{re
 export const TRANSIT_CHECK_INTERVAL=60*60*1000;
 export const COMPLETION_MARK_LIFETIME=24*60*60*1000;
 export async function syncTransit(owner:string,code:string,snapshotId:string,appkey:string,secret:string,progress:(n:number)=>Promise<void>=async()=>{},collector=collectTransit,onlyIfDue=false){
+  await ensureOwnerAccess(owner);
   const db=sqlite(),token=randomUUID(),attempt=Date.now();
   // Share the lease with daily/manual collection, so the same warehouse cannot race.
   const claim=db.prepare(`INSERT INTO transit_checks VALUES(?,?,?,?,?)
@@ -28,6 +31,7 @@ export async function syncTransit(owner:string,code:string,snapshotId:string,app
   const tracked=new Map(prior?.documents.map(d=>[d.id,d])||[]);
   if(priorRecord?.status!=='complete')for(const doc of verified?.documents||[])if(isOutstanding(doc))tracked.set(doc.id,doc);
   function save(status:string,payload:TransitResult|null,error:string|null){
+    assertOwnerActive(owner);
     const capturedAt=new Date().toISOString();
     db.exec('BEGIN IMMEDIATE');
     try{
@@ -51,7 +55,7 @@ export async function syncTransit(owner:string,code:string,snapshotId:string,app
     }catch(error){db.exec('ROLLBACK');throw error;}
   }
   try{
-    const result=await collector(appkey,secret,code,[...tracked.values()],fetch,progress);
+    const result=await collector(appkey,secret,code,[...tracked.values()],fetch,async requests=>{assertOwnerActive(owner);await progress(requests);});
     const status=result.issues.length?'unresolved':'complete';save(status,result,result.issues.join('；')||null);
     return status==='complete'?`在途核验完成：${result.goods.filter(g=>g.quantity!=='0').length} 个商品`:`在途待核验：${result.issues.join('；')}`;
   }catch(error){

@@ -33,9 +33,9 @@ function DayAnalysis({ day }: { day: SalesCalendarDay }) {
     {!!correction?.records.length && <details className="sales-inbound-details"><summary>入库单据（{correction.records.length} 条）</summary><ul>{correction.records.map(r=><li key={r.recId}><div><strong>{r.typeName} · {quantity(r.quantity)}</strong><time>{time(r.inOutDate)}</time></div><span>单号：{r.documentNo}</span></li>)}</ul></details>}
   </section>;
 }
-export function SalesCalendar({ warehouseCode, goodsNo, initialMonth }: { warehouseCode:string;goodsNo:string;initialMonth:string }) {
+export function SalesCalendar({ warehouseCode, goodsNo, initialMonth, initialDate }: { warehouseCode:string;goodsNo:string;initialMonth:string;initialDate?:string }) {
   const [month,setMonth]=useState(initialMonth), [data,setData]=useState<SalesCalendarMonth|null>(null);
-  const [selected,setSelected]=useState<string|null>(null), [error,setError]=useState("");
+  const [selected,setSelected]=useState<string|null>(initialDate ?? null), [error,setError]=useState("");
   const [loading,setLoading]=useState(true),[retry,setRetry]=useState(0);
   useEffect(()=>{
     const controller=new AbortController();

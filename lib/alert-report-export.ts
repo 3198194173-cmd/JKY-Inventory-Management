@@ -23,9 +23,10 @@ export function attachReportExport<T extends {cards:TurnoverCard[]}>(owner:strin
     return {...card,exportUrl:`${base}/api/alerts/reports/${token}`};
   })};
 }
-export function readReportExport(token:string):{warehouseCode:string;card:TurnoverCard}|null {
+export function readReportExport(token:string,access?:{owner:string;admin?:boolean}):{owner:string;warehouseCode:string;card:TurnoverCard}|null {
+  if(!access)return null;
   if(!/^[A-Za-z0-9_-]{43}$/.test(token))return null;
-  const row=sqlite().prepare("SELECT warehouse_code,card_json FROM alert_report_exports WHERE token_hash=? AND expires_at>?")
-    .get(createHash("sha256").update(token).digest("hex"),Date.now()) as {warehouse_code:string;card_json:string}|undefined;
-  return row?{warehouseCode:row.warehouse_code,card:JSON.parse(row.card_json)}:null;
+  const row=sqlite().prepare("SELECT owner,warehouse_code,card_json FROM alert_report_exports WHERE token_hash=? AND expires_at>? AND (owner=? OR ?=1)")
+    .get(createHash("sha256").update(token).digest("hex"),Date.now(),access.owner,access.admin?1:0) as {owner:string;warehouse_code:string;card_json:string}|undefined;
+  return row?{owner:row.owner,warehouseCode:row.warehouse_code,card:JSON.parse(row.card_json)}:null;
 }

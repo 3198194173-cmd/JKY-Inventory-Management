@@ -1,4 +1,30 @@
-import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, primaryKey, uniqueIndex } from "drizzle-orm/sqlite-core";
+
+// Runtime applies 0017_company_accounts.sql additively; existing business owners remain stable.
+export const accounts = sqliteTable('accounts', {
+  id:text('id').primaryKey(),dataOwner:text('data_owner').notNull().unique(),provider:text('provider').notNull(),
+  corpId:text('corp_id'),dingtalkUserId:text('dingtalk_user_id'),unionId:text('union_id'),displayName:text('display_name').notNull(),avatarUrl:text('avatar_url').notNull().default(''),
+  role:text('role').notNull().default('member'),status:text('status').notNull().default('active'),memberState:text('member_state').notNull().default('unknown'),membershipCheckedAt:integer('membership_checked_at').notNull().default(0),
+  createdAt:text('created_at').notNull(),updatedAt:text('updated_at').notNull(),lastLoginAt:text('last_login_at'),
+},t=>[uniqueIndex('accounts_company_user').on(t.corpId,t.dingtalkUserId)]);
+export const accountSessions=sqliteTable('account_sessions',{
+  tokenHash:text('token_hash').primaryKey(),accountId:text('account_id').notNull().references(()=>accounts.id),expiresAt:integer('expires_at').notNull(),createdAt:integer('created_at').notNull(),
+},t=>[index('account_session_owner').on(t.accountId)]);
+export const loginTransactions=sqliteTable('login_transactions',{
+  stateHash:text('state_hash').primaryKey(),browserHash:text('browser_hash').notNull(),expiresAt:integer('expires_at').notNull(),returnTo:text('return_to').notNull(),
+});
+export const accountAudit=sqliteTable('account_audit',{
+  id:text('id').primaryKey(),actorId:text('actor_id').notNull(),targetId:text('target_id').notNull(),action:text('action').notNull(),detail:text('detail').notNull().default('{}'),createdAt:text('created_at').notNull(),
+},t=>[index('account_audit_time').on(t.createdAt)]);
+export const accountGroupGrants=sqliteTable('account_group_grants',{
+  dataOwner:text('data_owner').notNull().references(()=>accounts.dataOwner),clientId:text('client_id').notNull(),robotCode:text('robot_code').notNull(),openConversationId:text('open_conversation_id').notNull(),grantedBy:text('granted_by').notNull(),createdAt:text('created_at').notNull(),
+},t=>[primaryKey({columns:[t.dataOwner,t.clientId,t.robotCode,t.openConversationId]})]);
+export const enterpriseRobotGroups=sqliteTable('enterprise_robot_groups',{
+  clientId:text('client_id').notNull(),robotCode:text('robot_code').notNull(),openConversationId:text('open_conversation_id').notNull(),name:text('name').notNull().default(''),active:integer('active').notNull().default(1),lastSeenAt:text('last_seen_at').notNull(),
+},t=>[primaryKey({columns:[t.clientId,t.robotCode,t.openConversationId]})]);
+export const enterpriseRobotSync=sqliteTable('enterprise_robot_sync',{
+  clientId:text('client_id').notNull(),robotCode:text('robot_code').notNull(),lastSyncedAt:text('last_synced_at').notNull(),
+},t=>[primaryKey({columns:[t.clientId,t.robotCode]})]);
 
 export const runs = sqliteTable("sync_runs", {
   id: text("id").primaryKey(),

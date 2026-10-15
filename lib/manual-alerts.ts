@@ -1,3 +1,6 @@
+import { ensureOwnerAccess } from "./dingtalk-login";
+import { assertDelivery } from "./notification-guard";
+import { groupAllowed } from "./accounts";
 import { createHash } from "node:crypto";
 import { env } from "./runtime";
 import { sqlite } from "./sqlite.mjs";
@@ -35,6 +38,7 @@ function validateRequest(value: unknown): ManualAlertRequest {
 // A persisted request owns its send attempts, even if the HTTP connection is lost.
 // Replaying it returns progress/results and never retries an uncertain group.
 export async function sendManualAlert(owner: string, input: unknown, sender = sendRobotMessage): Promise<ManualAlertResult> {
+  await ensureOwnerAccess(owner);
   const request = validateRequest(input), db = sqlite(), scope = robotScope(owner);
   const hash = createHash("sha256").update(JSON.stringify(request)).digest("hex");
   const lookup = () => db.prepare("SELECT payload_hash,result,attempted_at FROM manual_alert_deliveries WHERE owner=? AND client_id=? AND robot_code=? AND request_id=?").get(...scope, request.requestId) as { payload_hash: string; result: string; attempted_at: number } | undefined;
@@ -88,7 +92,7 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
       JOIN warehouse_alert_settings a ON a.owner=s.owner AND a.warehouse_code=s.warehouse_code
       WHERE s.owner=? AND s.client_id=? AND s.robot_code=? AND s.warehouse_code=? AND s.open_conversation_id=? AND g.active=1 AND a.revision=?`)
       .get(...scope,request.warehouseCode,group.id,current.revision);
-    if (!selected || robotScope(owner).some((value, i) => value !== scope[i])) { group.state = "skipped"; persist(); continue; }
+    if (!selected || !groupAllowed(owner,group.id) || robotScope(owner).some((value, i) => value !== scope[i])) { group.state = "skipped"; persist(); continue; }
     // The worker may have claimed this same report while the dialog saved settings.
     // A manual claim is already persisted, so subsequent worker claims will skip it.
     const automatic = db.prepare(`SELECT state FROM turnover_group_deliveries
@@ -106,7 +110,7 @@ export async function sendManualAlert(owner: string, input: unknown, sender = se
     // Persist uncertainty before the external call: a crash cannot cause a retry.
     group.state = "unconfirmed"; persist();
     try {
-      await sendInventoryReport({ clientId: scope[1], clientSecret: secret, robotCode: scope[2], openConversationId: group.id }, sender===sendRobotMessage?attachReportExport(owner,request.warehouseCode,preview):preview, sender, parts=>{group.acceptedParts=parts;persist();});
+      await sendInventoryReport({ clientId: scope[1], clientSecret: secret, robotCode: scope[2], openConversationId: group.id }, sender===sendRobotMessage?attachReportExport(owner,request.warehouseCode,preview):preview, sender, parts=>{group.acceptedParts=parts;persist();},()=>assertDelivery(owner,request.warehouseCode,group.id,current.revision));
       group.state = "accepted";
       db.prepare("UPDATE warehouse_alert_settings SET last_sent_at=? WHERE owner=? AND warehouse_code=?").run(new Date().toISOString(), owner, request.warehouseCode);
     } catch (error) {

@@ -1,3 +1,4 @@
+import { ensureOwnerAccess } from "./dingtalk-login";
 import { createHash } from "node:crypto";
 import { sqlite } from "./sqlite.mjs";
 import { shanghaiTimestamp } from "./jackyun";
@@ -10,6 +11,7 @@ export async function sendDueAlerts(local = shanghaiTimestamp(), sender = sendRo
     WHERE a.enabled=1 AND a.notify_time<=? AND NOT EXISTS
     (SELECT 1 FROM local_jobs j WHERE j.owner=w.owner AND j.warehouse_code=w.code AND j.state IN ('queued','running'))`).all(local.slice(11,16)) as {owner:string;code:string}[];
   for (const target of targets) {
+    try{await ensureOwnerAccess(target.owner);}catch{continue;}
     const snapshot = db.prepare("SELECT id,captured_at FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND status='complete' AND coverage='auto:v1' ORDER BY captured_at DESC LIMIT 1").get(target.owner,target.code) as {id:string;captured_at:string} | undefined;
     // Never send yesterday's cached inventory as today's scheduled report.
     if (!snapshot || shanghaiTimestamp(new Date(snapshot.captured_at)).slice(0,10) !== date) continue;

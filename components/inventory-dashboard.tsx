@@ -1,6 +1,7 @@
 "use client";
+import { AccountBar, type AccountProfile } from "@/components/account-bar";
 import { INVENTORY_FIELD_HELP } from "@/lib/inventory-field-help";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDownToLine, ArrowDownUp, ArrowLeft, ArrowRight, BellRing, ChartNoAxesCombined, CircleHelp, Clock3, History, LoaderCircle, LogOut, Package, Plus, RefreshCw, Search, Settings2, Truck, Warehouse } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,39 +14,25 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@
 import { Pagination } from "@/components/ui/pagination";
 import type { InventoryView, RunInfo, WarehouseInfo } from "@/lib/inventory-types";
 import type { AlertSettings } from "@/lib/alerts-store";
-import type { InventoryMetrics } from "@/lib/inventory-metrics";
 import { compareQuantity } from "@/lib/decimal";
 import { TransitStatusBadge } from '@/components/transit-status-badge';
 import { TransitHistory } from '@/components/transit-history';
 import { SalesCalendar } from "@/components/sales-calendar";
 import { SalesTrend } from "@/components/sales-trend";
-import { reconciliationDiagnostic } from "@/lib/reconciliation-diagnostics";
 import { turnoverAlert } from "@/lib/turnover-alert";
+import { MetricValue, SalesValue, hasInbound, quantity } from "@/components/inventory-values";
+import { InventoryMobileList } from "@/components/inventory-mobile-list";
 
-const quantity = (value: string) => { const [a,b] = value.split("."); return a.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (b ? "." + b : ""); };
+const mobileQuery = "(max-width: 760px)";
+const subscribeMobile = (onChange: () => void) => {
+  const media = window.matchMedia(mobileQuery);
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
+};
+const getMobileSnapshot = () => window.matchMedia(mobileQuery).matches;
+const getServerMobileSnapshot = () => false;
+
 const time = (value: string) => new Date(value).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
-function MetricValue({ metrics, field, warningTitle }: { metrics?: InventoryMetrics; field: "average7" | "turnoverDays"; warningTitle?: string }) {
-  const value = metrics?.[field];
-  if (value != null) return <strong className={warningTitle ? "compact-turnover-warning" : undefined} aria-label={warningTitle ? `${quantity(value)}天，库存周转预警` : undefined} title={warningTitle || "全部可比较日期按仓库区间核验入库；仍为库存消耗估算，其他库存变动可能影响结果"}>{quantity(value)}</strong>;
-  const reason = metrics?.reason;
-  const label = reason === "inbound_unverified" ? "库存变动待核对" : reason === "no_consumption" ? "无净消耗" : reason === "net_returns" ? "净退货/回补" : reason === "negative_inventory" ? "库存为负" : "不足7天";
-  return <span className="compact-metric-empty" title={reason === "insufficient_data" || !metrics ? `最近7天仅有 ${metrics?.validDays || 0} 天可计算；缺日、缺货品或单位变化不补零` : label}><span className="compact-muted">—</span><small>{label}</small></span>;
-}
-function hasInbound(row: InventoryView["rows"][number], date: string) {
-  if (row.salesHints) return !!row.salesHints[date]?.hasInbound;
-  const correction=row.inbound?.[date];
-  return !!correction && (correction.hasPositiveInbound || correction.records.some(r=>compareQuantity(r.quantity,"0")>0) || (correction.inboundQuantity != null && compareQuantity(correction.inboundQuantity,"0")>0));
-}
-function SalesValue({ row, date }: { row: InventoryView["rows"][number]; date: string }) {
-  if (row.salesHints) {
-    const hint=row.salesHints[date],value=row.sales?.[date];
-    return <span className="compact-sales-value" title={hint?.title || "库存消耗估算；点击货品查看核算与单据"}>{value == null ? "—" : quantity(value)}{hint?.pendingLabel && <small className="compact-sales-note">{hint.pendingLabel}</small>}</span>;
-  }
-  const correction = row.inbound?.[date], value = row.sales?.[date];
-  const diagnostic = reconciliationDiagnostic(correction);
-  const pending = row.rawSales?.[date] != null && value == null;
-  return <span className="compact-sales-value" title={diagnostic?.message || correction?.error || (pending ? "该采集区间入库未核验；点击货品查看详情" : correction?.status === "verified" ? `原始差额 ${correction.rawDifference} + 入库 ${correction.inboundQuantity}；点击查看单据` : "库存差额估算")}>{value == null ? "—" : quantity(value)}{pending && <small className="compact-sales-note">{diagnostic?.increase ? `回补 ${quantity(diagnostic.increase)} · 待核对` : "待核验"}</small>}</span>;
-}
 async function apiJson<T>(response: Response): Promise<T> {
   const raw = await response.text();
   let data: { error?: string };
@@ -75,8 +62,9 @@ const InventoryRows = memo(function InventoryRows({view,dates,threshold,turnover
   const end=virtual ? Math.min(view.rows.length,Math.ceil((viewport.top+viewport.height)/ROW_HEIGHT)+OVERSCAN) : view.rows.length;
   return <>{start>0 && <TableRow aria-hidden="true" className="compact-spacer"><TableCell colSpan={8+dates.length} style={{height:start*ROW_HEIGHT}}/></TableRow>}{view.rows.slice(start,end).map((row,i)=><InventoryDataRow key={row.goodsNo} row={row} index={(view.page-1)*view.pageSize+start+i} dates={dates} threshold={threshold} turnoverDays={turnoverDays} onSelect={onSelect} onTransit={onTransit}/>)}{end<view.rows.length && <TableRow aria-hidden="true" className="compact-spacer"><TableCell colSpan={8+dates.length} style={{height:(view.rows.length-end)*ROW_HEIGHT}}/></TableRow>}</>;
 });
-export default function InventoryDashboard({ initial, initialAlerts }: { initial: InventoryView; initialAlerts: AlertSettings }) {
+export default function InventoryDashboard({ initial, initialAlerts, accountProfile }: { initial: InventoryView; initialAlerts: AlertSettings; accountProfile?: AccountProfile }) {
   const router = useRouter();
+  const isMobile = useSyncExternalStore(subscribeMobile, getMobileSnapshot, getServerMobileSnapshot);
   const [view,setView] = useState(initial), [code,setCode] = useState(initial.warehouseCode);
   const [warehouses,setWarehouses] = useState(initial.warehouses || []);
   const [search,setSearch] = useState(""), [query,setQuery] = useState(""), [days,setDays] = useState("14"), [page,setPage] = useState(1), [pageSize,setPageSize] = useState("100"), [sort,setSort] = useState("quantity_desc");
@@ -89,6 +77,8 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
   const openTransit=useCallback((goodsNo:string)=>{setTransitGoods(goodsNo);setTransitOpen(true);},[]);
   const [unavailableOpen,setUnavailableOpen] = useState(false);
   const [selected,setSelected] = useState<InventoryView["rows"][number] | null>(null);
+  const [selectedDate,setSelectedDate] = useState<string | undefined>();
+  const openProduct = useCallback((row: InventoryView["rows"][number], date?: string) => { setSelectedDate(date); setSelected(row); }, []);
   const [alerts,setAlerts] = useState<AlertSettings>(initialAlerts);
   const [collectionOpen,setCollectionOpen]=useState(false);
   const [ruleDraft,setRuleDraft]=useState<{average:string;days:string}|null>(null);
@@ -231,6 +221,7 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
         <Button variant="ghost" onClick={async () => { try { await apiJson(await fetch("/api/session", {method:"DELETE"})); router.replace("/login"); } catch(e) { setError(e instanceof Error ? e.message : "退出失败"); } }}><LogOut/>退出</Button>
       </div>
     </header>
+    {accountProfile && <AccountBar profile={accountProfile}/>}
     <section className="compact-panel" aria-label="仓库库存与销售分析">
       <div className="compact-toolbar">
         <div className="compact-warehouse"><Select value={code} onValueChange={v => v && changeWarehouse(v)} disabled={running}><SelectTrigger aria-label="选择仓库"><SelectValue>{code} · {active?.name || code}</SelectValue></SelectTrigger><SelectContent>{warehouses.map(w => <SelectItem key={w.code} value={w.code}>{w.code} · {w.name}</SelectItem>)}</SelectContent></Select><Button variant="outline" size="icon" aria-label="增加仓库" onClick={() => { setError(""); setAddOpen(true); }} disabled={running}><Plus/></Button></div>
@@ -259,15 +250,15 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
       {error && !addOpen && <p className="compact-feedback compact-error" role="alert">{error}</p>}{notice && <p className="compact-feedback" role="status">{notice}</p>}
       {!!view.unavailableSkus?.length && <div className="compact-feedback" role="status"><span>{view.unavailableSkus.length.toLocaleString()} 个 SKU 未取得可购库存，未计入库存及销售差额；</span><Button variant="link" onClick={() => setUnavailableOpen(true)}>查看未取得库存清单</Button></div>}
       {loading && <div className="compact-feedback" role="status">正在加载每页 {pageSize} 条，请稍候…</div>}
-      <div ref={tableWrap} className="compact-table-wrap" aria-busy={loading} role="region" aria-label="货品数据表，支持键盘滚动" tabIndex={0}>
+      {isMobile ? <InventoryMobileList key={`${code}:${view.snapshot?.id}:${query}:${days}:${view.page}:${view.pageSize}:${sort}:${sortDate}`} view={view} dates={dates} threshold={activeThreshold} turnoverDays={activeTurnoverDays} onSelect={openProduct} onTransit={openTransit} loading={loading} sort={sort} sortDate={sortDate} onSortDate={sortSales} onSync={sync} canSync={!syncing && view.configured}/> : <div ref={tableWrap} className="compact-table-wrap" aria-busy={loading} role="region" aria-label="货品数据表，支持键盘滚动" tabIndex={0}>
         <Table className="compact-table" aria-rowcount={view.totalRows+1} style={{minWidth: `${1280 + dates.length * 92}px`}}><TableHeader><TableRow><TableHead className="compact-index" title="当前筛选和排序结果中的货品序号">#</TableHead><TableHead className="compact-goods" title="来源：吉客云分仓库存查询（erp-stock.stock.skulist）；同一货品编码的规格汇总为一行">货品编码 / 名称</TableHead><TableHead className="compact-current" title="来源：erp-stock.stock.skulist 的可订购量 orderAbleQuantity，按货品汇总；展示上次采集快照，再次采集才更新。点击切换库存排序"><button type="button" onClick={() => { setSort(sort === "quantity_desc" ? "quantity_asc" : "quantity_desc"); setPage(1); }}>当前库存 {sort === "quantity_desc" ? "↓" : sort === "quantity_asc" ? "↑" : "↕"}</button></TableHead><TableHead className="compact-metric" title="最近7个完整日期的净销量总和÷7，包含负销量；净销量=期初库存+区间实际入库−期末库存。缺日或入库未核验时不计算；周转和补货使用未舍入均值">销售均值</TableHead><TableHead className="compact-trend" title="所选日期范围的每日净销量曲线；净销量=期初库存+区间实际入库−期末库存，缺失数据不补零">销售趋势</TableHead>{dates.map(date => <TableHead key={date} className="compact-date" title="净销量=期初库存+区间实际入库−期末库存；日期为采集区间起始日，实际入库来源：erp-busiorder.goodsdocin.search。缺失或未核验不补零；点击切换销量排序" aria-sort={sortDate === date && sort.startsWith("sales_") ? sort === "sales_desc" ? "descending" : "ascending" : "none"}><button type="button" className="compact-sales-sort" onClick={() => sortSales(date)} aria-label={`${date}销量，点击按${sortDate === date && sort === "sales_desc" ? "从小到大" : "从大到小"}排序`} title="净销量=期初库存+区间实际入库−期末库存；日期为采集区间起始日，实际入库来源：erp-busiorder.goodsdocin.search。缺失或未核验不补零；点击切换销量排序">{date.slice(5)} {sortDate === date && sort.startsWith("sales_") ? sort === "sales_desc" ? "↓" : "↑" : "↕"}</button></TableHead>)}<TableHead className="compact-turnover" title="当前库存÷近7天未舍入的销量均值，单位：天；负库存保留负周转，均值≤0或数据不足时不计算">库存周转</TableHead><TableHead className="compact-metric" title={INVENTORY_FIELD_HELP.transit}>在途数量</TableHead><TableHead className="compact-metric compact-replenishment" title={INVENTORY_FIELD_HELP.replenishment}>建议补货 / 30天</TableHead></TableRow></TableHeader>
-        <TableBody><InventoryRows view={view} dates={dates} threshold={activeThreshold} turnoverDays={activeTurnoverDays} onSelect={setSelected} onTransit={openTransit} scrollRef={tableWrap}/>
+        <TableBody><InventoryRows view={view} dates={dates} threshold={activeThreshold} turnoverDays={activeTurnoverDays} onSelect={openProduct} onTransit={openTransit} scrollRef={tableWrap}/>
         {!view.rows.length && <TableRow><TableCell colSpan={8 + dates.length}><div className="compact-empty"><Warehouse size={32}/><strong>{loading ? "正在读取仓库数据" : view.snapshot ? "没有符合条件的货品" : "从第一次库存采集开始"}</strong><p>{view.snapshot ? "可调整搜索条件。" : "自动获取该仓库 SKU 并采集可购数量，无需设置采集范围。"}</p>{!view.snapshot && <Button onClick={sync} disabled={syncing || loading || !view.configured}>{syncing ? "采集中…" : "采集库存"}</Button>}</div></TableCell></TableRow>}
         </TableBody></Table>
-      </div>
+      </div>}
       <footer className="compact-footer"><span>共 {view.totalRows.toLocaleString()} 个货品</span><Select value={String(view.pageSize)} onValueChange={v => { if(v && v !== pageSize) { setLoading(true); setPageSize(v); setPage(1); } }}><SelectTrigger aria-label="每页条数" disabled={loading}><SelectValue>每页 {view.pageSize} 条</SelectValue></SelectTrigger><SelectContent>{[100,200,500,1000].map(n => <SelectItem key={n} value={String(n)}>每页 {n} 条</SelectItem>)}</SelectContent></Select><Pagination className="compact-pagination"><Button variant="outline" size="icon" aria-label="上一页" disabled={view.page <= 1 || loading} onClick={() => setPage(view.page - 1)}><ArrowLeft/></Button><span>{view.page} / {totalPages}</span><Button variant="outline" size="icon" aria-label="下一页" disabled={view.page >= totalPages || loading} onClick={() => setPage(view.page + 1)}><ArrowRight/></Button></Pagination></footer>
     </section>
-    <details className="compact-footnote"><summary><CircleHelp size={14}/> 数据口径与标记说明<span>点击展开</span></summary><p><span className="compact-inbound-legend"/> 黄色表示该采集区间有入库，点击货品查看单据。点击日期列可切换销量升序/降序。销量为库存消耗估算：所有可比较商品按“上次库存 + 区间内实际入库 − 本次库存”核算。负值按退货/回补计入净销量。销量均值 = 近7天净销量总和 ÷ 7；周转 = 当前库存 ÷ 均值。均值为零或负数时不计算周转；缺日或入库未核验时不计算均值。</p></details>
+    <details className="compact-footnote"><summary><CircleHelp size={14}/> 数据口径与标记说明<span>点击展开</span></summary><p><span className="compact-inbound-legend"/> 黄色表示该采集区间有入库，点击货品查看单据。电脑点击日期列排序；手机点日期查看核算，用日期排序选择器切换销量升降序。销量为库存消耗估算：所有可比较商品按“上次库存 + 区间内实际入库 − 本次库存”核算。负值按退货/回补计入净销量。销量均值 = 近7天净销量总和 ÷ 7；周转 = 当前库存 ÷ 均值。均值为零或负数时不计算周转；缺日或入库未核验时不计算均值。</p></details>
     <TransitHistory key={code+'-'+transitGoods+'-'+transitOpen} code={code} goodsNo={transitGoods} open={transitOpen} onOpenChange={setTransitOpen}/>
     <Dialog open={addOpen} onOpenChange={setAddOpen}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>增加仓库</DialogTitle><DialogDescription>填入吉客云仓库编码。首次采集后自动识别仓库名称和 SKU。</DialogDescription></DialogHeader><form onSubmit={e => { e.preventDefault(); void add(); }}><label htmlFor="new-code">仓库编码</label><Input id="new-code" placeholder="例如 CK031" value={newCode} onChange={e => setNewCode(e.target.value)} required maxLength={50}/><label htmlFor="new-name">显示名称（可选）</label><Input id="new-name" placeholder="首次采集后同步官方名称" value={newName} onChange={e => setNewName(e.target.value)} maxLength={80}/><p>默认每日北京时间 08:00 采集。服务器启用定时任务后自动执行。</p>{error && <p role="alert" className="compact-error">{error}</p>}<Button type="submit" disabled={savingWarehouse}>{savingWarehouse ? "保存中…" : "增加仓库"}</Button></form></DialogContent></Dialog>
     <Dialog open={help} onOpenChange={setHelp}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>数据口径与自动采集</DialogTitle><DialogDescription>库存来自吉客云实时接口，销售量按你指定的库存差额计算。</DialogDescription></DialogHeader><div className="compact-help"><p><strong>采集流程</strong><br/>仓库编码 → erp.stockquantity.get 游标取得 SKU → erp-stock.stock.skulist 查询可购数量。无条码或条码查询未返回时，改用货品编码查询，再按 SKU 身份核验。</p><p><strong>当前库存</strong><br/>显示最近采集的已核验 orderAbleQuantity。未取得库存的规格保留清单、不填零；含缺失规格的货品不展示部分合计、不参与销售差额。接口失败时保留上次成功数据。</p><p><strong>每日销售</strong><br/>上次基准库存 + 区间内实际入库 − 本次基准库存，记在上次基准日期。按仓库及两次采集时间分页查询 erp-busiorder.goodsdocin.search（含归档记录），再按货品编码汇总，核验时间和单位。库存下降、持平或增加都核算入库。完整入库查询后允许销量为负，按退货/回补计入净销量及7天均值。查询失败、单位不匹配或入库合计为负需核对冲销时仍显示待核验，原始差额和单据保留在详情。每天设定时间后第一次成功采集为固定基准；手动刷新更新当前库存并核验本次采集区间，补查近30天未完成核验的每日区间。缺日不跨天计算。所有可比较日期均核验入库，仍属于消耗估算，不等同实际订单销量。</p><p><strong>每日自动采集（北京时间）</strong><br/>在“采集设置”中修改当前仓库的采集时间，在“预警”中修改该仓库的规则、接收群和发送时间。定时状态依据服务器后台心跳显示；未运行时请检查后台进程和定时配置。无需浏览器一直打开。</p></div></DialogContent></Dialog>
@@ -275,6 +266,6 @@ export default function InventoryDashboard({ initial, initialAlerts }: { initial
     <Dialog open={recordsOpen} onOpenChange={setRecordsOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 采集记录</DialogTitle><DialogDescription>仅显示当前仓库最近 20 次采集。</DialogDescription></DialogHeader><div className="compact-records">{runs.length ? runs.map(run => <div key={run.id}><strong>{run.status === "complete" ? "已完成" : run.status === "failed" ? "失败" : run.status === "queued" ? "排队中" : "采集中"}</strong><span>{time(run.startedAt)}</span><p>{run.message || `${run.pageCount} 页 · ${run.recordCount.toLocaleString()} 条记录`}</p></div>) : <p>暂无采集记录</p>}</div></DialogContent></Dialog>
     <AlertSettingsDialog key={code} open={alertsOpen} onOpenChange={setAlertsOpen} initial={alerts} warehouseCode={code} warehouseName={active?.name || code} onRulePreview={previewRules} onSaved={receiveAlerts}/>
     {collectionOpen && <CollectionSettingsDialog key={code} open={collectionOpen} onOpenChange={setCollectionOpen} warehouseCode={code} warehouseName={active?.name||code} dailyTime={active?.dailyTime||view.dailyTime||"08:00"} scheduleActive={!!view.scheduleActive} onSaved={schedule=>{setWarehouses(previous=>previous.map(w=>w.code===schedule.code?{...w,dailyTime:schedule.dailyTime}:w));setView(previous=>({...previous,dailyTime:schedule.dailyTime}));}}/>}
-    <Dialog open={!!selected} onOpenChange={v => { if(!v) setSelected(null); }}><DialogContent className="compact-dialog sales-calendar-dialog"><DialogHeader><DialogTitle>{selected?.goodsNo}</DialogTitle><DialogDescription>{selected?.goodsName}</DialogDescription></DialogHeader>{selected && <SalesCalendar key={`${code}:${selected.goodsNo}`} warehouseCode={code} goodsNo={selected.goodsNo} initialMonth={(view.snapshot?.date || dates[0] || new Date().toISOString().slice(0,10)).slice(0,7)}/>}</DialogContent></Dialog>
+    <Dialog open={!!selected} onOpenChange={v => { if(!v) setSelected(null); }}><DialogContent className="compact-dialog sales-calendar-dialog"><DialogHeader><DialogTitle>{selected?.goodsNo}</DialogTitle><DialogDescription>{selected?.goodsName}</DialogDescription></DialogHeader>{selected && <SalesCalendar key={`${code}:${selected.goodsNo}:${selectedDate || ""}`} warehouseCode={code} goodsNo={selected.goodsNo} initialDate={selectedDate} initialMonth={(selectedDate || view.snapshot?.date || dates[0] || new Date().toISOString().slice(0,10)).slice(0,7)}/>}</DialogContent></Dialog>
   </main>;
 }

@@ -48,7 +48,8 @@ try {
   r=await fetch(url+'/api/warehouses/schedule',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02',dailyTime:'00:00'})});assert.equal(r.ok,true);assert.equal((await r.json()).dailyTime,'00:00');
   r=await fetch(url+'/api/alerts?warehouseCode=CK031',{headers:{cookie}});const independent=await r.json();assert.equal(independent.notifyTime,'08:30');assert.equal(independent.turnoverDays,'30');assert.deepEqual(independent.excludedNameKeywords,[]);
   r=await fetch(url+'/api/alerts/export?warehouseCode=TEST02');assert.equal(r.ok,false);
-  r=await fetch(url+'/api/alerts/reports/not-a-token');assert.equal(r.status,404);
+  r=await fetch(url+'/api/alerts/reports/not-a-token',{redirect:'manual'});assert.equal(r.status,303,'未登录先要求登录');
+  r=await fetch(url+'/api/alerts/reports/not-a-token',{headers:{cookie}});assert.equal(r.status,404,'已登录仍校验令牌');
   r=await fetch(url+'/api/alerts',{method:'POST',headers,body:JSON.stringify({warehouseCode:'CK031',enabled:false,threshold:'0',notifyTime:'26:00'})});assert.equal(r.status,400,'非法自动预警时间不保存');
   r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});assert.equal(r.status,202);const queued=await r.json();
   r=await fetch(url+'/api/sync',{method:'POST',headers,body:JSON.stringify({warehouseCode:'TEST02'})});assert.equal((await r.json()).job.id,queued.job.id);
@@ -82,7 +83,7 @@ try {
   assert.equal(inventory.rows[0].metrics.average7,null);
   assert.equal(inventory.rows[0].metrics.reason,'insufficient_data');
   r=await fetch(url+'/',{headers:{cookie}});const pageHtml=await r.text();assert.equal(r.status,200);
-  assert.match(pageHtml,/>销量均值<\/th>/);assert.match(pageHtml,/>库存周转<\/th>/);assert.doesNotMatch(pageHtml,/<span>近7天 · 估算<\/span>|<span>天 · 估算<\/span>|<span>销售量<\/span>/);
+  assert.match(pageHtml,/>销售均值<\/th>/);assert.match(pageHtml,/>库存周转<\/th>/);assert.doesNotMatch(pageHtml,/<span>近7天 · 估算<\/span>|<span>天 · 估算<\/span>|<span>销售量<\/span>/);
   assert.doesNotMatch(pageHtml,/<th[^>]*>单位<\/th>/);
   // Seed a preceding fixed baseline, then let a real worker collection perform
   // its own signed (mock gateway) inbound lookup and persist the correction.

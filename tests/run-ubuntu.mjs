@@ -7,7 +7,8 @@ assert.doesNotMatch(readFileSync('build-node/worker.mjs','utf8'), /^import .* fr
 await build({entryPoints:['tests/ubuntu-store.test.ts'],outfile:'.sites-runtime/tests/ubuntu-store.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
 await build({entryPoints:['tests/warehouse-alerts.test.ts'],outfile:'.sites-runtime/tests/warehouse-alerts.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
 await build({entryPoints:['tests/transit.test.ts'],outfile:'.sites-runtime/tests/transit.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
-for(const args of [['--test','.sites-runtime/tests/transit.mjs'],['--test','.sites-runtime/tests/ubuntu-store.mjs'],['--test','.sites-runtime/tests/warehouse-alerts.mjs'],['tests/ubuntu-http.mjs']]) {
+await build({entryPoints:['tests/accounts.test.ts'],outfile:'.sites-runtime/tests/accounts.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
+for(const args of [['--test','.sites-runtime/tests/transit.mjs'],['--test','.sites-runtime/tests/ubuntu-store.mjs'],['--test','.sites-runtime/tests/warehouse-alerts.mjs'],['--test','.sites-runtime/tests/accounts.mjs'],['tests/ubuntu-http.mjs'],['tests/accounts-http.mjs']]) {
   const result=spawnSync(process.execPath,args,{stdio:'inherit'});
   if(result.status!==0)process.exit(result.status||1);
 }

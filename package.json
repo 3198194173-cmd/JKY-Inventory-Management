@@ -16,7 +16,8 @@
     "start:ubuntu": "next start",
     "worker": "node build-node/worker.mjs",
     "test": "node tests/run.mjs",
-    "test:ubuntu": "node tests/run-ubuntu.mjs"
+    "test:ubuntu": "node tests/run-ubuntu.mjs",
+    "test:accounts": "node tests/run-accounts.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

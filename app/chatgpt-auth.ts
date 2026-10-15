@@ -2,7 +2,8 @@ import { redirect } from "next/navigation";
 import { sessionUser } from "@/lib/local-session";
 export const getChatGPTUser = sessionUser;
 export async function requireChatGPTUser(_returnTo: string) {
-  const user = await sessionUser();
+  let user;
+  try { user = await sessionUser(); } catch { redirect("/login?error=membership"); }
   if (!user) redirect('/login');
   return user;
 }

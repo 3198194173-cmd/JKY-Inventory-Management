@@ -1,3 +1,4 @@
+import { ensureOwnerAccess } from '../lib/dingtalk-login';
 import { sqlite } from '../lib/sqlite.mjs';
 import { enqueueDaily } from '../lib/local-jobs';
 import { syncWarehouse } from '../lib/sync-warehouse';
@@ -51,9 +52,10 @@ try {
     if (scheduled && process.env.JACKYUN_APP_SECRET) enqueueDaily();
     checkAlerts();
     checkTransit();
-    active = db.prepare("UPDATE local_jobs SET state='running',updated_at=? WHERE id=(SELECT id FROM local_jobs WHERE state='queued' ORDER BY created_at LIMIT 1) RETURNING *").get(now()) as Job | undefined;
+    active = db.prepare("UPDATE local_jobs SET state='running',updated_at=? WHERE id=(SELECT q.id FROM local_jobs q WHERE q.state='queued' ORDER BY (SELECT MAX(p.updated_at) FROM local_jobs p WHERE p.owner=q.owner AND p.state<>'queued'),q.created_at LIMIT 1) RETURNING *").get(now()) as Job | undefined;
     if (active) {
       try {
+        await ensureOwnerAccess(active.owner);
         active.run_id = await acquireRun(active.owner,active.warehouse_code,active.trigger,active.id);
         db.prepare('UPDATE local_jobs SET run_id=? WHERE id=?').run(active.run_id,active.id);
         await syncWarehouse(active.owner,active.warehouse_code,active.trigger,active.run_id);
