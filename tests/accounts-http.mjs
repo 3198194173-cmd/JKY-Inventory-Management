@@ -99,6 +99,24 @@ try{
         await Promise.all([page.waitForResponse(r=>r.url().includes('/api/inventory?')&&r.ok()),button.click()]);assert.match(await button.innerText(),/↑/);
       }
       await page.screenshot({path:'outputs/inventory-desktop-sorting.png'});
+      const android=await browser.newContext({viewport:{width:360,height:800},isMobile:true,hasTouch:true,userAgent:'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36'});
+      try{
+        await android.addCookies([{name:'inventory_session',value:tokens.b,url}]);
+        const phone=await android.newPage();phone.on('pageerror',e=>errors.push(e.message));await phone.goto(url+'/');
+        // Emulate an older WebView ignoring individual CSS transforms. This must
+        // still center the real modal, rather than merely testing a mobile UA.
+        await phone.addStyleTag({content:'[data-slot="dialog-content"]{translate:none!important;scale:none!important;rotate:none!important}'});
+        for(const width of [360,412]){
+          await phone.setViewportSize({width,height:800});
+          for(const name of ['在途记录','采集记录']){
+            await phone.getByRole('button',{name,exact:true}).tap();const modal=phone.getByRole('dialog');await modal.waitFor();
+            const box=await modal.boundingBox();assert.ok(box.x>=0&&box.y>=0&&box.x+box.width<=width+1&&box.y+box.height<=801,`${name} 必须完整留在安卓视口内`);
+            assert.ok(Math.abs(box.x+box.width/2-width/2)<2,`${name} 水平居中`);
+            if(width===360)await phone.screenshot({path:`outputs/android-${name==='在途记录'?'transit':'records'}-dialog.png`});
+            await modal.getByRole('button',{name:'Close',exact:true}).tap();await modal.waitFor({state:'hidden'});
+          }
+        }
+      }finally{await android.close();}
       assert.deepEqual(errors,[]);
       console.log('PASS: 账户管理与登录页面桌面/390px浏览器检查，无脚本错误及横向溢出');
     }finally{await browser.close();}

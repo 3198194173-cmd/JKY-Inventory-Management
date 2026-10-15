@@ -1,4 +1,14 @@
 /* Mobile renders the same data as cards; the desktop table keeps its existing layout. */
+/* Use the established transform property: older Android WebViews ignore the
+   individual translate property emitted by Tailwind 4. Keep centering out of
+   animation keyframes so opening/closing cannot override the position. */
+.inventory-dialog-position{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:calc(100% - 32px);max-width:512px;max-height:calc(100vh - 32px);overflow:auto;min-width:0}
+@supports(height:100dvh){.inventory-dialog-position{max-height:calc(100dvh - 32px)}}
+@media(max-width:760px){
+  [data-slot="dialog-content"].inventory-dialog-position{width:calc(100% - 24px)!important;max-width:calc(100% - 24px)!important;max-height:calc(100vh - 24px);overflow-y:auto;box-sizing:border-box}
+  [data-slot="dialog-content"] [data-slot="dialog-close"]{min-width:36px;min-height:36px;display:grid;place-items:center}
+  @supports(height:100dvh){[data-slot="dialog-content"].inventory-dialog-position{max-height:calc(100dvh - 24px)}}
+}
 .compact-feedback-details{padding:0 18px;color:#73839a;font-size:12px;border-top:1px solid #edf1f6}
 .compact-feedback-details summary{cursor:pointer;min-height:40px;display:flex;align-items:center;gap:6px}
 .compact-feedback-details summary::before{content:'›';transition:transform .15s}
