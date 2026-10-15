@@ -1,13 +1,13 @@
 import { runtimeDatabase as db } from "./runtime";
 import { addQuantity, compareQuantity, subtractQuantity } from "./decimal";
-import { collectInbound, type InboundQuery, type InboundReconciliation } from "./inbound";
+import { collectInbound, collectInventoryMovements, type InboundQuery, type InboundReconciliation } from "./inbound";
 import { reconciliationDiagnostic } from "./reconciliation-diagnostics";
 import { nextDate } from "./daily-sales";
 
 type Pair = { date: string; goods_no: string; unit_name: string; before_id: string; after_id: string; start: string; end: string; before_quantity: string; after_quantity: string };
-type Stored = { query_scope: string; goods_no: string; date: string; raw_difference: string; opening_quantity: string; closing_quantity: string; inbound_quantity: string | null; corrected_quantity: string | null; status: InboundReconciliation["status"]; window_start: string; window_end: string; records: string; error: string | null; checked_at: string };
+type Stored = { query_scope: string; goods_no: string; date: string; raw_difference: string; opening_quantity: string; closing_quantity: string; inbound_quantity: string | null; transfer_outbound_quantity: string; transfer_outbound_records: string; corrected_quantity: string | null; status: InboundReconciliation["status"]; window_start: string; window_end: string; records: string; error: string | null; checked_at: string };
 function mapStored(r: Stored): InboundReconciliation {
-  const item: InboundReconciliation = { date: r.date, rawDifference: r.raw_difference, openingQuantity: r.opening_quantity, closingQuantity: r.closing_quantity, inboundQuantity: r.inbound_quantity, correctedQuantity: r.corrected_quantity, status: r.query_scope === "warehouse:v1" ? r.status : "failed", windowStart: r.window_start, windowEnd: r.window_end, records: JSON.parse(r.records), error: r.query_scope === "warehouse:v1" ? r.error : "旧记录仅核验单个货品，需重新进行仓库全量入库核验", checkedAt: r.checked_at };
+  const item: InboundReconciliation = { date: r.date, rawDifference: r.raw_difference, openingQuantity: r.opening_quantity, closingQuantity: r.closing_quantity, inboundQuantity: r.inbound_quantity, transferOutboundQuantity: r.transfer_outbound_quantity, transferOutboundRecords: JSON.parse(r.transfer_outbound_records), correctedQuantity: r.corrected_quantity, status: r.query_scope === "warehouse:v2" ? r.status : "failed", windowStart: r.window_start, windowEnd: r.window_end, records: JSON.parse(r.records), error: r.query_scope === "warehouse:v2" ? r.error : "历史记录尚未完成入库与调拨出库核验，请重新采集", checkedAt: r.checked_at };
   // Derive the precise explanation for old rows too; no recollection is needed.
   if (item.status !== "verified") item.error = reconciliationDiagnostic(item)?.message ?? item.error;
   return item;
@@ -53,30 +53,33 @@ export async function loadProvisionalInbound(owner: string, code: string, goodsN
       AND r.before_snapshot_id=json_extract(p.value,'$[0]') AND r.after_snapshot_id=json_extract(p.value,'$[1]')`)
     .bind(JSON.stringify(pairs),owner,code,goodsNo).all<Stored & {before_snapshot_id:string;after_snapshot_id:string;unit_name:string}>();
   const corrections=new Map(stored.results.map(r=>[JSON.stringify([r.before_snapshot_id,r.after_snapshot_id]),r]));
-  let total='0', error:string|null=null, checkedAt='';
+  let total='0', outboundTotal='0', error:string|null=null, checkedAt='';
   const records: InboundReconciliation['records']=[];
-  const ids=new Set<string>();
+  const outboundRecords: InboundReconciliation['records']=[];
+  const ids=new Set<string>(), outboundIds=new Set<string>();
   if(shots.length<2 || shots.length>1000 || shots[0]?.id!==before.id || shots.at(-1)?.id!==after.id) error='采集区间不完整，暂不能汇总当天销量';
   for(let i=1;i<shots.length && !error;i++) {
     const a=shots[i-1],b=shots[i],r=corrections.get(JSON.stringify([a.id,b.id]));
     if(a.unit_name!==before.unit_name || b.unit_name!==before.unit_name || a.quantity==null || b.quantity==null || b.captured_at<=a.captured_at) {error='区间缺少库存、单位变化或采集时间无法区分，暂不能汇总';break;}
-    if(!r || r.query_scope!=='warehouse:v1' || r.status!=='verified' || r.inbound_quantity==null || r.unit_name!==before.unit_name
+    if(!r || r.query_scope!=='warehouse:v2' || r.status!=='verified' || r.inbound_quantity==null || r.unit_name!==before.unit_name
       || r.opening_quantity!==a.quantity || r.closing_quantity!==b.quantity || r.raw_difference!==subtractQuantity(a.quantity,b.quantity)
-      || r.corrected_quantity!==addQuantity(r.raw_difference,r.inbound_quantity)) {error=r?.error || '部分采集区间入库尚未核验，等待采集核验完成';break;}
+      || r.corrected_quantity!==subtractQuantity(addQuantity(r.raw_difference,r.inbound_quantity),r.transfer_outbound_quantity)) {error=r?.error || '部分采集区间入库或调拨出库尚未核验，等待采集核验完成';break;}
     total=addQuantity(total,r.inbound_quantity);
+    outboundTotal=addQuantity(outboundTotal,r.transfer_outbound_quantity);
     const item=mapStored(r);
     for(const record of item.records) {if(ids.has(record.recId)){error='入库明细跨区间重复，暂不能汇总';break;}ids.add(record.recId);records.push(record);}
+    for(const record of item.transferOutboundRecords || []) {if(outboundIds.has(record.recId)){error='调拨出库明细跨区间重复，暂不能汇总';break;}outboundIds.add(record.recId);outboundRecords.push(record);}
     if(r.checked_at>checkedAt) checkedAt=r.checked_at;
   }
   const raw=subtractQuantity(before.quantity,after.quantity);
   return {date:before.date,rawDifference:raw,openingQuantity:before.quantity,closingQuantity:after.quantity,
-    inboundQuantity:error?null:total,correctedQuantity:error?null:addQuantity(raw,total),status:error?'failed':'verified',
+    inboundQuantity:error?null:total,transferOutboundQuantity:error?null:outboundTotal,transferOutboundRecords:outboundRecords,correctedQuantity:error?null:subtractQuantity(addQuantity(raw,total),outboundTotal),status:error?'failed':'verified',
     windowStart:before.captured_at,windowEnd:after.captured_at,records,error,checkedAt} satisfies InboundReconciliation;
 }
 
 export async function reconcileWarehouseInbound(owner: string, code: string, appkey: string, secret: string,
   progress: (done: number, total: number, requests?: number) => Promise<void>,
-  collector: (appkey: string, secret: string, query: InboundQuery, fetcher?: typeof fetch, onPage?: () => Promise<void>) => ReturnType<typeof collectInbound> = collectInbound, currentSnapshotId?: string) {
+  collector: (appkey: string, secret: string, query: InboundQuery, fetcher?: typeof fetch, onPage?: () => Promise<void>) => ReturnType<typeof collectInbound> = collectInventoryMovements, currentSnapshotId?: string) {
   // Preserve fixed daily intervals and also reconcile the last capture interval.
   const result = await db.prepare(`WITH latest AS (
     SELECT date FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND status='complete' AND coverage='auto:v1' ORDER BY captured_at DESC,id DESC LIMIT 1
@@ -89,7 +92,7 @@ export async function reconcileWarehouseInbound(owner: string, code: string, app
     FROM slots b JOIN slots a ON a.date=date(b.date,'+1 day')
     JOIN stock_entries e ON e.snapshot_id=b.id JOIN stock_entries f ON f.snapshot_id=a.id AND f.goods_no=e.goods_no AND f.unit_name=e.unit_name
     LEFT JOIN inbound_reconciliations r ON r.owner=? AND r.warehouse_code=? AND r.goods_no=e.goods_no AND r.before_snapshot_id=b.id AND r.after_snapshot_id=a.id
-    WHERE r.status IS NULL OR r.status<>'verified' OR r.query_scope<>'warehouse:v1' ORDER BY b.date DESC,e.goods_no`).bind(owner, code, owner, code, owner, code).all<Pair>();
+    WHERE r.status IS NULL OR r.status<>'verified' OR r.query_scope<>'warehouse:v2' ORDER BY b.date DESC,e.goods_no`).bind(owner, code, owner, code, owner, code).all<Pair>();
   if (currentSnapshotId) {
     // Manual captures outside the fixed daily slots get their own observed
     // interval. These details never enter daily sales, mean or turnover.
@@ -103,7 +106,7 @@ export async function reconcileWarehouseInbound(owner: string, code: string, app
       FROM previous b JOIN current a JOIN stock_entries e ON e.snapshot_id=b.id
       JOIN stock_entries f ON f.snapshot_id=a.id AND f.goods_no=e.goods_no AND f.unit_name=e.unit_name
       LEFT JOIN inbound_reconciliations r ON r.owner=? AND r.warehouse_code=? AND r.goods_no=e.goods_no AND r.before_snapshot_id=b.id AND r.after_snapshot_id=a.id
-      WHERE r.status IS NULL OR r.status<>'verified' OR r.query_scope<>'warehouse:v1'`).bind(currentSnapshotId,owner,code,owner,code).all<Pair>();
+      WHERE r.status IS NULL OR r.status<>'verified' OR r.query_scope<>'warehouse:v2'`).bind(currentSnapshotId,owner,code,owner,code).all<Pair>();
     result.results.push(...current.results);
   }
   // Group all comparable goods by snapshot interval. One warehouse query per
@@ -129,27 +132,33 @@ export async function reconcileWarehouseInbound(owner: string, code: string, app
     for (const record of inbound?.records || []) {
       const list = byGoods.get(record.goodsNo) || []; list.push(record); byGoods.set(record.goodsNo,list);
     }
+    const outboundByGoods = new Map<string, InboundReconciliation['records']>();
+    for (const record of inbound?.transferOutboundRecords || []) {
+      const list=outboundByGoods.get(record.goodsNo) || []; list.push(record); outboundByGoods.set(record.goodsNo,list);
+    }
     const statements = [];
     for (const p of pairs) {
       const raw = subtractQuantity(p.before_quantity, p.after_quantity);
       const records = byGoods.get(p.goods_no) || [];
+      const outboundRecords = outboundByGoods.get(p.goods_no) || [];
+      const outboundQuantity = outboundRecords.reduce((sum,r)=>addQuantity(sum,r.quantity),'0');
       let quantity: string | null = null, corrected: string | null = null;
       let status: InboundReconciliation["status"] = "failed", error = queryError;
       if (inbound) {
-        if (records.some(r => r.unitName !== p.unit_name)) error = "入库数量单位与库存单位不一致，未直接换算";
+        if ([...records,...outboundRecords].some(r => r.unitName !== p.unit_name)) error = "出入库数量单位与库存单位不一致，未直接换算";
         else {
           quantity = records.reduce((sum,r) => addQuantity(sum,r.quantity), "0");
-          corrected = addQuantity(raw, quantity);
+          corrected = subtractQuantity(addQuantity(raw, quantity),outboundQuantity);
           // Net sales include signed returns/backfill once the inbound query is complete.
-          status = compareQuantity(quantity,"0") >= 0 ? "verified" : "unresolved";
-          if (status === "unresolved") error = "入库合计为负，存在入库冲销明细，仍需核对";
+          status = compareQuantity(quantity,"0") >= 0 && compareQuantity(outboundQuantity,"0") >= 0 ? "verified" : "unresolved";
+          if (status === "unresolved") error = "入库或调拨出库合计为负，存在冲销明细，仍需核对";
         }
       }
       statements.push(db.prepare(`INSERT INTO inbound_reconciliations
-        (owner,warehouse_code,goods_no,date,before_snapshot_id,after_snapshot_id,unit_name,raw_difference,opening_quantity,closing_quantity,status,inbound_quantity,corrected_quantity,window_start,window_end,records,error,checked_at,query_scope)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner,warehouse_code,goods_no,before_snapshot_id,after_snapshot_id)
-        DO UPDATE SET status=excluded.status,inbound_quantity=excluded.inbound_quantity,corrected_quantity=excluded.corrected_quantity,records=excluded.records,error=excluded.error,checked_at=excluded.checked_at,query_scope=excluded.query_scope`)
-        .bind(owner,code,p.goods_no,p.date,p.before_id,p.after_id,p.unit_name,raw,p.before_quantity,p.after_quantity,status,quantity,corrected,p.start,p.end,JSON.stringify(records),error?.slice(0,300) ?? null,new Date().toISOString(),"warehouse:v1"));
+        (owner,warehouse_code,goods_no,date,before_snapshot_id,after_snapshot_id,unit_name,raw_difference,opening_quantity,closing_quantity,status,inbound_quantity,corrected_quantity,window_start,window_end,records,error,checked_at,query_scope,transfer_outbound_quantity,transfer_outbound_records)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner,warehouse_code,goods_no,before_snapshot_id,after_snapshot_id)
+        DO UPDATE SET status=excluded.status,inbound_quantity=excluded.inbound_quantity,corrected_quantity=excluded.corrected_quantity,records=excluded.records,error=excluded.error,checked_at=excluded.checked_at,query_scope=excluded.query_scope,transfer_outbound_quantity=excluded.transfer_outbound_quantity,transfer_outbound_records=excluded.transfer_outbound_records`)
+        .bind(owner,code,p.goods_no,p.date,p.before_id,p.after_id,p.unit_name,raw,p.before_quantity,p.after_quantity,status,quantity,corrected,p.start,p.end,JSON.stringify(records),error?.slice(0,300) ?? null,new Date().toISOString(),"warehouse:v2",outboundQuantity,JSON.stringify(outboundRecords)));
       if (status === "verified") verified++; else if (status === "unresolved") unresolved++; else failed++;
       checked++;
     }

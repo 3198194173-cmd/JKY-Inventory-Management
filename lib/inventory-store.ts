@@ -73,7 +73,7 @@ function analyzedEntry(row: EntryRecord, values: EntryRecord[], date: string, sa
     const hasInbound = !!r && (r.records.some(item=>compareQuantity(item.quantity,"0")>0) || (r.inboundQuantity != null && compareQuantity(r.inboundQuantity,"0")>0));
     if (!pending && !hasInbound && !(sales[day]?.startsWith("-"))) continue;
     const diagnostic = reconciliationDiagnostic(r);
-    salesHints[day] = {hasInbound,title:diagnostic?.message || r?.error || (pending ? "该采集区间入库未核验；点击货品查看详情" : `原始差额 ${r.rawDifference} + 入库 ${r.inboundQuantity}；点击查看单据`), ...(pending ? {pendingLabel:diagnostic?.increase ? `回补 ${diagnostic.increase} · 待核对` : "待核验"} : {})};
+    salesHints[day] = {hasInbound,title:diagnostic?.message || r?.error || (pending ? "该采集区间出入库未核验；点击货品查看详情" : `原始差额 ${r.rawDifference} + 入库 ${r.inboundQuantity} − 调拨出库 ${r.transferOutboundQuantity ?? '0'}；点击查看单据`), ...(pending ? {pendingLabel:diagnostic?.increase ? `回补 ${diagnostic.increase} · 待核对` : "待核验"} : {})};
   }
   return {...result,salesHints};
 }
@@ -126,7 +126,7 @@ export async function loadInventory(owner: string, query: { source?: string; war
       SELECT e.*, r.corrected_quantity AS sales_quantity FROM stock_entries e
       LEFT JOIN inbound_reconciliations r ON r.goods_no=e.goods_no AND r.unit_name=e.unit_name
         AND r.owner=? AND r.warehouse_code=? AND r.before_snapshot_id=? AND r.after_snapshot_id=?
-        AND r.status='verified' AND r.query_scope='warehouse:v1'
+        AND r.status='verified' AND r.query_scope='warehouse:v2'
     ) SELECT * FROM sortable WHERE ${where}
       ORDER BY (sales_quantity IS NULL) ASC,
         CASE WHEN sales_quantity LIKE '-%' THEN -1 WHEN sales_quantity='0' THEN 0 ELSE 1 END ${direction},

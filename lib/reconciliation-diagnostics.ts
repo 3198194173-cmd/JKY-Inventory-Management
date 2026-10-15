@@ -5,7 +5,11 @@ import type { InboundReconciliation } from "./inbound";
 export function reconciliationDiagnostic(item?: InboundReconciliation) {
   if (!item || item.status === "failed" || item.inboundQuantity == null || item.correctedQuantity == null) return null;
   const raw = subtractQuantity(item.openingQuantity, item.closingQuantity);
-  if (raw !== item.rawDifference || addQuantity(raw, item.inboundQuantity) !== item.correctedQuantity) return null;
+  if (raw !== item.rawDifference || subtractQuantity(addQuantity(raw, item.inboundQuantity),item.transferOutboundQuantity ?? '0') !== item.correctedQuantity) return null;
+  if (compareQuantity(item.transferOutboundQuantity ?? '0', '0') < 0) return {
+    kind: "outbound_reversal" as const, difference: item.correctedQuantity, increase: null,
+    message: `调拨出库合计为 ${item.transferOutboundQuantity}，存在冲销明细，需核对单据后确定销量。`,
+  };
   if (compareQuantity(item.inboundQuantity, "0") < 0) return {
     kind: "inbound_reversal" as const, difference: item.correctedQuantity, increase: null,
     message: `入库合计为 ${item.inboundQuantity}，存在负数入库/冲销明细，需核对单据后确定销量。`,

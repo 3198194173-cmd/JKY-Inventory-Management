@@ -141,6 +141,13 @@
       "when": 1792022400019,
       "tag": "0019_shared_alert_deliveries",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1792022400020,
+      "tag": "0020_transfer_outbound",
+      "breakpoints": true
     }
   ]
 }

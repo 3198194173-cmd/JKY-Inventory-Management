@@ -40,11 +40,11 @@ export function inventoryWorkbook(view:InventoryView,rows:(StockRow & {metrics?:
     ["采集日期",view.snapshot?.capturedAt||"未记录"],
     ["原始记录 / 汇总货品",`${view.snapshot?.recordCount||0} 条规格记录 / ${rows.length} 个货品；请求 ${view.snapshot?.pageCount||0} 页。`],
     ["库存口径","库存现有 = orderAbleQuantity（可订购量）；按 goodsNo 合并同单位规格，保留小数、负数与零。"],
-    ["网页销售口径","上次每日基准库存 + 两次采集区间内入库 − 本次每日基准库存，记在上次基准日期；按仓库和采集区间分页获取全部入库（含归档），按货品编码汇总；负销量按退货/回补计入净销量；未完成入库核验的日期不算销量。"],
+    ["网页销售口径","上次每日基准库存 + 两次采集区间内入库 − 调拨出库 − 本次每日基准库存，记在上次基准日期；按仓库和采集区间分页获取全部入库及202调拨出库（含归档），按货品编码汇总；负销量按退货/回补计入净销量；未完成出入库核验的日期不算销量。"],
     ["单位合计",Object.entries(view.totalsByUnit).map(([u,q])=>`${q} ${u}`).join("；")],
-    ["近7天销量均值","固定为最近采集日期之前7个完整日期的净销量总和÷7，包含负值退货/回补；缺日、缺货品、单位变化或入库未核验不计算。不随网页日期范围改变。"],
+    ["近7天销量均值","固定为最近采集日期之前7个完整日期的净销量总和÷7，包含负值退货/回补；缺日、缺货品、单位变化或出入库未核验不计算。不随网页日期范围改变。"],
     ["库存周转","当前库存÷近7天未四舍五入的均值；结果保留2位小数。均值为零或负数、数据不足或待核验入库时为空。负库存保留负周转。此值为预计库存可支撑天数。"],
-    ["指标性质","均值和周转为库存消耗估算；全部可比较日期已核验区间实际入库。销售出库、退货、调拨及可订购量变动仍可能影响结果，不等同准确订单销量或销售金额。"],
+    ["指标性质","均值和周转为库存消耗估算；全部可比较日期已核验区间实际入库并扣除调拨出库。销售出库、退货、其他非销售出库及可订购量变动仍可能影响结果，不等同准确订单销量或销售金额。"],
     ["在途与补货","在途仅统计调拨入库（inType=102），取已核验申请单剩余数量；部分入库保留剩余，完成/关闭单不计。仅（库存+在途）÷未舍入销售均值<30天时，补货=30×该均值−当前库存−在途数量，最低0，四舍五入为整数；达到30天为0；未核验或均值无效留空。只有在途、未取得库存的商品保留行，库存和补货留空。"],
     ["在途采集状态",`${view.transitStatus?.status||"未接入"} · ${view.transitStatus?.checkedAt||""} · ${view.transitStatus?.error||""}`],
     ["数值精度","数量超过 Excel 的 15 位有效数字限制时存为文本，以保留原始精度。"],
@@ -57,6 +57,8 @@ export function inventoryWorkbook(view:InventoryView,rows:(StockRow & {metrics?:
     for (const item of items) {
       notes.push([`入库核验 ${row.goodsNo} ${item.date}`, `${item.windowStart} ~ ${item.windowEnd} | 原始差额 ${item.rawDifference} | 入库 ${item.inboundQuantity ?? '未取得'} | 修正 ${item.status === 'verified' ? item.correctedQuantity : '待核验'} | ${item.error || item.status}`]);
       for (const record of item.records) notes.push([`入库单 ${record.documentNo}`, `${row.goodsNo} | ${record.typeName} | ${record.quantity} ${record.unitName} | ${record.inOutDate} | 明细 ${record.recId}`]);
+      notes.push([`调拨出库核验 ${row.goodsNo} ${item.date}`,`调拨出库 ${item.transferOutboundQuantity ?? '未取得'}；从库存消耗中扣除，不计销售`]);
+      for (const record of item.transferOutboundRecords || []) notes.push([`调拨出库单 ${record.documentNo}`,`${row.goodsNo} | ${record.quantity} ${record.unitName} | ${record.inOutDate} | 关联单 ${record.sourceBillNo || ''} | 明细 ${record.recId}`]);
     }
   }
   let noteData=`<row r="1">${cell("A1","采集项目",base.noteStyles.A1)}${cell("B1","说明",base.noteStyles.B1)}</row>`;

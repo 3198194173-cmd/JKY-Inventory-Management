@@ -25,7 +25,7 @@ export function turnoverCards(rows: InventoryView["rows"], threshold: string, wa
   return [{
     title: "库存周转预警",
     summary: `${warehouse.replace(/[\r\n\t]/g, " ")} · ${time} · 共 ${rows.length} 款`,
-    footer: `销售均值 > ${threshold} · 周转 < ${turnoverDays}天 · 净销量含退货，按库存与入库核算`,
+    footer: `销售均值 > ${threshold} · 周转 < ${turnoverDays}天 · 净销量含退货，按库存与出入库核算`,
     dates, totalCount: rows.length, part: 1, totalParts: 1,
     rows: rows.map(row => ({
       goodsNo: row.goodsNo, goodsName: row.goodsName, unitName: row.unitName, quantity: row.quantity, average: row.metrics?.average7 ?? "—", turnover: row.metrics?.turnoverDays ?? "—",

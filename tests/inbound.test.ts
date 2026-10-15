@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { collectInbound, inboundTime, type InboundReconciliation } from "../lib/inbound";
+import { collectInbound, collectInventoryMovements, inboundTime, type InboundReconciliation } from "../lib/inbound";
 import { reconciledSales, dailySales } from "../lib/daily-sales";
 import { inventoryMetrics } from "../lib/inventory-metrics";
 import { reconciliationDiagnostic } from "../lib/reconciliation-diagnostics";
@@ -8,6 +8,31 @@ import { reconciliationDiagnostic } from "../lib/reconciliation-diagnostics";
 const query = { warehouseCode: "CK031", goodsNo: "C.Q.CB.AP.00.0636", unitName: "Pcs", start: "2026-10-02T00:00:23.946Z", end: "2026-10-03T00:00:23.670Z" };
 const record = (id = "2267542", quantity = "500", date = "1790922543000") => ({ recId: id, docId: "1038047", goodsdocNo: "CRK202610022053", goodsNo: query.goodsNo, warehouseCode: query.warehouseCode, quantity, inOutDate: date, gmtCreate: date, skuBarcode: query.goodsNo, unitName: "Pcs", inouttypeName: "调拨入库" });
 const reply = (data: unknown) => Response.json({ code: 200, subCode: "0250000004", result: { data, noPrivilegeItem: null } });
+
+test('调拨出库仅查询202，核验仓库，分页归档去重并保留单据身份',async()=>{
+  const methods:string[]=[];
+  const result=await collectInventoryMovements('k','s',query,async(_url,options)=>{
+    const params=new URLSearchParams(String(options!.body)),method=params.get('method')!;
+    const input=JSON.parse(params.get('bizcontent')!);methods.push(method);
+    if(method.endsWith('goodsdocin.search'))return reply(input.pageIndex ? [] : [record()]);
+    assert.equal(input.inouttypes,'202');assert.equal(input.warehouseCode,'CK031');assert.equal(input.warehosueCode,'CK031');
+    return reply(input.pageIndex ? [] : [{...record('out','500'),inouttype:202,inouttypeName:'调拨出库',sourceBillNo:'DB202610090038'},
+      {...record('boundary','100',query.start),inouttype:202}, {...record('after','100',new Date(Date.parse(query.end)+1).toISOString()),inouttype:202}]);
+  });
+  assert.equal(result.quantity,'500');assert.equal(result.transferOutboundRecords!.length,1);
+  assert.equal(result.transferOutboundRecords![0].sourceBillNo,'DB202610090038');
+  assert.equal(methods.filter(m=>m.endsWith('goodsdocout.search')).length,4);
+  for(const change of [{inouttype:201},{warehouseCode:'OTHER'},{quantity:undefined}]){
+    await assert.rejects(collectInventoryMovements('k','s',query,async(_url,options)=>{
+      const params=new URLSearchParams(String(options!.body));
+      return reply(params.get('method')!.endsWith('goodsdocin.search') ? [] : [{...record(),inouttype:202,...change}]);
+    }),/调拨出库核验失败/);
+  }
+  await assert.rejects(collectInventoryMovements('k','s',query,async(_url,options)=>{
+    const params=new URLSearchParams(String(options!.body));
+    return params.get('method')!.endsWith('goodsdocin.search') ? reply([]) : Response.json({code:400,subCode:'0130020310'});
+  }),/调拨出库核验失败.*暂不确定销量/);
+});
 
 test("负库存与退货回补保留符号，完整入库核验后显示负净销量",()=>{
   const base: InboundReconciliation={date:"2026-10-02",rawDifference:"-151",openingQuantity:"-4",closingQuantity:"147",inboundQuantity:"150",correctedQuantity:"-1",status:"verified",windowStart:query.start,windowEnd:query.end,records:[],error:"旧的笼统提示",checkedAt:query.end};

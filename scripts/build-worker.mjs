@@ -3,3 +3,4 @@ import { build } from 'esbuild';
 // standalone/node_modules. Bundle it here as well so the deployed worker can
 // render cards; sharp stays external because it loads native binaries.
 await build({entryPoints:['scripts/worker.ts'],outfile:'build-node/worker.mjs',bundle:true,platform:'node',target:'node24',format:'esm',external:['sharp']});
+await build({entryPoints:['scripts/reconcile-movements.ts'],outfile:'build-node/reconcile-movements.mjs',bundle:true,platform:'node',target:'node24',format:'esm'});

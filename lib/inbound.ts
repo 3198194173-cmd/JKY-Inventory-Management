@@ -6,6 +6,7 @@ export type InboundRecord = {
   recId: string; docId: string; documentNo: string; goodsNo: string;
   warehouseCode: string; skuBarcode: string; quantity: string; unitName: string;
   inOutDate: string; createdAt: string | null; typeName: string;
+  sourceBillNo?: string;
 };
 export type InboundReconciliation = {
   date: string; rawDifference: string; inboundQuantity: string | null; correctedQuantity: string | null;
@@ -13,7 +14,10 @@ export type InboundReconciliation = {
   status: "verified" | "unresolved" | "failed";
   windowStart: string; windowEnd: string; records: InboundRecord[]; error: string | null; checkedAt: string;
   hasPositiveInbound?: boolean;
+  transferOutboundQuantity?: string | null;
+  transferOutboundRecords?: InboundRecord[];
 };
+export type InboundCollection = {quantity:string;records:InboundRecord[];transferOutboundRecords?:InboundRecord[]};
 export type InboundQuery = { warehouseCode: string; goodsNo?: string; unitName?: string; start: string; end: string };
 const COLS = "recId,docId,goodsdocNo,goodsNo,skuBarcode,warehouseCode,inOutDate,gmtCreate,quantity,unitName,inouttypeName";
 const PAGE_SIZE = 50;
@@ -29,7 +33,7 @@ export function inboundTime(value: unknown): string {
   return new Date(milliseconds).toISOString();
 }
 
-export async function collectInbound(appkey: string, secret: string, query: InboundQuery, fetcher: typeof fetch = fetch, onPage: () => Promise<void> = async () => {}) {
+export async function collectInbound(appkey: string, secret: string, query: InboundQuery, fetcher: typeof fetch = fetch, onPage: () => Promise<void> = async () => {}, direction: 'in'|'transfer-out' = 'in'): Promise<InboundCollection> {
   const start = Date.parse(query.start), end = Date.parse(query.end);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new ApiFailure("入库核验的采集时间范围无效");
   const records = new Map<string, InboundRecord>();
@@ -39,12 +43,13 @@ export async function collectInbound(appkey: string, secret: string, query: Inbo
     let ended = false;
     for (let pageIndex = 0; pageIndex < 2000; pageIndex++) {
       const bizcontent = JSON.stringify({ warehouseCode: query.warehouseCode, ...(query.goodsNo ? { goodsNo: query.goodsNo } : {}),
+        ...(direction==='transfer-out' ? {warehosueCode:query.warehouseCode,inouttypes:'202'} : {}),
         inOutDateStart: shanghaiTimestamp(new Date(Math.floor(start / 1000) * 1000)),
         inOutDateEnd: shanghaiTimestamp(new Date(Math.ceil(end / 1000) * 1000)),
-        archived, pageIndex, pageSize: PAGE_SIZE, cols: COLS });
+        archived, pageIndex, pageSize: PAGE_SIZE, cols: COLS+(direction==='transfer-out'?',inouttype,sourceBillNo':'') });
       let response: Response | undefined;
       for (let attempt = 0; attempt < 3; attempt++) {
-        const params = { appkey, bizcontent, contenttype: "json", method: "erp-busiorder.goodsdocin.search", timestamp: shanghaiTimestamp(), version: "v1.0" };
+        const params = { appkey, bizcontent, contenttype: "json", method: direction==='in'?'erp-busiorder.goodsdocin.search':'erp-busiorder.goodsdocout.search', timestamp: shanghaiTimestamp(), version: "v1.0" };
         try {
           response = await fetcher(GATEWAY, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }, body: new URLSearchParams({ ...params, sign: jackyunSign(params, secret) }), signal: AbortSignal.timeout(25_000) });
         } catch { response = undefined; }
@@ -66,6 +71,7 @@ export async function collectInbound(appkey: string, secret: string, query: Inbo
       for (const value of data) {
         if (!value || typeof value !== "object" || Array.isArray(value)) throw new ApiFailure("入库记录格式无效");
         const row = value as Record<string, unknown>;
+        if(direction==='transfer-out' && String(row.inouttype)!=='202') throw new ApiFailure('调拨出库接口返回非调拨类型，未采用本次结果');
         const goodsNo = String(row.goodsNo ?? "");
         if (String(row.warehouseCode ?? "") !== query.warehouseCode || !goodsNo || (query.goodsNo && goodsNo !== query.goodsNo)) throw new ApiFailure("入库接口返回其他仓库或无效货品，未采用本次结果");
         const recId = String(row.recId ?? "");
@@ -73,6 +79,7 @@ export async function collectInbound(appkey: string, secret: string, query: Inbo
         const record: InboundRecord = { recId, docId: String(row.docId ?? ""), documentNo: String(row.goodsdocNo), goodsNo,
           warehouseCode: query.warehouseCode, skuBarcode: String(row.skuBarcode ?? ""), quantity: normalizeQuantity(row.quantity), unitName: String(row.unitName ?? ""),
           inOutDate: inboundTime(row.inOutDate), createdAt: row.gmtCreate == null ? null : inboundTime(row.gmtCreate), typeName: String(row.inouttypeName ?? "入库") };
+        if(direction==='transfer-out') record.sourceBillNo=String(row.sourceBillNo??'');
         const previous = records.get(recId);
         if (previous && JSON.stringify(previous) !== JSON.stringify(record)) throw new ApiFailure("同一入库明细返回冲突数据，无法完成核验");
         if (!seen.has(recId)) { fresh++; seen.add(recId); }
@@ -89,4 +96,12 @@ export async function collectInbound(appkey: string, secret: string, query: Inbo
   const total = query.goodsNo ? selected.reduce((sum, row) => addQuantity(sum, row.quantity), "0") : "0";
   if (query.goodsNo && compareQuantity(total, "0") < 0) throw new ApiFailure("入库合计为负，需核对冲销记录");
   return { quantity: total, records: selected.sort((a,b) => a.inOutDate.localeCompare(b.inOutDate) || a.recId.localeCompare(b.recId)) };
+}
+
+export async function collectInventoryMovements(appkey:string,secret:string,query:InboundQuery,fetcher:typeof fetch=fetch,onPage:()=>Promise<void>=async()=>{}):Promise<InboundCollection>{
+  const inbound=await collectInbound(appkey,secret,query,fetcher,onPage);
+  try{
+    const outbound=await collectInbound(appkey,secret,query,fetcher,onPage,'transfer-out');
+    return {...inbound,transferOutboundRecords:outbound.records};
+  }catch(error){throw new ApiFailure(`调拨出库核验失败：${error instanceof Error?error.message:'接口查询失败'}；暂不确定销量`);}
 }

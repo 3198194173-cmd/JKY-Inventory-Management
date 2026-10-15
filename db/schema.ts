@@ -190,6 +190,8 @@ export const inboundReconciliations = sqliteTable("inbound_reconciliations", {
   closingQuantity: text("closing_quantity").notNull(),
   status: text("status").notNull(),
   inboundQuantity: text("inbound_quantity"),
+  transferOutboundQuantity: text("transfer_outbound_quantity").notNull().default("0"),
+  transferOutboundRecords: text("transfer_outbound_records").notNull().default("[]"),
   correctedQuantity: text("corrected_quantity"),
   windowStart: text("window_start").notNull(),
   windowEnd: text("window_end").notNull(),

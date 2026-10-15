@@ -55,7 +55,7 @@ function ProductCard({ row, index, dates, threshold, turnoverDays, onSelect, onT
 export function InventoryMobileList({ view, dates, threshold, turnoverDays, loading, onSelect, onTransit, onSync, canSync }: Props) {
   const [limit, setLimit] = useState(20);
   const shown = Math.min(limit, view.rows.length);
-  const help = [["当前库存", INVENTORY_FIELD_HELP.quantity], ["销售均值", INVENTORY_FIELD_HELP.average], ["每日销量", "净销量=期初库存+区间实际入库−期末库存；实际入库来源 erp-busiorder.goodsdocin.search。日期为采集区间起始日，负值按退货/回补；缺失或未核验显示—。黄色日期格表示有入库，点日期查看计算与单据。"], ["库存周转", INVENTORY_FIELD_HELP.turnover], ["在途数量", INVENTORY_FIELD_HELP.transit], ["建议补货 / 30天", INVENTORY_FIELD_HELP.replenishment]];
+  const help = [["当前库存", INVENTORY_FIELD_HELP.quantity], ["销售均值", INVENTORY_FIELD_HELP.average], ["每日销量", "净销量=期初库存+区间实际入库−调拨出库−期末库存；实际入库来源 erp-busiorder.goodsdocin.search，调拨出库来源 erp-busiorder.goodsdocout.search（202）。日期为采集区间起始日，负值按退货/回补；缺失或未核验显示—。黄色日期格表示有入库，点日期查看计算与单据。"], ["库存周转", INVENTORY_FIELD_HELP.turnover], ["在途数量", INVENTORY_FIELD_HELP.transit], ["建议补货 / 30天", INVENTORY_FIELD_HELP.replenishment]];
   return <div className="inventory-mobile" aria-label="手机货品列表" aria-busy={loading}>
     <details className="inventory-mobile-help"><summary><CircleHelp size={15}/>指标与计算说明</summary><dl>{help.map(([label, description]) => <div key={label}><dt>{label}</dt><dd>{description}</dd></div>)}</dl></details>
     {!!view.rows.length && <p className="inventory-mobile-count">本页已显示 {shown} / {view.rows.length} 件<span>概览统计按整页计算</span></p>}

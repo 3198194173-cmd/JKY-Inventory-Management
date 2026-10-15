@@ -18,12 +18,14 @@ function DayAnalysis({ day }: { day: SalesCalendarDay }) {
   const negativeStock=(day.openingQuantity != null && compareQuantity(day.openingQuantity,"0")<0) || (day.closingQuantity != null && compareQuantity(day.closingQuantity,"0")<0);
   const signedTerm=(value:string)=>compareQuantity(value,"0")<0 ? `(${quantity(value)})` : quantity(value);
   const hasQuantity=inbound != null && compareQuantity(inbound,"0")!==0;
+  const outbound=correction?.transferOutboundQuantity;
+  const hasOutbound=outbound != null && compareQuantity(outbound,"0")!==0;
   return <section className={`sales-analysis ${hasInbound(day) ? "sales-analysis-inbound" : ""}`} aria-label={`${day.date}销量分析`}>
     <header><h3>{day.date} · {day.provisional ? "临时销量" : "销量分析"}</h3><strong>{verified ? quantity(day.sales!) : day.openingQuantity == null || day.closingQuantity == null ? "暂无数据" : "待核验"}</strong></header>
     {day.provisional && <p className="sales-provisional-note">截至最新采集；次日每日基准采集后定稿。临时值不计入近7天均值。</p>}
     {day.openingQuantity != null && day.closingQuantity != null && <div className="sales-equation" aria-label="销量计算公式">
-      <p className="sales-equation-labels">期初库存{hasQuantity ? " + 区间入库" : ""} − 期末库存 = {!verified && diagnostic ? "核算差额（销量待核对）" : "销售数"}</p>
-      <p className="sales-equation-values"><span>{quantity(day.openingQuantity)}</span>{hasQuantity && <><b>+</b><span className="sales-equation-inbound">{signedTerm(inbound!)}</span></>}<b>−</b><span>{signedTerm(day.closingQuantity)}</span><b>=</b><strong className={!verified && diagnostic ? "sales-equation-unresolved" : undefined}>{verified ? quantity(day.sales!) : diagnostic ? quantity(diagnostic.difference) : "—"}</strong></p>
+      <p className="sales-equation-labels">期初库存{hasQuantity ? " + 区间入库" : ""}{hasOutbound ? " − 调拨出库" : ""} − 期末库存 = {!verified && diagnostic ? "核算差额（销量待核对）" : "销售数"}</p>
+      <p className="sales-equation-values"><span>{quantity(day.openingQuantity)}</span>{hasQuantity && <><b>+</b><span className="sales-equation-inbound">{signedTerm(inbound!)}</span></>}{hasOutbound && <><b>−</b><span>{signedTerm(outbound!)}</span></>}<b>−</b><span>{signedTerm(day.closingQuantity)}</span><b>=</b><strong className={!verified && diagnostic ? "sales-equation-unresolved" : undefined}>{verified ? quantity(day.sales!) : diagnostic ? quantity(diagnostic.difference) : "—"}</strong></p>
     </div>}
     {!verified && diagnostic?.increase && <p className="sales-analysis-residual">未解释回补 <strong>{quantity(diagnostic.increase)}</strong></p>}
     {day.windowStart && day.windowEnd && <p className="sales-analysis-time">北京时间 {time(day.windowStart)} → {time(day.windowEnd)}</p>}
@@ -31,6 +33,7 @@ function DayAnalysis({ day }: { day: SalesCalendarDay }) {
     {verified && diagnostic?.kind === "net_return" && <p className="sales-analysis-time">{diagnostic.message}</p>}
     {negativeStock && <p className="sales-analysis-time sales-negative-stock-note">负库存按原始带符号数量核算；有补货时会先抵扣负数，不重复扣减、不取绝对值。</p>}
     {!!correction?.records.length && <details className="sales-inbound-details"><summary>入库单据（{correction.records.length} 条）</summary><ul>{correction.records.map(r=><li key={r.recId}><div><strong>{r.typeName} · {quantity(r.quantity)}</strong><time>{time(r.inOutDate)}</time></div><span>单号：{r.documentNo}</span></li>)}</ul></details>}
+    {!!correction?.transferOutboundRecords?.length && <details className="sales-inbound-details" open><summary>调拨出库单据（{correction.transferOutboundRecords.length} 条，不计销售）</summary><ul>{correction.transferOutboundRecords.map(r=><li key={r.recId}><div><strong>{r.typeName} · {quantity(r.quantity)}</strong><time>{time(r.inOutDate)}</time></div><span>单号：{r.documentNo}</span>{r.sourceBillNo && <span>关联单号：{r.sourceBillNo}</span>}</li>)}</ul></details>}
   </section>;
 }
 export function SalesCalendar({ warehouseCode, goodsNo, initialMonth, initialDate }: { warehouseCode:string;goodsNo:string;initialMonth:string;initialDate?:string }) {

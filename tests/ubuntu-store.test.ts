@@ -20,6 +20,39 @@ import { sendDueAlerts } from '../lib/scheduled-alerts';
 mkdirSync('.sites-runtime/tests',{recursive:true});
 process.env.INVENTORY_DB_PATH=resolve(`.sites-runtime/tests/store-${Date.now()}.sqlite`);
 
+test('XB75调拨出库1000不计销量；旧核验重算、均值及临时区间同步修正',async()=>{
+  const db=sqlite(),owner='transfer-owner',code='OUT01',goods='B.Q.CB.AP.PC.XB75';
+  await addWarehouse(owner,code,'调拨核验测试');
+  const shot=db.prepare("INSERT INTO stock_snapshots (id,owner,date,captured_at,status,page_count,record_count,goods_count,totals,zero_count,negative_count,warehouse_code,coverage) VALUES(?,?,?,?,'complete',1,1,1,'{}',0,0,?,'auto:v1')");
+  const entry=db.prepare("INSERT INTO stock_entries VALUES(?,?,'测试商品','Pcs',?,1,1)");
+  for(let d=8;d<=15;d++){
+    const date=`2026-10-${String(d).padStart(2,'0')}`,id='transfer-'+date;
+    shot.run(id,owner,date,date+'T00:00:35Z',code);entry.run(id,goods,'1000');
+    db.prepare('INSERT INTO daily_slots VALUES(?,?,?,?)').run(owner,code,date,id);
+  }
+  const incoming:InboundRecord={recId:'in1000',docId:'in',documentNo:'CRK202610099692',goodsNo:goods,warehouseCode:code,skuBarcode:goods,quantity:'1000',unitName:'Pcs',inOutDate:'2026-10-09T11:01:39Z',createdAt:null,typeName:'调拨入库'};
+  const outgoing:InboundRecord={...incoming,recId:'out1000',documentNo:'CRK202610099698',typeName:'调拨出库',inOutDate:'2026-10-09T11:03:22Z',sourceBillNo:'DB202610090038'};
+  const within=(r:InboundRecord,q:InboundQuery)=>Date.parse(r.inOutDate)>Date.parse(q.start)&&Date.parse(r.inOutDate)<=Date.parse(q.end);
+  await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async(_k,_s,q)=>({quantity:'0',records:within(incoming,q)?[incoming]:[]}));
+  db.prepare("UPDATE inbound_reconciliations SET query_scope='warehouse:v1' WHERE owner=? AND date='2026-10-09'").run(owner);
+  assert.equal((await loadInventory(owner,{warehouseCode:code})).rows[0].metrics!.average7,null,'旧口径不继续产生错误预警');
+  const corrected=await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async(_k,_s,q)=>({quantity:'0',records:within(incoming,q)?[incoming]:[],transferOutboundRecords:within(outgoing,q)?[outgoing]:[]}));
+  assert.equal(corrected.checked,1);
+  const view=await loadInventory(owner,{warehouseCode:code}),row=view.rows[0];
+  assert.equal(row.sales!['2026-10-09'],'0');assert.equal(row.metrics!.average7,'0');assert.equal(row.metrics!.turnoverDays,null);
+  const day=(await loadSalesCalendar(owner,code,goods,'2026-10')).days[8];
+  assert.equal(day.correction!.transferOutboundQuantity,'1000');assert.equal(day.correction!.transferOutboundRecords![0].documentNo,'CRK202610099698');
+  assert.equal(db.prepare("SELECT quantity FROM stock_entries WHERE snapshot_id='transfer-2026-10-10' AND goods_no=?").get(goods)!.quantity,'1000');
+  assert.match(new TextDecoder().decode(inventoryWorkbook(view,view.rows)),/CRK202610099698/);
+  for(let i=1;i<=2;i++){
+    const id='transfer-manual-'+i,date='2026-10-15',time=`2026-10-15T0${i}:00:35Z`;
+    shot.run(id,owner,date,time,code);entry.run(id,goods,String(1000-i*100));
+    await reconcileWarehouseInbound(owner,code,'k','s',async()=>{},async()=>({quantity:'0',records:[],transferOutboundRecords:[{...outgoing,recId:id,quantity:'100',inOutDate:time}]}),id);
+  }
+  const provisional=(await loadSalesCalendar(owner,code,goods,'2026-10')).days[14];
+  assert.equal(provisional.sales,'0');assert.equal(provisional.correction!.transferOutboundQuantity,'200');assert.equal(provisional.correction!.transferOutboundRecords!.length,2);
+});
+
 test('周转均值门槛默认3，独立保存、旧调用保留设置且按用户隔离',async()=>{
   const owner='turnover-alert-owner',db=sqlite();
   assert.equal((await settings(owner)).turnoverAverageThreshold,'3');
@@ -366,7 +399,7 @@ test('销量月历读取历史月份、月末闭合基准及用户隔离，不�
   snapshot.run('calendar-manual',owner,'2026-10-31','2026-10-31T10:00:00Z',code);
   db.prepare("INSERT INTO stock_entries VALUES('calendar-manual','CAL-GOODS','历史货品','Pcs','999',1,1)").run();
   for(const [date,next,opening,closing,inbound,sales] of [['2026-09-30','2026-10-01','30','28','0','2'],['2026-10-01','2026-10-02','28','527','500','1'],['2026-10-31','2026-11-01','40','35','0','5']]) {
-    db.prepare("INSERT INTO inbound_reconciliations (owner,warehouse_code,goods_no,date,before_snapshot_id,after_snapshot_id,unit_name,raw_difference,opening_quantity,closing_quantity,status,inbound_quantity,corrected_quantity,window_start,window_end,checked_at,query_scope) VALUES(?,?,'CAL-GOODS',?,?,?,'Pcs',?,?,?,'verified',?,?,?,?,?,'warehouse:v1')")
+    db.prepare("INSERT INTO inbound_reconciliations (owner,warehouse_code,goods_no,date,before_snapshot_id,after_snapshot_id,unit_name,raw_difference,opening_quantity,closing_quantity,status,inbound_quantity,corrected_quantity,window_start,window_end,checked_at,query_scope) VALUES(?,?,'CAL-GOODS',?,?,?,'Pcs',?,?,?,'verified',?,?,?,?,?,'warehouse:v2')")
       .run(owner,code,date,'calendar-'+date,'calendar-'+next,date==='2026-10-01'?'-499':sales,opening,closing,inbound,sales,date+'T00:00:23Z',next+'T00:00:23Z',next+'T00:00:23Z');
   }
   assert.equal((await loadInventory(owner,{warehouseCode:code})).salesDates!.includes('2026-10-01'),false,'主表只展示近期');
@@ -387,7 +420,7 @@ test('销量月历读取历史月份、月末闭合基准及用户隔离，不�
 
 test('本地数据库迁移、事务回滚、队列去重与多仓库快照隔离',async()=>{
   const db=sqlite();
-  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,20);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM local_migrations').get()!.n,21);
   const plan=db.prepare("EXPLAIN QUERY PLAN SELECT id FROM stock_snapshots WHERE owner=? AND warehouse_code=? AND coverage='auto:v1' AND status='complete' ORDER BY captured_at DESC,id DESC LIMIT 1").all('test-owner','TEST01');
   assert.ok(plan.some((r:{detail:string})=>r.detail.includes('idx_snapshots_warehouse_latest')));assert.ok(plan.every((r:{detail:string})=>!r.detail.includes('TEMP B-TREE')));
   await addWarehouse('test-owner','TEST01','测试仓');

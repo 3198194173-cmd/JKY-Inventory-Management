@@ -125,7 +125,7 @@ try {
     for(const [goods,before] of [['Z-SALE','2'],['M-PENDING','3']]) {
       for(const id of ['http-inbound-before',inventory.snapshot.id,reconciled.snapshot.id])db.prepare('INSERT INTO stock_entries VALUES(?,?,?,?,?,1,1)').run(id,goods,'排序测试','Pcs',id==='http-inbound-before'?before:'0');
     }
-    db.prepare("INSERT INTO inbound_reconciliations (owner,warehouse_code,goods_no,date,before_snapshot_id,after_snapshot_id,unit_name,raw_difference,opening_quantity,closing_quantity,status,inbound_quantity,corrected_quantity,window_start,window_end,checked_at,query_scope) VALUES('http-test','TEST02','Z-SALE',?,'http-inbound-before',?,'Pcs','2','2','0','verified','0','2',?,?,?,'warehouse:v1')").run(previous,inventory.snapshot.id,previous+'T00:00:00Z',inventory.snapshot.capturedAt,inventory.snapshot.capturedAt);db.close();
+    db.prepare("INSERT INTO inbound_reconciliations (owner,warehouse_code,goods_no,date,before_snapshot_id,after_snapshot_id,unit_name,raw_difference,opening_quantity,closing_quantity,status,inbound_quantity,corrected_quantity,window_start,window_end,checked_at,query_scope) VALUES('http-test','TEST02','Z-SALE',?,'http-inbound-before',?,'Pcs','2','2','0','verified','0','2',?,?,?,'warehouse:v2')").run(previous,inventory.snapshot.id,previous+'T00:00:00Z',inventory.snapshot.capturedAt,inventory.snapshot.capturedAt);db.close();
   }
   for(const [sort,order] of [['sales_desc',['Z-SALE','TEST-GOODS','M-PENDING']],['sales_asc',['TEST-GOODS','Z-SALE','M-PENDING']]]) {
     r=await fetch(url+'/api/inventory?'+new URLSearchParams({warehouseCode:'TEST02',sort,sortDate:previous}),{headers:{cookie}});
