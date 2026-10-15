@@ -207,3 +207,10 @@ export const transitSnapshots = sqliteTable("transit_snapshots", {
   payload: text("payload"),
   error: text("error"),
 }, t => [index("transit_history").on(t.owner,t.warehouseCode,t.capturedAt)]);
+
+export const warehouseShareCandidates=sqliteTable('warehouse_share_candidates',{
+  tokenHash:text('token_hash').primaryKey(),actorId:text('actor_id').notNull().references(()=>accounts.id),identityJson:text('identity_json').notNull(),mobileMasked:text('mobile_masked').notNull(),expiresAt:integer('expires_at').notNull(),
+},t=>[index('warehouse_share_candidate_expiry').on(t.expiresAt)]);
+export const warehouseShares=sqliteTable('warehouse_shares',{
+  requestId:text('request_id').primaryKey(),actorId:text('actor_id').notNull().references(()=>accounts.id),targetId:text('target_id').notNull().references(()=>accounts.id),requestHash:text('request_hash').notNull(),resultJson:text('result_json').notNull(),createdAt:text('created_at').notNull(),
+});

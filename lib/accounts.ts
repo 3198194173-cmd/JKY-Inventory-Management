@@ -19,9 +19,16 @@ export function legacyAccount() {
 }
 export type CompanyIdentity = {corpId:string;userId:string;unionId:string;name:string;avatar:string};
 export function bindCompanyAccount(identity:CompanyIdentity) {
+  return upsertCompanyAccount(identity,true);
+}
+export function prepareCompanyAccount(identity:CompanyIdentity) {
+  return upsertCompanyAccount(identity,false);
+}
+function upsertCompanyAccount(identity:CompanyIdentity,login:boolean) {
   if(identity.corpId!==process.env.DINGTALK_CORP_ID || !identity.userId || !identity.unionId)throw new AccessError('仅允许本公司钉钉成员登录');
   const db=sqlite(),now=new Date().toISOString();
-  db.exec('BEGIN IMMEDIATE');
+  const ownTransaction=!db.isTransaction;
+  if(ownTransaction)db.exec('BEGIN IMMEDIATE');
   try {
     let account=db.prepare('SELECT * FROM accounts WHERE corp_id=? AND dingtalk_user_id=?').get(identity.corpId,identity.userId) as Account|undefined;
     if(account && account.union_id && account.union_id!==identity.unionId)throw new AccessError('钉钉身份发生变化，请联系管理员');
@@ -40,10 +47,11 @@ export function bindCompanyAccount(identity:CompanyIdentity) {
       }
     }
     if(account.status!=='active')throw new AccessError('账号已禁用或归档，请联系管理员');
-    db.prepare("UPDATE accounts SET display_name=?,avatar_url=?,member_state='verified',membership_checked_at=?,last_login_at=?,updated_at=? WHERE id=?").run(identity.name,identity.avatar,Date.now(),now,now,account.id);
-    audit(account.id,account.id,'login_dingtalk');
-    db.exec('COMMIT');return accountById(account.id)!;
-  }catch(e){db.exec('ROLLBACK');throw e;}
+    const state=login||account.last_login_at?'verified':'prepared';
+    db.prepare("UPDATE accounts SET display_name=?,avatar_url=?,member_state=?,membership_checked_at=?,last_login_at=?,updated_at=? WHERE id=?").run(identity.name,identity.avatar,state,Date.now(),login?now:account.last_login_at,now,account.id);
+    if(login)audit(account.id,account.id,'login_dingtalk');
+    if(ownTransaction)db.exec('COMMIT');return accountById(account.id)!;
+  }catch(e){if(ownTransaction)db.exec('ROLLBACK');throw e;}
 }
 export function revokeAccountSessions(id:string){
   const account=accountById(id);if(!account)return;

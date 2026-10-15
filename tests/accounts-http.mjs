@@ -20,6 +20,7 @@ for(const [owner,value] of [['a','123'],['b','456']]){
   db.prepare("INSERT INTO stock_entries(snapshot_id,goods_no,goods_name,unit_name,quantity,sku_count,sign) VALUES(?,'GOODS','独立库存货品','件',?,1,1)").run('snapshot-'+owner,value);
 }
 const reportToken=randomBytes(32).toString('base64url');
+db.prepare("INSERT INTO warehouses(owner,code,name,created_at) VALUES('owner-admin','ADMIN_ONLY','管理员分享仓库',?)").run(now);
 db.prepare('INSERT INTO alert_report_exports VALUES(?,?,?,?,?,?)').run(createHash('sha256').update(reportToken).digest('hex'),'owner-a','SAME',JSON.stringify({title:'test',summary:'',footer:'',dates:[],totalCount:0,part:1,totalParts:1,rows:[]}),Date.now(),Date.now()+100000);
 cpSync('drizzle','.next/standalone/drizzle',{recursive:true});cpSync('public','.next/standalone/public',{recursive:true});cpSync('.next/static','.next/standalone/.next/static',{recursive:true});
 const url='http://127.0.0.1:3191',origin='https://inventory.example.test';
@@ -36,6 +37,13 @@ try{
   r=await call('/api/session','b',undefined,'GET');const self=await r.json();assert.equal(self.account.id,'b');assert.equal(self.account.role,'member');assert.equal(self.workspace.id,'b');
   r=await fetch(url+'/api/inventory?warehouseCode=SAME',{headers:headers('a')});assert.equal((await r.json()).rows[0].quantity,'123');
   r=await call('/api/admin/accounts','b',undefined,'GET');assert.equal(r.status,403);
+  r=await fetch(url+'/api/admin/warehouse-share');assert.equal(r.status,401);
+  r=await call('/api/admin/warehouse-share','b',undefined,'GET');assert.equal(r.status,403);
+  r=await call('/api/admin/warehouse-share/lookup','b',{mobile:'13900000001'});assert.equal(r.status,403);
+  r=await call('/api/admin/warehouse-share','b',{warehouseCodes:['SAME']});assert.equal(r.status,403);
+  r=await call('/api/admin/warehouse-share/lookup','admin',{mobile:'13900000001'},'POST',{origin:'https://evil.example'});assert.equal(r.status,400);
+  r=await call('/api/admin/warehouse-share','admin',{},'POST',{origin:'https://evil.example'});assert.equal(r.status,400);
+  r=await call('/api/admin/warehouse-share','admin',undefined,'GET',{cookie:'inventory_session='+tokens.admin+'; inventory_workspace=a'});assert.equal(r.status,200);assert.deepEqual((await r.json()).warehouses.map(w=>w.code),['ADMIN_ONLY']);
   r=await call('/api/admin/accounts','b',{accountId:'b',role:'admin'},'PATCH');assert.equal(r.status,403);
   r=await call('/api/workspace','b',{accountId:'a'});assert.equal(r.status,403);
   r=await call('/api/inventory?warehouseCode=SAME','b',undefined,'GET',{cookie:'inventory_session='+tokens.b+'; inventory_workspace=a'});assert.equal(r.status,403);
@@ -65,6 +73,11 @@ try{
     try{
       const context=await browser.newContext({viewport:{width:1440,height:1000}});await context.addCookies([{name:'inventory_session',value:tokens.admin,url}]);const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
       await page.goto(url+'/admin/accounts');await page.locator('.account-member').first().waitFor();assert.equal(await page.locator('.account-member').count(),4);mkdirSync('outputs',{recursive:true});await page.screenshot({path:'outputs/account-management-desktop.png'});
+      await page.getByRole('button',{name:'仓库分享',exact:true}).click();const share=page.getByRole('dialog');await share.getByText('ADMIN_ONLY · 管理员分享仓库',{exact:true}).waitFor();await page.screenshot({path:'outputs/warehouse-sharing-desktop.png'});
+      await page.setViewportSize({width:390,height:844});assert.equal(await share.evaluate(e=>e.scrollWidth<=e.clientWidth),true);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      await page.route('**/api/admin/warehouse-share/lookup',route=>route.fulfill({json:{lookupToken:'offline-browser-proof',name:'测试同事',userId:'offline-browser-user',maskedMobile:'139****0001',existingAccount:false}}));
+      await share.getByLabel('同事的钉钉手机号').fill('+86-13900000001');await share.getByRole('button',{name:'查找同事'}).click();await share.getByText('测试同事',{exact:true}).waitFor();await share.getByRole('checkbox').check();assert.equal(await share.getByRole('button',{name:'确认复制 1 个仓库'}).isEnabled(),true);await page.screenshot({path:'outputs/warehouse-sharing-mobile.png'});
+      await share.getByRole('button',{name:'取消',exact:true}).click();await page.unroute('**/api/admin/warehouse-share/lookup');
       await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);await page.screenshot({path:'outputs/account-management-mobile.png'});
       const b=page.locator('.account-member').filter({has:page.getByRole('heading',{name:'员工乙',exact:true})});await b.getByRole('button',{name:'群授权（0）'}).click();await b.getByText('暂无企业群，请先同步企业群目录。').waitFor();await b.getByRole('button',{name:'取消',exact:true}).click();
       await page.goto(url+'/login');await page.getByRole('link',{name:'使用公司钉钉登录'}).waitFor();assert.equal(await page.locator('input[name=username]').count(),0);await page.screenshot({path:'outputs/account-login-mobile.png'});

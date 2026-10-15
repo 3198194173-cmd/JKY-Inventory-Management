@@ -46,7 +46,8 @@ async function companyPost(path:string,body:Record<string,unknown>,token:string,
   const url=new URL('https://oapi.dingtalk.com/'+path);url.searchParams.set('access_token',token);
   const data=await json(url.toString(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)},fetcher);
   if(Number(data.errcode)!==0){
-    if([60121,60111,60112].includes(Number(data.errcode)))throw new NotCompanyMember();
+    if([40104,60121,60111,60112].includes(Number(data.errcode)))throw new NotCompanyMember();
+    if(path.endsWith('getbymobile'))throw new AccessError('手机号查询失败，请开通“根据手机号姓名获取成员信息的接口访问权限”并检查通讯录范围，发布后重试',503);
     throw new AccessError('公司通讯录核验失败，请检查应用通讯录范围与权限',503);
   }
   return data.result as Record<string,unknown>;
@@ -69,9 +70,26 @@ export async function verifyCompanyLogin(code:string,fetcher:typeof fetch=fetch)
   return employee(await companyPost('topapi/v2/user/get',{userid:mapped.userid},token,fetcher),mapped.userid,me.unionId);
 }
 export async function verifyEmployee(account:Account,fetcher:typeof fetch=fetch){
-  if(account.corp_id!==loginConfig().corpId||!account.dingtalk_user_id||!account.union_id)throw new NotCompanyMember();
+  return verifyDirectoryIdentity({corpId:account.corp_id||'',userId:account.dingtalk_user_id||'',unionId:account.union_id||'',name:account.display_name,avatar:account.avatar_url},fetcher);
+}
+export async function verifyDirectoryIdentity(identity:CompanyIdentity,fetcher:typeof fetch=fetch){
+  if(identity.corpId!==loginConfig().corpId||!identity.userId||!identity.unionId)throw new NotCompanyMember();
   const token=await appToken(fetcher);
-  return employee(await companyPost('topapi/v2/user/get',{userid:account.dingtalk_user_id},token,fetcher),account.dingtalk_user_id,account.union_id);
+  return employee(await companyPost('topapi/v2/user/get',{userid:identity.userId},token,fetcher),identity.userId,identity.unionId);
+}
+export function normalizeCompanyMobile(value:unknown){
+  if(typeof value!=='string'||value.length>40)throw new AccessError('请输入有效的中国大陆手机号',400);
+  const mobile=value.replace(/[\s()-]/g,'').replace(/^(?:\+86|0086)/,'');
+  if(!/^1[3-9]\d{9}$/.test(mobile))throw new AccessError('请输入有效的中国大陆手机号（支持 +86）',400);
+  return mobile;
+}
+export async function lookupCompanyMobile(mobile:string,fetcher:typeof fetch=fetch){
+  const normalized=normalizeCompanyMobile(mobile),token=await appToken(fetcher);
+  const result=await companyPost('topapi/v2/user/getbymobile',{mobile:normalized},token,fetcher);
+  if(typeof result?.userid!=='string'||!result.userid)throw new NotCompanyMember();
+  const detail=await companyPost('topapi/v2/user/get',{userid:result.userid},token,fetcher);
+  if(typeof detail?.unionid!=='string'||!detail.unionid)throw new NotCompanyMember();
+  return employee(detail,result.userid,detail.unionid);
 }
 const checking=new Map<string,Promise<void>>();
 export async function ensureOwnerAccess(owner:string){
