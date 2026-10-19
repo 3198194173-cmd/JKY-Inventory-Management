@@ -9,8 +9,10 @@ await build({entryPoints:['tests/warehouse-alerts.test.ts'],outfile:'.sites-runt
 await build({entryPoints:['tests/transit.test.ts'],outfile:'.sites-runtime/tests/transit.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
 await build({entryPoints:['tests/accounts.test.ts'],outfile:'.sites-runtime/tests/accounts.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
 await build({entryPoints:['tests/warehouse-sharing.test.ts'],outfile:'.sites-runtime/tests/warehouse-sharing.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
+await build({entryPoints:['tests/warehouse-discovery.test.ts'],outfile:'.sites-runtime/tests/warehouse-discovery.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
+await build({entryPoints:['tests/session-memory.test.ts'],outfile:'.sites-runtime/tests/session-memory.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
 await build({entryPoints:['tests/inventory-optimization.test.ts'],outfile:'.sites-runtime/tests/inventory-optimization.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
-for(const args of [['--test','.sites-runtime/tests/transit.mjs'],['--test','.sites-runtime/tests/ubuntu-store.mjs'],['--test','.sites-runtime/tests/warehouse-alerts.mjs'],['--test','.sites-runtime/tests/accounts.mjs'],['--test','.sites-runtime/tests/warehouse-sharing.mjs'],['--test','.sites-runtime/tests/inventory-optimization.mjs'],['tests/ubuntu-http.mjs'],['tests/accounts-http.mjs']]) {
+for(const args of [['--test','.sites-runtime/tests/transit.mjs'],['--test','.sites-runtime/tests/ubuntu-store.mjs'],['--test','.sites-runtime/tests/warehouse-alerts.mjs'],['--test','.sites-runtime/tests/accounts.mjs'],['--test','.sites-runtime/tests/warehouse-sharing.mjs'],['--test','.sites-runtime/tests/warehouse-discovery.mjs'],['--test','.sites-runtime/tests/session-memory.mjs'],['--test','.sites-runtime/tests/inventory-optimization.mjs'],['tests/ubuntu-http.mjs'],['tests/accounts-http.mjs'],['tests/warehouse-discovery-http.mjs'],['tests/session-memory-http.mjs']]) {
   const result=spawnSync(process.execPath,args,{stdio:'inherit'});
   if(result.status!==0)process.exit(result.status||1);
 }

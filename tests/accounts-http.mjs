@@ -48,7 +48,9 @@ try{
   r=await call('/api/workspace','b',{accountId:'a'});assert.equal(r.status,403);
   r=await call('/api/inventory?warehouseCode=SAME','b',undefined,'GET',{cookie:'inventory_session='+tokens.b+'; inventory_workspace=a'});assert.equal(r.status,403);
   r=await call('/api/warehouses','a',{code:'A2',name:'只属于甲',owner:'owner-b'});assert.equal(r.status,200);assert.ok(db.prepare("SELECT 1 FROM warehouses WHERE owner='owner-a' AND code='A2'").get());assert.equal(db.prepare("SELECT 1 FROM warehouses WHERE owner='owner-b' AND code='A2'").get(),undefined);
-  r=await fetch(url+'/',{headers:headers('fresh')});assert.equal(r.status,200);assert.match(await r.text(),/添加你的第一个仓库/);assert.equal(db.prepare("SELECT COUNT(*) AS n FROM warehouses WHERE owner='owner-fresh'").get().n,0);
+  r=await fetch(url+'/',{headers:headers('fresh')});assert.equal(r.status,200);assert.match(await r.text(),/选择你的第一个仓库/);assert.equal(db.prepare("SELECT COUNT(*) AS n FROM warehouses WHERE owner='owner-fresh'").get().n,0);
+  r=await fetch(url+'/api/warehouses/available');assert.equal(r.status,401);
+  r=await call('/api/warehouses/available','fresh',undefined,'GET');assert.equal(r.status,400);assert.match((await r.json()).error,/AppSecret/);
   r=await call('/api/warehouses','b',{code:'CSRF'},'POST',{origin:'https://evil.example'});assert.equal(r.status,400);
   r=await fetch(url+'/api/auth/dingtalk/start',{redirect:'manual'});assert.equal(r.status,303);const auth=new URL(r.headers.get('location'));assert.equal(auth.origin,'https://login.dingtalk.com');assert.equal(auth.searchParams.get('corpId'),'test-corp');assert.match(r.headers.get('set-cookie'),/HttpOnly/i);assert.match(r.headers.get('set-cookie'),/Secure/i);assert.match(r.headers.get('set-cookie'),/SameSite=lax/i);
   r=await fetch(url+'/api/auth/dingtalk/callback?state=forged&authCode=not-real',{redirect:'manual'});assert.equal(r.status,303);assert.match(r.headers.get('location'),/login\?error=dingtalk/);assert.doesNotMatch(r.headers.get('set-cookie')||'',/inventory_session=/);

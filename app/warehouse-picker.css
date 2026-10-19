@@ -1,0 +1,12 @@
+.warehouse-picker{display:grid;gap:12px;min-width:0}
+.warehouse-picker-tools{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.warehouse-picker-tools label{margin:0!important}
+.warehouse-picker select{width:100%;min-width:0;max-width:100%;min-height:44px;border:1px solid #dfe6ef;border-radius:8px;padding:10px;background:white;color:#42536b;font-size:14px;text-overflow:ellipsis}
+.warehouse-picker .warehouse-picker-hint{font-size:12px;line-height:1.8;color:#73839a;margin:0}
+.warehouse-picker .warehouse-picker-fallback{border:0;background:transparent;color:#2563eb;font-size:12px;min-height:40px;margin:0}
+.warehouse-picker .compact-error{color:#bd3545;font-size:13px;overflow-wrap:anywhere;margin:0}
+.compact-dialog .warehouse-picker input{margin:0}
+.empty-workspace .warehouse-picker label{margin:0}
+.empty-workspace .warehouse-picker input{margin:0}
+.empty-workspace .warehouse-picker>button{margin:0}
+@media(max-width:760px){.warehouse-picker select{font-size:16px}.warehouse-picker-tools{flex-wrap:wrap}}

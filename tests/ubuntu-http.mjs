@@ -29,6 +29,7 @@ try {
   r=await fetch(url+'/api/session',{method:'POST',headers:{origin:url},body:new URLSearchParams({username:'admin',password}),redirect:'manual'});assert.equal(r.status,303);
   const cookie=r.headers.get('set-cookie').split(';')[0];assert.ok(r.headers.get('set-cookie').includes('HttpOnly'));
   const headers={cookie,origin:url,'content-type':'application/json'};
+  r=await fetch(url+'/api/session',{method:'PATCH',headers});assert.equal(r.status,200);assert.match(r.headers.get('set-cookie'),/Max-Age=86400/i,'本地管理员仍使用24小时续期');
   r=await fetch(url+'/api/alerts');assert.equal(r.ok,false,'预警设置需要登录');
   r=await fetch(url+'/api/alerts/groups',{method:'POST',headers:{origin:url}});assert.equal(r.ok,false,'群同步需要登录');
   r=await fetch(url+'/api/alerts/groups',{method:'POST',headers:{...headers,origin:'https://evil.example'}});assert.equal(r.ok,false,'群同步拒绝跨来源调用');
@@ -83,7 +84,8 @@ try {
   assert.equal(inventory.rows[0].metrics.average7,null);
   assert.equal(inventory.rows[0].metrics.reason,'insufficient_data');
   r=await fetch(url+'/',{headers:{cookie}});const pageHtml=await r.text();assert.equal(r.status,200);
-  assert.match(pageHtml,/>销售均值<\/th>/);assert.match(pageHtml,/>库存周转<\/th>/);assert.doesNotMatch(pageHtml,/<span>近7天 · 估算<\/span>|<span>天 · 估算<\/span>|<span>销售量<\/span>/);
+  const headings=[...pageHtml.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/g)].map(match=>match[1].replace(/<[^>]*>/g,'').trim());
+  assert.ok(headings.some(label=>label.startsWith('销售均值')),'包含可排序销售均值表头');assert.ok(headings.some(label=>label.startsWith('库存周转')),'包含可排序库存周转表头');assert.doesNotMatch(pageHtml,/<span>近7天 · 估算<\/span>|<span>天 · 估算<\/span>|<span>销售量<\/span>/);
   assert.doesNotMatch(pageHtml,/<th[^>]*>单位<\/th>/);
   // Seed a preceding fixed baseline, then let a real worker collection perform
   // its own signed (mock gateway) inbound lookup and persist the correction.

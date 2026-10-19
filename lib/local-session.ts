@@ -1,11 +1,12 @@
 import { cookies } from 'next/headers';
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { scryptSync, timingSafeEqual } from 'node:crypto';
 import { sqlite } from './sqlite.mjs';
 import { accountById, legacyAccount, localLoginEnabled, companyLoginEnabled, type Account } from './accounts';
 import { ensureOwnerAccess } from './dingtalk-login';
+import { sessionDigest as digest } from './session-store';
+export { createSession, revokeSession } from './session-store';
 
 export const sessionCookie = 'inventory_session';
-const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export function verifyPassword(password: string) {
   const [salt, expected] = (process.env.INVENTORY_PASSWORD_HASH || '').split(':');
   if (!salt || !/^[a-f0-9]{128}$/.test(expected || '') || password.length > 1024) return false;
@@ -25,17 +26,3 @@ export async function sessionUser() {
   await ensureOwnerAccess(account.data_owner);
   return {userId:account.data_owner,accountId:account.id,displayName:account.display_name,avatar:account.avatar_url,role:account.role,email:'',fullName:null};
 }
-export function createSession(account?:Account) {
-  const token = randomBytes(32).toString('hex');
-  sqlite().prepare('DELETE FROM local_sessions WHERE expires_at<?').run(Date.now());
-  if(account){
-    sqlite().prepare('DELETE FROM account_sessions WHERE expires_at<?').run(Date.now());
-    sqlite().prepare('INSERT INTO account_sessions VALUES(?,?,?,?)').run(digest(token),account.id,Date.now()+86400000,Date.now());
-  }else{
-    if(!localLoginEnabled())throw new Error('账号密码登录已关闭');
-    const legacy=legacyAccount();if(legacy.status!=='active')throw new Error('账户已禁用');
-    sqlite().prepare('INSERT INTO local_sessions VALUES(?,?,?)').run(digest(token),legacy.data_owner,Date.now()+86400000);
-  }
-  return token;
-}
-export function revokeSession(token: string) { sqlite().prepare('DELETE FROM local_sessions WHERE token_hash=?').run(digest(token));sqlite().prepare('DELETE FROM account_sessions WHERE token_hash=?').run(digest(token)); }

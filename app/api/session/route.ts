@@ -1,13 +1,29 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { assertSameOrigin, currentContext, errorResponse } from '@/lib/auth';
-import { createSession, revokeSession, sessionCookie, verifyPassword } from '@/lib/local-session';
+import { createSession, revokeSession, sessionCookie, sessionUser, verifyPassword } from '@/lib/local-session';
 import { sqlite } from '@/lib/sqlite.mjs';
-import { localLoginEnabled, legacyAccount, audit } from '@/lib/accounts';
+import { AccessError, localLoginEnabled, legacyAccount, audit } from '@/lib/accounts';
 import { workspaceCookie } from '@/lib/auth';
+import { renewSession } from '@/lib/session-store';
+import { sessionCookieOptions } from '@/lib/session-policy';
 
 export async function GET(){
   try{const {actor,target}=await currentContext();return NextResponse.json({account:{id:actor.id,name:actor.display_name,role:actor.role},workspace:{id:target.id,name:target.display_name},managing:actor.id!==target.id},{headers:{'Cache-Control':'no-store'}});}catch(e){return errorResponse(e);}
+}
+
+export async function PATCH(request: Request) {
+  try {
+    assertSameOrigin(request);
+    const actor = await sessionUser();
+    if (!actor) throw new AccessError('登录已过期，请重新登录', 401);
+    const token = (await cookies()).get(sessionCookie)?.value;
+    const renewal = token ? renewSession(token, actor.accountId) : null;
+    if (!renewal) throw new AccessError('登录已过期，请重新登录', 401);
+    const response = NextResponse.json({ ok: true, expiresAt: new Date(renewal.expiresAt).toISOString() }, { headers: { 'Cache-Control': 'no-store' } });
+    response.cookies.set(sessionCookie, token!, sessionCookieOptions(renewal.company, request.url));
+    return response;
+  } catch (error) { return errorResponse(error); }
 }
 
 export async function POST(request: Request) {
@@ -26,7 +42,7 @@ export async function POST(request: Request) {
     const old = (await cookies()).get(sessionCookie)?.value;
     if (old) revokeSession(old);
     const response = NextResponse.redirect(new URL('/',process.env.INVENTORY_SITE_URL || request.url),303);
-    response.cookies.set(sessionCookie,createSession(),{httpOnly:true,sameSite:'strict',secure:(process.env.INVENTORY_SITE_URL || request.url).startsWith('https:'),path:'/',maxAge:86400});
+    response.cookies.set(sessionCookie,createSession(),sessionCookieOptions(false,request.url));
     response.cookies.delete(workspaceCookie);
     const actor=legacyAccount();audit(actor.id,actor.id,'login_local');
     return response;

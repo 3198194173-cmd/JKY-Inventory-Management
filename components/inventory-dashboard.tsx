@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { CollectionSettingsDialog } from "@/components/collection-settings-dialog";
+import { WarehousePicker } from "@/components/warehouse-picker";
 import { AlertSettingsDialog } from "@/components/alert-settings-dialog";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { Pagination } from "@/components/ui/pagination";
@@ -72,7 +73,7 @@ export default function InventoryDashboard({ initial, initialAlerts, accountProf
   const [sortDate,setSortDate] = useState("");
   const [refresh,setRefresh] = useState(0), [loading,setLoading] = useState(false), [syncing,setSyncing] = useState(false), [exporting,setExporting] = useState(false);
   const [notice,setNotice] = useState(""), [error,setError] = useState("");
-  const [addOpen,setAddOpen] = useState(false), [newCode,setNewCode] = useState(""), [newName,setNewName] = useState(""), [savingWarehouse,setSavingWarehouse] = useState(false);
+  const [addOpen,setAddOpen] = useState(false);
   const [help,setHelp] = useState(false), [recordsOpen,setRecordsOpen] = useState(false), [runs,setRuns] = useState<RunInfo[]>([]), [alertsOpen,setAlertsOpen] = useState(false);
   const [transitOpen,setTransitOpen]=useState(false),[transitGoods,setTransitGoods]=useState('');
   const openTransit=useCallback((goodsNo:string)=>{setTransitGoods(goodsNo);setTransitOpen(true);},[]);
@@ -160,13 +161,6 @@ export default function InventoryDashboard({ initial, initialAlerts, accountProf
     if (next === code) return;
     setRuleDraft(null);setCode(next); setSort("quantity_desc"); setSortDate(""); setPage(1); setSearch(""); setQuery(""); setSelected(null); setNotice(""); setError(""); setRuns([]); previousRun.current = null;
     setUnavailableOpen(false); setView(v => ({ ...v, warehouseCode:next, snapshot:null, rows:[], snapshots:[], salesDates:[], unavailableSkus:[], totalRows:0 }));
-  }
-  async function add() {
-    setSavingWarehouse(true); setError("");
-    try {
-      const list = await apiJson<WarehouseInfo[]>(await fetch("/api/warehouses", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:newCode.trim(),name:newName})}));
-      setWarehouses(list); changeWarehouse(newCode.trim()); setAddOpen(false); setNewCode(""); setNewName(""); setNotice("仓库已保存。点击采集库存即可自动获取 SKU；服务器启用定时任务后，每天 08:00 自动采集。");
-    } catch(e) { setError(e instanceof Error ? e.message : "仓库保存失败"); } finally { setSavingWarehouse(false); }
   }
   async function sync() {
     setSyncing(true); setError(""); setNotice("正在读取 SKU 目录。采集进度会显示在页面上，请勿重复提交。");
@@ -267,7 +261,7 @@ export default function InventoryDashboard({ initial, initialAlerts, accountProf
     </section>
     <details className="compact-footnote"><summary><CircleHelp size={14}/> 数据口径与标记说明<span>点击展开</span></summary><p><span className="compact-inbound-legend"/> 黄色表示该采集区间有入库，点击货品查看单据。电脑点击日期列排序；手机点日期查看核算，用日期排序选择器切换销量升降序。销量为库存消耗估算：所有可比较商品按“上次库存 + 区间内实际入库 − 调拨出库 − 本次库存”核算。负值按退货/回补计入净销量。销量均值 = 近7天净销量总和 ÷ 7；周转 = 当前库存 ÷ 均值。均值为零或负数时不计算周转；缺日或出入库未核验时不计算均值。</p></details>
     <TransitHistory key={code+'-'+transitGoods+'-'+transitOpen} code={code} goodsNo={transitGoods} open={transitOpen} onOpenChange={setTransitOpen}/>
-    <Dialog open={addOpen} onOpenChange={setAddOpen}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>增加仓库</DialogTitle><DialogDescription>填入吉客云仓库编码。首次采集后自动识别仓库名称和 SKU。</DialogDescription></DialogHeader><form onSubmit={e => { e.preventDefault(); void add(); }}><label htmlFor="new-code">仓库编码</label><Input id="new-code" placeholder="例如 CK031" value={newCode} onChange={e => setNewCode(e.target.value)} required maxLength={50}/><label htmlFor="new-name">显示名称（可选）</label><Input id="new-name" placeholder="首次采集后同步官方名称" value={newName} onChange={e => setNewName(e.target.value)} maxLength={80}/><p>默认每日北京时间 08:00 采集。服务器启用定时任务后自动执行。</p>{error && <p role="alert" className="compact-error">{error}</p>}<Button type="submit" disabled={savingWarehouse}>{savingWarehouse ? "保存中…" : "增加仓库"}</Button></form></DialogContent></Dialog>
+    <Dialog open={addOpen} onOpenChange={setAddOpen}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>增加仓库</DialogTitle><DialogDescription>自动获取吉客云仓库，按名称搜索后选择。</DialogDescription></DialogHeader>{addOpen && <WarehousePicker existingCodes={warehouses.map(w => w.code)} onAdded={(list, next, queued) => { setWarehouses(list); changeWarehouse(next); setAddOpen(false); setNotice(queued ? '仓库已添加并加入后台初始化采集队列，关闭网页也会继续执行。' : '仓库已保存，点击“采集库存”开始初始化。'); }}/>}</DialogContent></Dialog>
     <Dialog open={help} onOpenChange={setHelp}><DialogContent className="compact-dialog"><DialogHeader><DialogTitle>数据口径与自动采集</DialogTitle><DialogDescription>库存来自吉客云实时接口，销售量按你指定的库存差额计算。</DialogDescription></DialogHeader><div className="compact-help"><p><strong>采集流程</strong><br/>仓库编码 → erp.stockquantity.get 游标取得 SKU → erp-stock.stock.skulist 查询可购数量。无条码或条码查询未返回时，改用货品编码查询，再按 SKU 身份核验。</p><p><strong>当前库存</strong><br/>显示最近采集的已核验 orderAbleQuantity。未取得库存的规格保留清单、不填零；含缺失规格的货品不展示部分合计、不参与销售差额。接口失败时保留上次成功数据。</p><p><strong>每日销售</strong><br/>上次基准库存 + 区间内实际入库 − 调拨出库 − 本次基准库存，记在上次基准日期。按仓库及两次采集时间分页查询 erp-busiorder.goodsdocin.search 和 erp-busiorder.goodsdocout.search（仅202调拨出库，均含归档记录），再按货品编码汇总，核验时间和单位。库存下降、持平或增加都核算入库。完整入库查询后允许销量为负，按退货/回补计入净销量及7天均值。查询失败、单位不匹配或入库合计为负需核对冲销时仍显示待核验，原始差额和单据保留在详情。每天设定时间后第一次成功采集为固定基准；手动刷新更新当前库存并核验本次采集区间，补查近30天未完成核验的每日区间。缺日不跨天计算。所有可比较日期均核验入库，仍属于消耗估算，不等同实际订单销量。</p><p><strong>每日自动采集（北京时间）</strong><br/>在“采集设置”中修改当前仓库的采集时间，在“预警”中修改该仓库的规则、接收群和发送时间。定时状态依据服务器后台心跳显示；未运行时请检查后台进程和定时配置。无需浏览器一直打开。</p></div></DialogContent></Dialog>
     <Dialog open={unavailableOpen} onOpenChange={setUnavailableOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 未取得库存的 SKU</DialogTitle><DialogDescription>已尝试条码或货品编码查询。以下记录不填零；含缺失规格的货品不展示部分合计、不参与销售差额。Excel 的采集说明也保留此清单。</DialogDescription></DialogHeader><div className="compact-records"><Table><TableHeader><TableRow><TableHead>货品编码 / 名称</TableHead><TableHead>SKU / 条码</TableHead><TableHead>原因</TableHead></TableRow></TableHeader><TableBody>{view.unavailableSkus?.map(row => <TableRow key={row.skuId}><TableCell>{row.goodsNo}<br/>{row.goodsName}</TableCell><TableCell>{row.skuId}<br/>{row.skuBarcode || "无条码"}</TableCell><TableCell>{row.reason}</TableCell></TableRow>)}</TableBody></Table></div></DialogContent></Dialog>
     <Dialog open={recordsOpen} onOpenChange={setRecordsOpen}><DialogContent className="compact-dialog compact-wide-dialog"><DialogHeader><DialogTitle>{code} 采集记录</DialogTitle><DialogDescription>仅显示当前仓库最近 20 次采集。</DialogDescription></DialogHeader><div className="compact-records">{runs.length ? runs.map(run => <div key={run.id}><strong>{run.status === "complete" ? "已完成" : run.status === "failed" ? "失败" : run.status === "queued" ? "排队中" : "采集中"}</strong><span>{time(run.startedAt)}</span><p>{run.message || `${run.pageCount} 页 · ${run.recordCount.toLocaleString()} 条记录`}</p></div>) : <p>暂无采集记录</p>}</div></DialogContent></Dialog>
