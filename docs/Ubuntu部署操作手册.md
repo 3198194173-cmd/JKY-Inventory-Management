@@ -162,3 +162,14 @@ npm run test:ubuntu
 月历在每日基准之后有第二次完整采集时，显示带“临时”标记的当天净销量。计算为当天基准库存＋截至最新采集的入库合计−最新库存，累加已核验的连续采集区间，不额外调用吉客云。缺货品、单位变化、入库查询失败或区间缺失时保持待核验；临时值不计入近7天均值。次日自动每日基准采集并完成入库核验后，以完整每日区间重新计算并定稿。次日自动采集前的手动采集仍属于前一日未结束区间。
 
 主表与月历使用 ECharts 基础平滑折线图（smooth: true），按实际日期与销量绘制，缺日断线、负销量保留。主表显示紧凑图，月历可展开完整坐标轴，悬停查看日期与原始数值，橙色点表示临时值；曲线只改善连线显示，统计数值仍取实际数据点。当前库存为上次采集时的 `orderAbleQuantity`，并非打开网页时重新请求吉客云；对比吉客云页面需核对仓库、货品、规格及查询时间。
+
+
+## 2026-10-15 子域名接入完成
+
+正式库存地址：`https://inventory.casebang.tech`。Cloudflare 的 `inventory` A 记录已指向 `139.199.63.119`，仅 DNS；无需更改主域名、www 或 NS。主站原有 `/AI/` 页面继续使用原配置。
+
+服务器已有的独立库存 Nginx 站点已配置为 HTTP 跳转 HTTPS，应用仍只监听本机 `127.0.0.1:3108`。最终配置示例见 `deploy/nginx-https.conf`，仅在对应证书存在后使用，不覆盖 `casebang.tech.conf`。
+
+`INVENTORY_SITE_URL` 已更新为 `https://inventory.casebang.tech`，并重建 web、worker 容器加载环境变量；原有账号、密钥、仓库历史和 Docker 数据卷保留。使用域名重新登录；今后在开发机修改代码仍需推送并在服务器拉取和构建。新生成的钉钉预警报告使用此域名提供 Excel 下载地址，历史卡片不会自动补上下载按钮。
+
+HTTPS 使用独立 Let’s Encrypt 证书，路径 `/etc/letsencrypt/live/inventory.casebang.tech/`，由服务器已有的 `snap.certbot.renew.timer` 自动续期；专用 deploy hook 在该证书更新后检查并平滑重载 Nginx。证书私钥、应用环境变量及备份不进入 Git。迁移前代理和环境变量备份保存在服务器 `/home/ubuntu/private/jky-inventory/` 下的 `domain-` 时间目录。

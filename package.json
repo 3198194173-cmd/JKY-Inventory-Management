@@ -8,6 +8,8 @@
   "scripts": {
     "install:ci": "node scripts/install-ci.mjs",
     "dev": "next dev",
+    "preview:platforms": "node scripts/preview-platforms.mjs",
+    "preview:platforms:test": "node scripts/preview-platforms.mjs --test-login",
     "build": "next build --webpack && node scripts/build-worker.mjs",
     "start": "next start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
@@ -17,7 +19,8 @@
     "worker": "node build-node/worker.mjs",
     "test": "node tests/run.mjs",
     "test:ubuntu": "node tests/run-ubuntu.mjs",
-    "test:accounts": "node tests/run-accounts.mjs"
+    "test:accounts": "node tests/run-accounts.mjs",
+    "test:kingdee": "node tests/run-kingdee.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

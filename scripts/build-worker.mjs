@@ -4,3 +4,4 @@ import { build } from 'esbuild';
 // render cards; sharp stays external because it loads native binaries.
 await build({entryPoints:['scripts/worker.ts'],outfile:'build-node/worker.mjs',bundle:true,platform:'node',target:'node24',format:'esm',external:['sharp']});
 await build({entryPoints:['scripts/reconcile-movements.ts'],outfile:'build-node/reconcile-movements.mjs',bundle:true,platform:'node',target:'node24',format:'esm'});
+await build({entryPoints:['scripts/kingdee-import-worker.ts'],outfile:'build-node/kingdee-import.mjs',bundle:true,platform:'node',target:'node24',format:'esm'});

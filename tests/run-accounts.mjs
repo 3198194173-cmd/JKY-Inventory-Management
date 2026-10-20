@@ -6,4 +6,5 @@ await build({entryPoints:['tests/accounts.test.ts'],outfile:'.sites-runtime/test
 await build({entryPoints:['tests/warehouse-sharing.test.ts'],outfile:'.sites-runtime/tests/warehouse-sharing.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
 await build({entryPoints:['tests/warehouse-discovery.test.ts'],outfile:'.sites-runtime/tests/warehouse-discovery.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
 await build({entryPoints:['tests/session-memory.test.ts'],outfile:'.sites-runtime/tests/session-memory.mjs',bundle:true,platform:'node',format:'esm',target:'node24',external:['sharp']});
-for(const file of ['accounts','warehouse-sharing','warehouse-discovery','session-memory']){const r=spawnSync(process.execPath,['--test',`.sites-runtime/tests/${file}.mjs`],{stdio:'inherit'});if(r.status!==0){process.exitCode=r.status||1;break;}}
+await build({entryPoints:['tests/platform-routing.test.ts'],outfile:'.sites-runtime/tests/platform-routing.mjs',bundle:true,platform:'node',format:'esm',target:'node24'});
+for(const file of ['accounts','warehouse-sharing','warehouse-discovery','session-memory','platform-routing']){const r=spawnSync(process.execPath,['--test',`.sites-runtime/tests/${file}.mjs`],{stdio:'inherit'});if(r.status!==0){process.exitCode=r.status||1;break;}}

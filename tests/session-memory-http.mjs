@@ -52,7 +52,7 @@ try {
   const retry = await r.text(); assert.match(retry, /重试验证/); assert.match(retry, /无需重新扫码/);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_sessions').get().n, 2);
   writeFileSync(stateFile, 'member'); r = await renew(phone); assert.equal(r.status, 200, '钉钉恢复后旧Cookie直接恢复使用');
-  r = await fetch(url + '/', { headers: headers(phone), redirect: 'manual' }); assert.equal(r.status, 200);
+  r = await fetch(url + '/platforms', { headers: headers(phone), redirect: 'manual' }); assert.equal(r.status, 200);
   console.log('PASS: 会话续期、服务重启、核验故障和恢复接口检查');
   if (process.env.TEST_BROWSER === 'true') {
     const { chromium } = await import('file:///C:/Users/Administrator/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs');
@@ -80,7 +80,7 @@ try {
         await proxy(reopened);
         const again = await reopened.newPage();
         const restored = again.waitForResponse(response => response.url().endsWith('/api/session') && response.request().method() === 'PATCH');
-        await again.goto(origin + '/'); await again.getByRole('heading', { name: '选择你的第一个仓库' }).waitFor(); assert.equal((await restored).status(), 200);
+        await again.goto(origin + '/'); await again.getByRole('heading', { name: '选择数据平台' }).waitFor(); assert.equal((await restored).status(), 200);
         assert.equal(await again.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
         await reopened.close();
         console.log(`PASS: ${width}px 浏览器持久Cookie和关闭后恢复登录`);

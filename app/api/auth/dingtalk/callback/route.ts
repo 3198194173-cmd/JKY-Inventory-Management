@@ -5,6 +5,7 @@ import { consumeDingLogin, loginConfig, loginBrowserCookie, verifyCompanyLogin }
 import { createSession, revokeSession, sessionCookie } from '@/lib/local-session';
 import { workspaceCookie } from '@/lib/auth';
 import { sessionCookieOptions } from '@/lib/session-policy';
+import { platformSelectionPath } from '@/lib/platform-routing';
 export async function GET(request:Request){
   const config=loginConfig(),params=new URL(request.url).searchParams;
   try{
@@ -14,7 +15,7 @@ export async function GET(request:Request){
     if(params.has('error'))throw new Error('cancelled');
     const identity=await verifyCompanyLogin(params.get('authCode')||''),account=bindCompanyAccount(identity);
     const old=(await cookies()).get(sessionCookie)?.value;if(old)revokeSession(old);
-    const response=NextResponse.redirect(new URL(returnTo,config.origin),303);
+    const response=NextResponse.redirect(new URL(platformSelectionPath(returnTo),config.origin),303);
     response.cookies.set(sessionCookie,createSession(account),sessionCookieOptions(true,config.origin));
     response.cookies.delete(loginBrowserCookie);response.cookies.delete(workspaceCookie);
     response.headers.set('Cache-Control','no-store');response.headers.set('Referrer-Policy','no-referrer');return response;

@@ -16,11 +16,11 @@ export default async function Login({searchParams}: {searchParams:Promise<{error
   return <main className="inventory-login"><section className="inventory-login-card" aria-label="登录仓库数据">
     <div className="inventory-login-brand"><span className="compact-logo"><Warehouse size={21}/></span><strong>仓库数据</strong></div>
     <h1>登录工作台</h1>
-    <p>查看仓库库存、销售与在途数据。</p>
+    <p>登录后选择吉客云或金蝶，进入对应的数据分析系统。</p>
     {error && <p role="alert">{verificationUnavailable ? '钉钉公司身份核验暂时不可用，原登录凭证已保留。请稍后点击“重试验证”，无需重新扫码；验证完成前暂停访问业务数据。' : ding?'登录未完成。请确认使用本公司钉钉账号、账户已启用，并稍后重试；持续失败请联系管理员检查应用权限。':'登录失败或尝试过于频繁，请检查账号密码后稍后重试。'}</p>}
     {verificationUnavailable && <a className="inventory-dingtalk-login" href={verificationRetryPath(returnTo)}>重试验证</a>}
-    {ding && (ready?<a className="inventory-dingtalk-login" href={'/api/auth/dingtalk/start?'+new URLSearchParams({returnTo:returnTo||'/'})}>使用公司钉钉登录</a>:<p role="status">公司钉钉登录配置尚未完成，请联系管理员。</p>)}
+    {ding && (ready?<a className="inventory-dingtalk-login" href={'/api/auth/dingtalk/start?'+new URLSearchParams({returnTo:returnTo||'/'})}>使用公司钉钉登录</a>:<><button className="inventory-dingtalk-login" disabled>使用公司钉钉登录</button><p role="status">公司钉钉登录配置尚未完成，请联系管理员配置应用及HTTPS回调地址。</p></>)}
     {ding&&<p className="inventory-login-hint">仅限本公司成员。登录默认记住 {sessionMaxAge(true)/86400} 天，使用时自动续期；手机和电脑分别记忆。首次登录自动开通，仓库和数据按账户独立保存。</p>}
-    {local&&(ding?<details className="inventory-local-login"><summary>管理员恢复登录</summary>{passwordForm}</details>:passwordForm)}
+    {local&&(ding?<details className="inventory-local-login"><summary>管理员恢复登录</summary>{passwordForm}</details>:<>{process.env.INVENTORY_PREVIEW_TEST_LOGIN === 'true' && <p role="status">本页仅供隔离开发回归。正式业务入口统一使用公司钉钉登录。</p>}{passwordForm}</>)}
   </section></main>;
 }

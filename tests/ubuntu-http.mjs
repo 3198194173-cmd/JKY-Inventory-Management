@@ -83,7 +83,7 @@ try {
   r=await fetch(url+'/api/transit?warehouseCode=NOT-OWNED',{headers:{cookie}});assert.equal(r.ok,false);
   assert.equal(inventory.rows[0].metrics.average7,null);
   assert.equal(inventory.rows[0].metrics.reason,'insufficient_data');
-  r=await fetch(url+'/',{headers:{cookie}});const pageHtml=await r.text();assert.equal(r.status,200);
+  r=await fetch(url+'/jackyun',{headers:{cookie}});const pageHtml=await r.text();assert.equal(r.status,200);
   const headings=[...pageHtml.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/g)].map(match=>match[1].replace(/<[^>]*>/g,'').trim());
   assert.ok(headings.some(label=>label.startsWith('销售均值')),'包含可排序销售均值表头');assert.ok(headings.some(label=>label.startsWith('库存周转')),'包含可排序库存周转表头');assert.doesNotMatch(pageHtml,/<span>近7天 · 估算<\/span>|<span>天 · 估算<\/span>|<span>销售量<\/span>/);
   assert.doesNotMatch(pageHtml,/<th[^>]*>单位<\/th>/);
@@ -146,7 +146,7 @@ try {
       assert.ok(data.rows.every((row,i)=>i===0 || Number(data.rows[i-1].quantity)>=Number(row.quantity)),'HTTP无排序参数时默认库存降序');
     }
   }
-  r=await fetch(url+'/',{headers:{cookie}});const sortedHtml=await r.text();
+  r=await fetch(url+'/jackyun',{headers:{cookie}});const sortedHtml=await r.text();
   // Root defaults to CK031, so verify the controls through a warehouse-specific
   // API above; visual checks use the isolated preview warehouse.
   assert.equal(r.status,200);assert.doesNotMatch(sortedHtml,/>已核验<\/small>/);

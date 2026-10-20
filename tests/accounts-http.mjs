@@ -48,7 +48,16 @@ try{
   r=await call('/api/workspace','b',{accountId:'a'});assert.equal(r.status,403);
   r=await call('/api/inventory?warehouseCode=SAME','b',undefined,'GET',{cookie:'inventory_session='+tokens.b+'; inventory_workspace=a'});assert.equal(r.status,403);
   r=await call('/api/warehouses','a',{code:'A2',name:'只属于甲',owner:'owner-b'});assert.equal(r.status,200);assert.ok(db.prepare("SELECT 1 FROM warehouses WHERE owner='owner-a' AND code='A2'").get());assert.equal(db.prepare("SELECT 1 FROM warehouses WHERE owner='owner-b' AND code='A2'").get(),undefined);
-  r=await fetch(url+'/',{headers:headers('fresh')});assert.equal(r.status,200);assert.match(await r.text(),/选择你的第一个仓库/);assert.equal(db.prepare("SELECT COUNT(*) AS n FROM warehouses WHERE owner='owner-fresh'").get().n,0);
+  r=await fetch(url+'/',{headers:headers('fresh')});assert.equal(r.status,200);assert.match(await r.text(),/选择数据平台/);assert.equal(db.prepare("SELECT COUNT(*) AS n FROM warehouses WHERE owner='owner-fresh'").get().n,0);
+  for(const route of ['/platforms','/jackyun','/kingdee']){
+    r=await fetch(url+route,{redirect:'manual'});assert.equal(r.status,307,route+'需要登录');assert.match(r.headers.get('location'),/^\/login\?/);
+  }
+  r=await fetch(url+'/jackyun',{headers:headers('fresh')});assert.equal(r.status,200);assert.match(await r.text(),/选择你的第一个仓库/);
+  const beforeKingdee={warehouses:db.prepare('SELECT COUNT(*) AS n FROM warehouses').get().n,snapshots:db.prepare('SELECT COUNT(*) AS n FROM stock_snapshots').get().n,jobs:db.prepare('SELECT COUNT(*) AS n FROM local_jobs').get().n};
+  r=await fetch(url+'/kingdee',{headers:headers('a')});assert.equal(r.status,200);const kingdeeHtml=await r.text();assert.match(kingdeeHtml,/先导入你的金蝶报表/);assert.doesNotMatch(kingdeeHtml,/独立库存货品|员工甲仓库|员工乙仓库/);
+  assert.deepEqual({warehouses:db.prepare('SELECT COUNT(*) AS n FROM warehouses').get().n,snapshots:db.prepare('SELECT COUNT(*) AS n FROM stock_snapshots').get().n,jobs:db.prepare('SELECT COUNT(*) AS n FROM local_jobs').get().n},beforeKingdee,'访问金蝶不初始化或修改吉客云业务');
+  r=await fetch(url+'/platforms?returnTo=https%3A%2F%2Fevil.example',{headers:headers('a')});assert.equal(r.status,200);const selector=await r.text();assert.match(selector,/href="\/jackyun"/);assert.match(selector,/href="\/kingdee"/);assert.doesNotMatch(selector,/href="https:\/\/evil.example/);
+  r=await fetch(url+'/jackyun',{headers:headers('a')});assert.equal(r.status,200);assert.match(await r.text(),/独立库存货品/);
   r=await fetch(url+'/api/warehouses/available');assert.equal(r.status,401);
   r=await call('/api/warehouses/available','fresh',undefined,'GET');assert.equal(r.status,400);assert.match((await r.json()).error,/AppSecret/);
   r=await call('/api/warehouses','b',{code:'CSRF'},'POST',{origin:'https://evil.example'});assert.equal(r.status,400);

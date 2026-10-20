@@ -1,0 +1,122 @@
+{
+  "version": 2,
+  "confirmedOn": "2026-10-20",
+  "companySales": {
+    "quantityField": "出库数量",
+    "giftPolicy": "ignore_flag_include_all",
+    "negativeQuantityPolicy": "preserve_signed_quantity",
+    "excludeCustomerContains": [
+      "CASEBANG福田星河店",
+      "CASEBANG宝安壹方城店",
+      "CASEBANG武汉天地壹方南馆店",
+      "CASEBANG武汉万象城店",
+      "CASEBANG西安赛格店",
+      "casebang门店预定单"
+    ],
+    "note": "用户确认直接汇总出库数量，不依据赠品标记筛选；旧客户排除条件保留，未新增排除项。负数原样参与汇总。"
+  },
+  "warehouses": {
+    "initialExpectedCounts": {
+      "inner": 5,
+      "outer": 6
+    },
+    "membershipConfirmed": true,
+    "scopeMode": "selected_warehouses",
+    "members": [
+      {
+        "name": "CASEBANG电商仓",
+        "group": "inner"
+      },
+      {
+        "name": "Casebang Tiktok FBT美国仓",
+        "group": "outer"
+      },
+      {
+        "name": "Casebang Tiktok 菲律宾仓",
+        "group": "outer"
+      },
+      {
+        "name": "Casebang Tiktok 美国仓",
+        "group": "outer"
+      },
+      {
+        "name": "Casebang Tiktok 泰国仓",
+        "group": "outer"
+      },
+      {
+        "name": "Casebang Tiktok 新加坡仓",
+        "group": "outer"
+      },
+      {
+        "name": "Casebang Tiktok 越南仓",
+        "group": "outer"
+      },
+      {
+        "name": "CASEBANG手妖零售仓",
+        "group": "outer"
+      },
+      {
+        "name": "广州常温C小件3C1号库-CHN",
+        "group": "outer"
+      },
+      {
+        "name": "易速菲泰国8仓成品仓",
+        "group": "outer"
+      }
+    ],
+    "unassignedPolicy": "pending",
+    "note": "2026-10-20截图确认1内9外，以本次名单为准，覆盖之前5/6个的初始说明。本次仅统计名单内仓库；其他仓库保留范围外记录，不自动并入。名单可增减。"
+  },
+  "dimensions": [
+    {
+      "key": "category",
+      "label": "类目",
+      "legacyColumn": "A",
+      "values": [],
+      "newValuePolicy": "retain_pending"
+    },
+    {
+      "key": "model",
+      "label": "型号",
+      "legacyColumn": "B",
+      "values": [],
+      "newValuePolicy": "retain_pending"
+    },
+    {
+      "key": "pod",
+      "label": "POD标识",
+      "legacyColumn": "C",
+      "values": [],
+      "newValuePolicy": "retain_pending"
+    },
+    {
+      "key": "ip",
+      "label": "IP",
+      "legacyColumn": "D",
+      "values": [],
+      "newValuePolicy": "retain_pending"
+    }
+  ],
+  "classificationOverrides": [],
+  "settlementPrice": {
+    "source": "用户2026-10-19确认的销售价目表导出",
+    "codeField": "物料编码",
+    "priceField": "价格",
+    "requiredProfile": {
+      "币别": "人民币",
+      "含税": "是",
+      "价目对象": "按物料",
+      "整单状态": "已审核",
+      "销售组织": "CASEBANG事业部"
+    },
+    "conflictPolicy": "pending_no_first_row_selection",
+    "comparisonTolerance": "0",
+    "historicalBackfill": false,
+    "note": "本次文件作为新批次结算价来源；没有单位、价格生效日期等列，不据此推断历史有效期。旧CK不直接覆盖；同码多价格或不同价目表编号先列冲突。"
+  },
+  "storeSales": {
+    "quantityField": "基本数量",
+    "scopeStatus": "pending_reconciliation",
+    "note": "本次输入为已审核零售结存单；10.1—8与旧CE差115，未自动宣称门店口径已确认。"
+  }
+}

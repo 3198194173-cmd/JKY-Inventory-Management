@@ -209,7 +209,7 @@ export default function InventoryDashboard({ initial, initialAlerts, accountProf
 
   return <main className="compact-app">
     <header className="compact-header">
-      <div className="compact-brand"><span className="compact-logo"><Warehouse size={22}/></span><h1>仓库数据</h1></div>
+      <div className="compact-brand"><span className="compact-logo"><Warehouse size={22}/></span><h1>吉客云仓库数据</h1></div>
       <nav className="compact-navigation" aria-label="仓库功能">
         <span className="compact-nav-active" aria-current="page"><ChartNoAxesCombined/>库存与销售</span>
         <Button variant="ghost" onClick={() => openTransit('')}><Truck/>在途记录</Button>
