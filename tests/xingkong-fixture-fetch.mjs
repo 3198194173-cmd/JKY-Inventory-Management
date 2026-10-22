@@ -13,7 +13,14 @@ globalThis.fetch = async (input, init) => {
   if (url.pathname.includes('ExecuteBillQuery')) return new Response('[[3780019,"103","CASEBANG事业部"]]');
   if (url.pathname.includes('GetSysReportData')) {
     const query = JSON.parse(body.data);
-    if (query.Limit !== 20 || query.StartRow !== 0) throw new Error('Fixture only permits twenty rows');
+    if(query.Limit===10000){
+      if(query.StartRow!==0)throw new Error('Unexpected fixture full page');
+      const business={FSETTLEORGNAME:'CASEBANG事业部',FSALEORGNAME:'CASEBANG事业部',FMATERIALNUMBER:'A',FMATERIALNAME:'离线商品A',FCUSTOMERNUMBER:'C1',FCUSTOMERNAME:'离线客户',FUNITNAME:'Pcs',FCURRENCYNAME:'人民币',FISFREE:'是',FMATERIALID:'123',FOUTSTOCKQTY:'5'};
+      const excluded={...business,FCUSTOMERNUMBER:'C2',FCUSTOMERNAME:'casebang福田星河店',FOUTSTOCKQTY:'7'};
+      const subtotal=row=>({...row,FSETTLEORGNAME:'',FCUSTOMERNUMBER:'',FCUSTOMERNAME:'',FUNITNAME:'',FCURRENCYNAME:'',FISFREE:'',FMATERIALID:'123(小计)'});
+      return Response.json({Result:{IsSuccess:true,RowCount:4,Rows:[business,subtotal(business),excluded,subtotal(excluded)].map(row=>query.FieldKeys.split(',').map(field=>row[field]??''))}});
+    }
+    if (query.Limit !== 20 || query.StartRow !== 0) throw new Error('Unexpected fixture query');
     return Response.json({ Result: { IsSuccess: true, RowCount: 100, Rows: [query.FieldKeys.split(',').map(field => ({ FSETTLEORGNAME: 'CASEBANG事业部', FSALEORGNAME: 'CASEBANG事业部', FMATERIALNUMBER: 'OFFLINE-001', FMATERIALNAME: '离线测试商品（非ERP数据）', FCUSTOMERNAME: '离线客户', FOUTSTOCKQTY: '-2.5' })[field] ?? '')] } });
   }
   if (url.pathname.includes('StockReportQueryService')) {

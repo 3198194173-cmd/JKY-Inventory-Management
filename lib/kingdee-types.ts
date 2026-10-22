@@ -11,7 +11,7 @@ export type KingdeeRules = {
   warehouses: { members: WarehouseMember[]; scopeMode: string; membershipConfirmed: boolean };
   settlementPrice: { requiredProfile: Record<string, string> };
 };
-export type SourceMeta = { kind: SourceKind; name: string; sha256: string; size: number; rows: number; conditions: string; total: string | null; originBatchId?: string };
+export type SourceMeta = { kind: SourceKind; name: string; sha256: string; size: number; rows: number; conditions: string; total: string | null; originBatchId?: string; originCollectionId?: string };
 export type SourceReferences = Partial<Record<SourceKind, string>>;
 export type ExcelCellStyle = { background: string; color: string; font: string; size: number; bold: boolean; italic: boolean; strike: boolean; align: string; format: string };
 export type KingdeeTemplate = {

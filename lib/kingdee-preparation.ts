@@ -1,10 +1,11 @@
 import { sourceKinds, sourceLabels, type KingdeeBatch, type SourceKind, type SourceMeta, type SourceReferences } from './kingdee-types';
+import type { CollectionReferences, XingkongCollection } from './kingdee-xingkong-types';
 
 export type SourceMode = 'api' | 'upload' | 'saved' | 'omit';
-export type SourceChoice = { mode: SourceMode; batchId: string };
+export type SourceChoice = { mode: SourceMode; batchId: string; collectionId?: string };
 export type SourceChoices = Record<SourceKind, SourceChoice>;
 export type FileInfo = { name: string; size: number };
-export type PreparedSource = { kind: SourceKind; mode: SourceMode; name: string; size: number; ready: boolean; status: string; issue: string; batch?: KingdeeBatch; source?: SourceMeta };
+export type PreparedSource = { kind: SourceKind; mode: SourceMode; name: string; size: number; ready: boolean; status: string; issue: string; batch?: KingdeeBatch; source?: SourceMeta; collection?: XingkongCollection };
 
 export function preparationChoices(batch: KingdeeBatch | null, preset: 'mixed' | 'upload' | 'saved' = 'mixed'): SourceChoices {
   return Object.fromEntries(sourceKinds.map(kind => {
@@ -14,12 +15,15 @@ export function preparationChoices(batch: KingdeeBatch | null, preset: 'mixed' |
   })) as SourceChoices;
 }
 
-export function assessPreparation(choices: SourceChoices, files: Partial<Record<SourceKind, FileInfo>>, history: KingdeeBatch[]) {
+export function assessPreparation(choices: SourceChoices, files: Partial<Record<SourceKind, FileInfo>>, history: KingdeeBatch[], collections: XingkongCollection[] = []) {
   const rows: PreparedSource[] = sourceKinds.map(kind => {
     const choice = choices[kind];
     const base = { kind, mode: choice.mode, name: '', size: 0, ready: false, status: '', issue: '' };
     if (choice.mode === 'omit') return { ...base, ready: kind === 'legacy', status: '本批不使用', issue: kind === 'legacy' ? '' : '该来源为必需项' };
-    if (choice.mode === 'api') return { ...base, status: '仅可探测20行', issue: '全量接口尚未接通，探测样本不能生成明细，请选择上传Excel或完整已保存版本' };
+    if (choice.mode === 'api') {
+      const collection = collections.find(job=>job.id===choice.collectionId && job.kind===kind && job.state==='ready' && job.source);
+      return collection ? {...base,name:collection.source!.name,size:collection.source!.size,ready:true,status:'已选完整采集来源',collection} : {...base,status:kind==='companySales'?'未选择完整采集':'库存先探测或上传',issue:kind==='companySales'?'请完成全量销售采集并采用结果；20行样本不能生成明细':'库存全量接口尚未接通，请上传Excel或选择已保存版本'};
+    }
     if (choice.mode === 'saved') {
       const batch = history.find(batch => batch.id === choice.batchId && batch.state === 'ready');
       const source = batch?.sources.find(source => source.kind === kind);
@@ -35,5 +39,6 @@ export function assessPreparation(choices: SourceChoices, files: Partial<Record<
   if (size > 50 * 1024 * 1024) issues.push('本批上传与复用文件合计不能超过50MB');
   const required = rows.filter(row => row.kind !== 'legacy');
   const references = Object.fromEntries(rows.filter(row => row.mode === 'saved' && row.ready).map(row => [row.kind, row.batch!.id])) as SourceReferences;
-  return { rows, size, issues, ready: issues.length === 0, readyCount: required.filter(row => row.ready).length, references };
+  const collectionReferences = Object.fromEntries(rows.filter(row=>row.mode==='api' && row.ready && row.collection).map(row=>[row.kind,row.collection!.id])) as CollectionReferences;
+  return { rows, size, issues, ready: issues.length === 0, readyCount: required.filter(row => row.ready).length, references, collectionReferences };
 }

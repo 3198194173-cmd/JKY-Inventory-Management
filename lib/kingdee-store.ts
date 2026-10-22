@@ -9,7 +9,7 @@ import { AccessError } from './accounts';
 import { sourceKinds, type KingdeeBatch, type KingdeeGoods, type KingdeeReport, type KingdeeRules, type SourceKind, type SourceReferences, type WarehouseMember } from './kingdee-types';
 import type { ImportFile } from './kingdee-import';
 import { defaultKingdeeTemplate, sheetDataPath } from './kingdee-sheet';
-import type { XingkongProbe } from './kingdee-xingkong-types';
+import type { CollectionReferences, XingkongCollection, XingkongProbe } from './kingdee-xingkong-types';
 
 let connection: DatabaseSync | undefined;
 let busy = false;
@@ -32,6 +32,9 @@ function db() {
       category TEXT, model TEXT, pod TEXT, ip TEXT, price_status TEXT NOT NULL, unclassified INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(batch_id,code));`);
   database.exec(`CREATE TABLE IF NOT EXISTS kd_probes(id TEXT PRIMARY KEY,owner TEXT NOT NULL,actor_id TEXT NOT NULL,created_at TEXT NOT NULL,kind TEXT NOT NULL,data TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS kd_probe_owner ON kd_probes(owner,created_at DESC);`);
+  database.exec(`CREATE TABLE IF NOT EXISTS kd_collections(id TEXT PRIMARY KEY,owner TEXT NOT NULL,actor_id TEXT NOT NULL,runner TEXT NOT NULL,state TEXT NOT NULL,created_at TEXT NOT NULL,data TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS kd_collection_owner ON kd_collections(owner,created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS kd_collection_active ON kd_collections(owner) WHERE state IN ('running','cancelling');`);
   connection = database;
   if (!database.prepare('PRAGMA table_info(kd_batches)').all().some(column => column.name === 'template')) database.exec("ALTER TABLE kd_batches ADD COLUMN template TEXT NOT NULL DEFAULT 'null'");
   return database;
@@ -85,14 +88,45 @@ export function getXingkongProbe(owner: string, id: string): XingkongProbe {
   if (!row) throw new AccessError('找不到当前账户的探测记录', 404);
   return JSON.parse(String(row.data)) as XingkongProbe;
 }
+export function xingkongCollectionDirectory(owner: string, id: string) { return join(batchDirectory(owner,id),'collection'); }
+export function getXingkongCollection(owner: string, id: string): XingkongCollection {
+  if (!/^[\da-f-]{36}$/i.test(id)) throw new AccessError('采集任务编号无效',400);
+  const row = db().prepare('SELECT data FROM kd_collections WHERE id=? AND owner=?').get(id,owner);
+  if (!row) throw new AccessError('找不到当前账户的采集任务',404);
+  return JSON.parse(String(row.data)) as XingkongCollection;
+}
+export function listXingkongCollections(owner: string): XingkongCollection[] {
+  return db().prepare('SELECT data FROM kd_collections WHERE owner=? ORDER BY created_at DESC LIMIT 15').all(owner).map(row=>JSON.parse(String(row.data)) as XingkongCollection);
+}
+export function insertXingkongCollection(owner: string, actor: string, runner: string, collection: XingkongCollection) {
+  if (db().prepare("SELECT id FROM kd_collections WHERE owner=? AND state IN ('running','cancelling')").get(owner)) throw new AccessError('当前账户已有正在运行的采集任务',409);
+  db().prepare('INSERT INTO kd_collections VALUES(?,?,?,?,?,?,?)').run(collection.id,owner,actor,runner,collection.state,collection.createdAt,JSON.stringify(collection));
+}
+export function updateXingkongCollection(owner: string, collection: XingkongCollection) {
+  collection.updatedAt = new Date().toISOString();
+  db().prepare('UPDATE kd_collections SET state=?,data=? WHERE id=? AND owner=?').run(collection.state,JSON.stringify(collection),collection.id,owner);
+}
+export function interruptXingkongCollections(runner: string) {
+  const rows = db().prepare("SELECT owner,data FROM kd_collections WHERE state IN ('running','cancelling') AND runner<>?").all(runner);
+  for (const row of rows) { const job = JSON.parse(String(row.data)) as XingkongCollection; job.state='interrupted'; job.phase='服务重启，采集已中断'; job.error='未发布完整来源；已保存原始页保留，重新采集需再次登录。'; updateXingkongCollection(String(row.owner),job); }
+}
 
-export async function createKingdeeImport(owner: string, actorId: string, uploads: KingdeeUpload[], previousId?: string, references: SourceReferences = {}) {
+export async function createKingdeeImport(owner: string, actorId: string, uploads: KingdeeUpload[], previousId?: string, references: SourceReferences = {}, collectionReferences: CollectionReferences = {}) {
   if (busy) throw new AccessError('正在处理另一批金蝶文件，请稍后重试', 409);
   const previous = previousId ? getKingdeeBatch(owner, previousId) : null;
   if (previous && previous.state !== 'ready') throw new AccessError('该批次尚不能重算', 400);
   const saved = new Map<SourceKind, { batch: KingdeeBatch; source: KingdeeBatch['sources'][number] }>();
+  const collected = new Map<SourceKind, XingkongCollection>();
+  for (const [kind,id] of Object.entries(collectionReferences)) {
+    if (kind !== 'companySales' || typeof id !== 'string') throw new AccessError('仅支持完整公司销售采集来源',400);
+    if (uploads.some(file=>file.kind===kind) || references[kind]) throw new AccessError('同一种来源不能同时上传、复用和选择采集',400);
+    const job = getXingkongCollection(owner,id);
+    if (job.state !== 'ready' || !job.source || job.kind !== kind) throw new AccessError('采集尚未完整完成，不能作为统计来源',400);
+    collected.set(kind,job);
+  }
   if (Object.keys(references).some(key => !sourceKinds.includes(key as SourceKind))) throw new AccessError('来源类型无效', 400);
   for (const kind of sourceKinds) {
+    if (collected.has(kind)) continue;
     const reference = references[kind] || previous?.id;
     if (uploads.some(file => file.kind === kind)) { if (references[kind]) throw new AccessError('同一种来源不能同时上传和复用', 400); continue; }
     if (!reference) continue;
@@ -102,8 +136,8 @@ export async function createKingdeeImport(owner: string, actorId: string, upload
     if (!source) { if (references[kind]) throw new AccessError('所选批次不包含该来源', 400); continue; }
     saved.set(kind, { batch, source });
   }
-  if (sourceKinds.slice(0, 5).some(kind => !uploads.some(file => file.kind === kind) && !saved.has(kind))) throw new AccessError('请准备四份业务表和销售价目表，或明确选择已保存版本', 400);
-  const bytes = uploads.reduce((sum, file) => sum + file.bytes.length, 0) + [...saved.values()].reduce((sum, item) => sum + item.source.size, 0);
+  if (sourceKinds.slice(0, 5).some(kind => !uploads.some(file => file.kind === kind) && !saved.has(kind) && !collected.has(kind))) throw new AccessError('请准备四份业务表和销售价目表，或明确选择已保存版本', 400);
+  const bytes = uploads.reduce((sum, file) => sum + file.bytes.length, 0) + [...saved.values()].reduce((sum, item) => sum + item.source.size, 0) + [...collected.values()].reduce((sum,job)=>sum+job.source!.size,0);
   if (bytes > 50 * 1024 * 1024) throw new AccessError('本批上传与复用文件合计不能超过50MB', 413);
   const id = randomUUID(), rules = kingdeeRules(owner), directory = batchDirectory(owner, id);
   const database = db();
@@ -115,11 +149,16 @@ export async function createKingdeeImport(owner: string, actorId: string, upload
     for (const kind of sourceKinds) {
       const upload = uploads.find(file => file.kind === kind);
       const old = saved.get(kind);
-      if (!upload && !old) continue;
+      const collection = collected.get(kind);
+      if (!upload && !old && !collection) continue;
       const path = join(directory, kind + '.xlsx');
       if (upload) await writeFile(path, upload.bytes, { flag: 'wx' });
-      else await copyFile(join(batchDirectory(owner, old!.batch.id), kind + '.xlsx'), path);
-      files.push({ kind, path, name: upload?.name || old!.source.name });
+      else if (collection) {
+        const content = await readFile(join(xingkongCollectionDirectory(owner,collection.id),'source.xlsx'));
+        if (content.length !== collection.source!.size || createHash('sha256').update(content).digest('hex') !== collection.source!.sha256) throw new Error('完整采集来源校验失败，请重新采集');
+        await writeFile(path,content,{flag:'wx'});
+      } else await copyFile(join(batchDirectory(owner, old!.batch.id), kind + '.xlsx'), path);
+      files.push({ kind, path, name: upload?.name || collection?.source!.name || old!.source.name });
     }
     const output = join(directory, 'report.json');
     await new Promise<void>((accept, reject) => {
@@ -132,10 +171,13 @@ export async function createKingdeeImport(owner: string, actorId: string, upload
     });
     const report = JSON.parse(await readFile(output, 'utf8')) as KingdeeReport;
     for (const source of report.sources) {
+      const collection = collected.get(source.kind);
+      if (collection) source.originCollectionId = collection.id;
       const old = saved.get(source.kind);
       if (old) {
         if (source.sha256 !== old.source.sha256 || source.size !== old.source.size) throw new Error('已保存原件校验不一致，请重新上传：' + source.kind);
         source.originBatchId = old.batch.id;
+        if (old.source.originCollectionId) source.originCollectionId = old.source.originCollectionId;
       }
     }
     database.exec('BEGIN IMMEDIATE');
@@ -212,7 +254,15 @@ export async function readKingdeeSubmission(request: Request) {
   const form = await new Response(Buffer.concat(chunks), { headers: { 'Content-Type': type } }).formData();
   const uploads: KingdeeUpload[] = [];
   let references: SourceReferences = {}, seenReferences = false;
+  let collectionReferences: CollectionReferences = {}, seenCollections = false;
   for (const [key, value] of form.entries()) {
+    if (key === 'collectionReferences') {
+      if (seenCollections || typeof value !== 'string' || value.length > 1000) throw new AccessError('采集来源参数无效',400);
+      seenCollections=true;
+      let parsed: unknown; try { parsed=JSON.parse(value); } catch { throw new AccessError('采集来源参数不是有效JSON',400); }
+      if (!parsed || typeof parsed!=='object' || Array.isArray(parsed) || Object.entries(parsed).some(([kind,id])=>kind!=='companySales' || typeof id!=='string' || !/^[\da-f-]{36}$/i.test(id))) throw new AccessError('采集来源参数无效',400);
+      collectionReferences=parsed as CollectionReferences; continue;
+    }
     if (key === 'sourceReferences') {
       if (seenReferences || typeof value !== 'string' || value.length > 1000) throw new AccessError('来源版本参数无效', 400);
       seenReferences = true;
@@ -224,5 +274,5 @@ export async function readKingdeeSubmission(request: Request) {
     if (uploads.some(file => file.kind === key) || !/\.xlsx$/i.test(value.name) || value.size > 32 * 1024 * 1024) throw new AccessError('每种来源只可上传一份xlsx，单份不超过32MB', 400);
     uploads.push({ kind: key as SourceKind, name: value.name.replace(/.*[\\/]/, '').slice(0, 200), bytes: Buffer.from(await value.arrayBuffer()) });
   }
-  return { uploads, references };
+  return { uploads, references, collectionReferences };
 }

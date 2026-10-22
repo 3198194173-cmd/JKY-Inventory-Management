@@ -5,7 +5,10 @@ import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash, randomBytes } from 'node:crypto';
 import { sqlite } from '../lib/sqlite.mjs';
+import { build } from 'esbuild';
 mkdirSync('.sites-runtime/tests', { recursive: true });
+await build({entryPoints:['tests/kingdee-fixtures.ts'],outfile:'.sites-runtime/tests/collection-http-fixtures.mjs',bundle:true,platform:'node',target:'node24',format:'esm'});
+const {fixture}=await import('../.sites-runtime/tests/collection-http-fixtures.mjs');
 const folder = mkdtempSync(resolve('.sites-runtime/tests/xingkong-http-'));
 process.env.INVENTORY_DB_PATH = join(folder, 'inventory.sqlite');
 const db = sqlite(), date = new Date().toISOString(), tokens = {};
@@ -29,11 +32,13 @@ async function stop() { if (server?.exitCode === null) { const done = new Promis
 const headers = who => ({ cookie: 'inventory_session=' + tokens[who], origin: url, 'Content-Type': 'application/json' });
 const post = (path, body, who = 'a', token = '', origin = url) => fetch(url + path, { method: 'POST', headers: { ...headers(who), origin, 'X-Kingdee-Session': token }, body: JSON.stringify(body) });
 const connectionPath = '/api/kingdee/xingkong/connection', probePath = '/api/kingdee/xingkong/probes';
+const collectionPath='/api/kingdee/xingkong/collections';
 const credentials = { accountId: '20200417192138569', username: 'offline-user', password: 'offline-password' };
 const stock = { kind: 'companyStock', start: '2026-10-01', end: '2026-10-31', schemeId: '6ad1c8d85e3e71' };
 try {
   await start();
   assert.equal((await fetch(url + probePath)).status, 401);
+  assert.equal((await fetch(url+collectionPath)).status,401);
   assert.equal((await fetch(url + connectionPath, { method: 'POST', headers: { origin: url, 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) })).status, 401);
   assert.equal((await post(connectionPath, credentials, 'a', '', 'https://evil.test')).status, 400);
   assert.equal((await post(connectionPath, { ...credentials, baseUrl: 'http://169.254.169.254/' })).status, 400);
@@ -55,8 +60,37 @@ try {
   assert.equal((await (await get(probePath, 'b')).json()).probes.length, 0);
   response = await get(probePath + '/' + sample.id + '?download=1'); assert.equal(response.status, 200); assert.match(response.headers.get('content-disposition'), /attachment/);
   assert.equal((await (await get('/api/kingdee')).json()).batch, null);
+  const sales={kind:'companySales',start:stock.start,end:stock.end,salesOrganization:'103',settleOrganization:'103'};
+  assert.equal((await post(collectionPath,sales,'b',connected.token)).status,401);
+  assert.equal((await post(collectionPath,sales,'a',connected.token,'https://evil.test')).status,400);
+  assert.equal((await post(collectionPath,stock,'a',connected.token)).status,422);
+  response=await post(collectionPath,sales,'a',connected.token);assert.equal(response.status,202,await response.clone().text());
+  const collection=(await response.json()).collection;
+  let completed;
+  for(let i=0;i<100;i++){
+    response=await get(collectionPath+'/'+collection.id);assert.equal(response.status,200);
+    completed=(await response.json()).collection;
+    if(!['running','cancelling'].includes(completed.state))break;
+    await new Promise(accept=>setTimeout(accept,100));
+  }
+  assert.equal(completed.state,'ready',completed.error);assert.equal(completed.progress.businessRows,2);
+  assert.equal(completed.progress.subtotalRows,2);assert.equal(completed.progress.excludedCustomerRows,1);assert.equal(completed.progress.includedQuantity,'5');
+  assert.equal((await get(collectionPath+'/'+collection.id,'b')).status,404);
+  assert.equal((await get(collectionPath+'/'+collection.id+'?download=source','b')).status,404);
+  assert.equal((await post(collectionPath+'/'+collection.id+'/cancel',{},'b')).status,404);
+  assert.equal((await (await get(collectionPath,'b')).json()).collections.length,0);
+  response=await get(collectionPath+'/'+collection.id+'?download=source');assert.equal(response.status,200);assert.match(response.headers.get('content-type'),/spreadsheetml/);assert.ok((await response.arrayBuffer()).byteLength>1000);
+  const stats=await (await get(collectionPath+'/'+collection.id+'?download=statistics')).json();assert.equal(stats[0].quantity,'5');
+  const imported=new FormData();for(const [kind,bytes] of Object.entries(fixture))if(kind!=='companySales')imported.append(kind,new File([bytes],kind+'.xlsx'));
+  imported.append('collectionReferences',JSON.stringify({companySales:collection.id}));
+  response=await fetch(url+'/api/kingdee/imports',{method:'POST',headers:{cookie:headers('a').cookie,origin:url},body:imported});assert.equal(response.status,200,await response.clone().text());
+  const batch=(await response.json()).batch;assert.equal(batch.summary.totals.companySales,'5');assert.equal(batch.sources.find(s=>s.kind==='companySales').originCollectionId,collection.id);
+  const invalid=new FormData();invalid.append('collectionReferences','{"companySales":"../outside"}');
+  response=await fetch(url+'/api/kingdee/imports',{method:'POST',headers:{cookie:headers('a').cookie,origin:url},body:invalid});assert.equal(response.status,400);
   assert.equal(db.prepare('SELECT count(*) AS n FROM stock_snapshots').get().n, 0);
   await stop(); await start();
+  assert.equal((await (await get(collectionPath+'/'+collection.id)).json()).collection.state,'ready');
+  assert.equal((await (await get('/api/kingdee')).json()).batch.id,batch.id);
   assert.equal((await get(probePath + '/' + sample.id)).status, 200);
   assert.equal((await post(probePath, stock, 'a', connected.token)).status, 401);
   const next = await (await post(connectionPath, credentials)).json();
@@ -65,6 +99,6 @@ try {
   assert.doesNotMatch(output, /offline-password|fixture-only-private-session|fixture-only-private-query/);
   const audits = db.prepare("SELECT detail FROM account_audit WHERE action LIKE 'kingdee_xingkong_%'").all();
   assert.ok(audits.length >= 3); assert.doesNotMatch(JSON.stringify(audits), /offline-password|fixture-only-private-session|fixture-only-private-query/);
-  console.log('PASS: 星空HTTP离线回归（模拟ERP，未请求真实金蝶）：认证/同源/会话隔离/20行上限/样本留存/重启/下载/审计脱敏/吉客云不写入');
+  console.log('PASS: 星空HTTP离线回归（模拟ERP，未请求真实金蝶）：认证/同源/会话隔离/20行探测/正式销售采集/客户排除/完整来源生成明细/重启/下载/审计脱敏/吉客云不写入');
 } catch (error) { console.error(output); throw error; }
 finally { await stop(); db.close(); }

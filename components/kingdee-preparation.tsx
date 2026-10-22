@@ -3,25 +3,29 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, FileSpreadsheet, LoaderCircle, X } from 'lucide-react';
 import { assessPreparation, preparationChoices, type SourceMode } from '@/lib/kingdee-preparation';
 import { KingdeeXingkongProbe } from './kingdee-xingkong-probe';
-import { sourceKinds, sourceLabels, type KingdeeBatch, type SourceKind } from '@/lib/kingdee-types';
+import { sourceKinds, sourceLabels, type KingdeeBatch, type SourceKind, type KingdeeRules } from '@/lib/kingdee-types';
+import type { XingkongCollection } from '@/lib/kingdee-xingkong-types';
 
 const time = (value: string) => new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 const size = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(2)}MB`;
 const titles: Record<SourceKind, string> = { companySales: '公司销量', companyStock: '公司库存', storeSales: '门店销量', storeStock: '门店库存', prices: '结算价', legacy: '旧明细资料（可选）' };
 const steps = ['准备数据', '核对来源', '生成明细'];
 
-export function KingdeePreparation({ open, batch, history, onClose, onGenerated }: {
-  open: boolean; batch: KingdeeBatch | null; history: KingdeeBatch[]; onClose: () => void; onGenerated: (batch: KingdeeBatch) => Promise<void>;
+export function KingdeePreparation({ open, batch, history, rules, onClose, onGenerated }: {
+  open: boolean; batch: KingdeeBatch | null; history: KingdeeBatch[]; rules: KingdeeRules; onClose: () => void; onGenerated: (batch: KingdeeBatch) => Promise<void>;
 }) {
   const [choices, setChoices] = useState(() => preparationChoices(batch));
   const [files, setFiles] = useState<Partial<Record<SourceKind, File>>>({}), [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [success, setSuccess] = useState<KingdeeBatch | null>(null), [revision, setRevision] = useState(0);
   const [configuration, setConfiguration] = useState(false), [refreshError, setRefreshError] = useState('');
   const [probeKind, setProbeKind] = useState<'companySales' | 'companyStock'>('companySales');
+  const [collections,setCollections] = useState<XingkongCollection[]>([]);
+  const [collectionError,setCollectionError] = useState('');
   const sending = useRef(false);
   const dialog = useRef<HTMLElement>(null);
   const readyHistory = history.filter(item => item.state === 'ready');
-  const assessment = assessPreparation(choices, files, readyHistory);
+  const assessment = assessPreparation(choices, files, readyHistory, collections);
+  useEffect(()=>{if(!open)return;const abort=new AbortController();fetch('/api/kingdee/xingkong/collections',{signal:abort.signal,cache:'no-store'}).then(async response=>{if(!response.ok)throw new Error();const result=await response.json() as {collections:XingkongCollection[]};setCollections(result.collections);setCollectionError('');}).catch(()=>{if(!abort.signal.aborted)setCollectionError('完整采集记录暂时未读取，请重新打开连接与采集窗口查看。');});return()=>abort.abort();},[open]);
   useEffect(() => {
     if (!open) return;
     const prior = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -41,6 +45,7 @@ export function KingdeePreparation({ open, batch, history, onClose, onGenerated 
       const data = new FormData();
       for (const kind of sourceKinds) if (choices[kind].mode === 'upload' && files[kind]) data.append(kind, files[kind]!);
       data.append('sourceReferences', JSON.stringify(assessment.references));
+      data.append('collectionReferences',JSON.stringify(assessment.collectionReferences));
       const response = await fetch('/api/kingdee/imports', { method: 'POST', body: data });
       const result = await response.json() as { batch?: KingdeeBatch; error?: string };
       if (!response.ok || !result.batch) throw new Error(result.error || '生成失败，请稍后重试');
@@ -68,13 +73,14 @@ export function KingdeePreparation({ open, batch, history, onClose, onGenerated 
       {success ? <section className="kd-prep-success" aria-label="明细生成完成"><span><Check size={27}/></span><h3>本批明细已生成</h3><p>{success.summary.goods.toLocaleString('zh-CN')}个商品 · 规则v{success.rules.version} · {time(success.createdAt)}</p><p>来源原件、版本和计算结果已保存，可返回工作台查看或导出。</p>{refreshError && <p role="alert">{refreshError}</p>}<a href={'/api/kingdee/export?batch=' + success.id}>导出本批Excel</a></section> : <>
         {step === 0 && <>
           <div className="kd-prep-presets"><span>准备方式</span><button disabled={busy} onClick={() => reset('mixed')}>星空采集＋星辰上传</button><button disabled={busy} onClick={() => reset('upload')}>全部上传Excel</button>{batch && <button disabled={busy} onClick={() => reset('saved')}>沿用当前批次来源</button>}</div>
-          <p className="kd-prep-hint">星空已支持连接测试和20行探测，全量采集待联调。生成明细请上传Excel或选择完整已保存版本；探测样本不会计入就绪来源。</p>
+          <p className="kd-prep-hint">销售已支持后台全量采集，剔除小计/总计并执行六客户排除；库存先探测或上传Excel。只有完成的采集来源可生成明细，20行样本不计入。</p>
+          {collectionError && <p className="kd-error">{collectionError}</p>}
           <div className="kd-prep-source-list">{assessment.rows.map((row, index) => {
             const available = readyHistory.filter(item => item.sources.some(source => source.kind === row.kind));
             const company = row.kind === 'companySales' || row.kind === 'companyStock';
             return <article key={row.kind} className="kd-prep-source"><header><span className="kd-source-index">{index + 1}</span><div><h3>{titles[row.kind]}</h3><p>{sourceLabels[row.kind]}</p></div><span className={'kd-prep-state ' + (row.ready ? 'is-ready' : 'is-pending')}>{row.status}</span></header>
               <div className="kd-source-mode" role="group" aria-label={titles[row.kind] + '获取方式'}>{company && <button disabled={busy} aria-pressed={row.mode === 'api'} onClick={() => choose(row.kind, 'api')}>接口采集 · 先探测</button>}<button disabled={busy} aria-pressed={row.mode === 'upload'} onClick={() => choose(row.kind, 'upload')}>上传Excel</button><button disabled={busy || !available.length} aria-pressed={row.mode === 'saved'} onClick={() => choose(row.kind, 'saved')}>选已保存版本</button>{row.kind === 'legacy' && <button disabled={busy} aria-pressed={row.mode === 'omit'} onClick={() => choose('legacy', 'omit')}>本批不使用</button>}</div>
-              {row.mode === 'api' ? <div className="kd-api-pending"><p>先测试账号登录并探测首页最多20行；探测结果单独保存，核对后再联调全量采集。</p><button disabled={busy} onClick={() => { setProbeKind(row.kind === 'companyStock' ? 'companyStock' : 'companySales'); setConfiguration(true); }}>连接与20行探测</button><button disabled>全量采集（待联调）</button></div>
+              {row.mode === 'api' ? <div className="kd-api-pending">{row.collection ? <p>完整来源：{row.name}<br/>业务{row.collection.progress.businessRows}行，客户排除{row.collection.progress.excludedCustomerRows}行，正式销量{row.collection.progress.includedQuantity}。生成时按本批规则重算。</p> : <p>{row.kind==='companySales'?'登录后可以探测或开始全量销售采集，完成后选择采用来源。':'库存暂不执行全量采集，请先核对样本或改用Excel。'}</p>}<button disabled={busy} onClick={() => { setProbeKind(row.kind === 'companyStock' ? 'companyStock' : 'companySales'); setConfiguration(true); }}>连接与采集</button></div>
                 : row.mode === 'upload' ? <label className="kd-prep-file"><FileSpreadsheet size={18}/><span>{files[row.kind]?.name || '选择原始导出的.xlsx文件'}</span><input key={revision + row.kind} aria-label={'上传' + sourceLabels[row.kind]} type="file" accept=".xlsx" disabled={busy} onChange={event => { setFiles(previous => ({ ...previous, [row.kind]: event.target.files?.[0] })); setError(''); }}/>{row.name && <small>{size(row.size)}</small>}</label>
                 : row.mode === 'saved' ? <><label className="kd-saved-choice">选择来源版本<select aria-label={titles[row.kind] + '来源版本'} value={choices[row.kind].batchId} disabled={busy} onChange={event => setChoices(previous => ({ ...previous, [row.kind]: { ...previous[row.kind], batchId: event.target.value } }))}><option value="">请选择</option>{available.map(item => <option key={item.id} value={item.id}>{time(item.createdAt)} · {item.sources.find(source => source.kind === row.kind)!.name}</option>)}</select></label>{row.source && <p className="kd-source-note">原件 {row.source.rows.toLocaleString('zh-CN')}行 · {size(row.size)} · 沿用所选批次文件，本次不会重新采集。</p>}</>
                 : <p className="kd-source-note">不提供旧明细时，历史缓存和旧分类可能为空，新业务商品仍保留。</p>}
@@ -87,6 +93,6 @@ export function KingdeePreparation({ open, batch, history, onClose, onGenerated 
       </>}
     </div>
     <footer className="kd-prep-footer"><span>{success ? '已完成' : `必要来源 ${assessment.readyCount}/5 · 单份≤32MB，合计≤50MB`}</span><div>{success ? <><button onClick={() => { setSuccess(null); reset('mixed'); }}>继续准备下一批</button><button className="kd-primary" onClick={() => refreshError ? window.location.reload() : close()}>{refreshError ? '重新载入工作台' : '查看明细'}</button></> : <>{step > 0 && <button disabled={busy} onClick={() => setStep(step - 1)}><ChevronLeft size={14}/>上一步</button>}{step < 2 ? <button className="kd-primary" disabled={busy} onClick={() => setStep(step + 1)}>{step === 0 ? '核对来源' : '进入生成'}<ChevronRight size={14}/></button> : <button className="kd-primary" disabled={busy || !assessment.ready} onClick={() => void generate()}>{busy ? '生成中…' : '生成明细'}</button>}</>}</div></footer>
-    {configuration && <KingdeeXingkongProbe initialKind={probeKind} onClose={closeConfiguration}/>}
+    {configuration && <KingdeeXingkongProbe initialKind={probeKind} customerExclusions={rules.companySales.excludeCustomerContains} onUse={collection=>{setCollections(previous=>[collection,...previous.filter(job=>job.id!==collection.id)]);setChoices(previous=>({...previous,companySales:{mode:'api',batchId:'',collectionId:collection.id}}));setCollectionError('');closeConfiguration();}} onClose={closeConfiguration}/>}
   </section></div>;
 }

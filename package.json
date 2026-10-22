@@ -21,7 +21,8 @@
     "test:ubuntu": "node tests/run-ubuntu.mjs",
     "test:accounts": "node tests/run-accounts.mjs",
     "test:kingdee": "node tests/run-kingdee.mjs",
-    "test:xingkong": "node tests/run-xingkong.mjs"
+    "test:xingkong": "node tests/run-xingkong.mjs",
+    "test:collections": "node tests/run-collections.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

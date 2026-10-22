@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AccessError } from './accounts';
 import { parseLosslessJson } from './lossless-json';
 import { xingkongBaseUrl, type XingkongKind, type XingkongOrganization, type XingkongProbe, type XingkongSettings } from './kingdee-xingkong-types';
+import { classifySalesRow, excludedCustomer, type SalesRow } from './kingdee-sales-source';
 
 // Ported from 金蝶/scripts/kingdee-report.mjs and kingdee-stock-report.mjs.
 // The destination and four read-only service paths cannot be supplied by a browser.
@@ -58,8 +59,8 @@ class XingkongClient {
   readonly abort = new AbortController();
   constructor(private fetcher: typeof fetch) {}
   dispose() { this.abort.abort(); this.cookies.clear(); this.sessionHeaders = {}; }
-  async post(service: keyof typeof services, payload: unknown, signal?: AbortSignal) {
-    const signals = [this.abort.signal, AbortSignal.timeout(service === 'login' ? 25000 : service === 'organizations' ? 25000 : 120000), ...(signal ? [signal] : [])];
+  async post(service: keyof typeof services, payload: unknown, signal?: AbortSignal, full = false) {
+    const signals = [this.abort.signal, AbortSignal.timeout(service === 'login' ? 25000 : service === 'organizations' ? 25000 : full ? 300000 : 120000), ...(signal ? [signal] : [])];
     let response: Response;
     try {
       response = await this.fetcher(new URL(services[service], xingkongBaseUrl), { method: 'POST', redirect: 'error', cache: 'no-store',
@@ -74,7 +75,7 @@ class XingkongClient {
     for (const key of ['kdservice-sessionid', 'kdservice-userpk']) { const value = response.headers.get(key); if (value) this.sessionHeaders[key] = value; }
     const reader = response.body?.getReader(); ensure(reader, '金蝶返回空响应', 502);
     const chunks: Uint8Array[] = []; let size = 0;
-    try { while (true) { const { value, done } = await reader.read(); if (done) break; size += value.length; if (size > 4 * 1024 * 1024) { await reader.cancel(); throw new Error(); } chunks.push(value); } }
+    try { while (true) { const { value, done } = await reader.read(); if (done) break; size += value.length; if (size > (full ? 32 : 4) * 1024 * 1024) { await reader.cancel(); throw new Error(); } chunks.push(value); } }
     catch { throw new AccessError('金蝶响应过大或读取失败，探测已停止', 502); }
     let body: unknown;
     try { body = parseLosslessJson(Buffer.concat(chunks).toString('utf8')); if (typeof body === 'string') body = parseLosslessJson(body); }
@@ -101,6 +102,29 @@ type Binding = { actor: string; owner: string };
 type Session = Binding & { client: XingkongClient; accountId: string; expiresAt: number; busy: boolean; expiry: ReturnType<typeof setTimeout> };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 type ProbeOptions = { signal?: AbortSignal; excludeCustomers: string[] };
+export type SalesCollectionLease = {
+  accountId: string; settings: XingkongSettings; signal: AbortSignal;
+  prepare: () => Promise<void>;
+  page: (startRow: number, limit: number) => Promise<{ request: Record<string, unknown>; organizations: XingkongOrganization[]; rows: SalesRow[]; total: number }>;
+  dispose: () => void;
+};
+
+function salesRequest(settings: XingkongSettings, organizations: XingkongOrganization[], startRow: number, limit: number) {
+  return { FieldKeys: salesColumns.map(column => column[1]).join(','), SchemeId: '', StartRow: startRow, Limit: limit, IsVerifyBaseDataField: true, FilterString: [], Model: {
+    FStartDate: settings.start, FEndDate: settings.end, FStartMaterial: { FNUMBER: '' }, FEndMaterial: { FNUMBER: '' }, FStartCustomer: { FNumber: '' }, FEndCustomer: { FNumber: '' }, FStartDepartment: { FNUMBER: '' }, FEndDepartment: { FNUMBER: '' },
+    FBillStatus: 'ALL', FIsIncludeInnerExchangeBill: false, FIsIncludeSerMat: true, FSaleOrgId: organizations[0].id, FSettleOrgId: organizations[1].id, FSuite: 'All', FIsGroupCust: false, FOnlyOutReturnData: false, FIncludeRefundNoGoods: false, FIsIncludeGift: true,
+  } };
+}
+function mapSalesRows(raw: unknown, maxRows: number): SalesRow[] {
+  ensure(Array.isArray(raw) && raw.length <= maxRows, '销售成功响应缺少Rows数组或超过本页上限', 502);
+  return raw.map(value => {
+    let row: Record<string, unknown>;
+    if (Array.isArray(value)) { ensure(value.length === salesColumns.length, '销售列数与FieldKeys不一致', 502); row = Object.fromEntries(salesColumns.map(([,field],index)=>[field,value[index]])); }
+    else { const original = object(value), keys = new Map(Object.keys(original).map(key=>[key.toLowerCase(),key])); ensure(keys.size === salesColumns.length && salesColumns.every(([,field])=>keys.has(field.toLowerCase())), '销售返回字段不一致', 502); row=Object.fromEntries(salesColumns.map(([,field])=>[field,original[keys.get(field.toLowerCase())!]])); }
+    ensure(Object.values(row).every(value=> value == null || typeof value === 'boolean' || typeof value === 'string' && value.length <= 50000), '销售返回单元格格式异常', 502);
+    return row as SalesRow;
+  });
+}
 
 export class XingkongService {
   private sessions = new Map<string, Session>();
@@ -135,6 +159,28 @@ export class XingkongService {
     return session;
   }
   disconnect(binding: Binding, token: string) { const session = this.session(binding, token); clearTimeout(session.expiry); session.client.dispose(); this.sessions.delete(digest(token)); }
+  leaseSalesCollection(binding: Binding, token: string, input: unknown): SalesCollectionLease {
+    const {kind, settings} = readXingkongSettings(input);
+    ensure(kind === 'companySales', '当前只开放已核验的销售全量采集；库存先探测或上传Excel', 422);
+    const session = this.session(binding, token);
+    ensure(!session.busy, '连接正在探测，请等待当前请求结束', 409);
+    // Transfer the memory-only connection to a bounded background job. Closing the browser cannot cancel it.
+    clearTimeout(session.expiry); this.sessions.delete(digest(token));
+    const expiry = setTimeout(()=>session.client.dispose(), 45*60000); expiry.unref();
+    let organizations: XingkongOrganization[] = [];
+    return { accountId: session.accountId, settings, signal: session.client.abort.signal,
+      prepare: async () => { const sale = await session.client.organization(settings.salesOrganization); const settle = settings.salesOrganization === settings.settleOrganization ? sale : await session.client.organization(settings.settleOrganization); organizations = [sale,settle]; },
+      page: async (startRow, limit) => {
+        ensure(organizations.length === 2 && Number.isInteger(startRow) && startRow >= 0 && Number.isInteger(limit) && limit > 0 && limit <= 10000, '分页参数或组织初始化无效');
+        const request = salesRequest(settings, organizations, startRow, limit);
+        const body = object(await session.client.post('sales',{formid:'SAL_OutStockSummaryRpt',data:JSON.stringify(request)},undefined,true));
+        const result = object(body.Result), status = result.ResponseStatus == null ? null : object(result.ResponseStatus);
+        ensure(success(result.IsSuccess) && (!status || status.IsSuccess == null || success(status.IsSuccess)), '销售全量查询失败，请检查报表权限与条件；没有自动重试', 422);
+        return { request, organizations, rows:mapSalesRows(result.Rows,limit+1), total:count(result.RowCount,'RowCount') };
+      },
+      dispose: () => { clearTimeout(expiry); session.client.dispose(); },
+    };
+  }
   async probe(binding: Binding, token: string, input: unknown, options: ProbeOptions): Promise<XingkongProbe> {
     const { kind, settings } = readXingkongSettings(input), session = this.session(binding, token);
     ensure(!session.busy, '该连接正在探测，请等待当前请求结束', 409); session.busy = true;
@@ -146,10 +192,7 @@ export class XingkongService {
         const sale = await session.client.organization(settings.salesOrganization, options.signal);
         const settle = settings.salesOrganization === settings.settleOrganization ? sale : await session.client.organization(settings.settleOrganization, options.signal);
         organizations = [sale, settle];
-        request = { FieldKeys: salesColumns.map(column => column[1]).join(','), SchemeId: '', StartRow: 0, Limit: 20, IsVerifyBaseDataField: true, FilterString: [], Model: {
-          FStartDate: settings.start, FEndDate: settings.end, FStartMaterial: { FNUMBER: '' }, FEndMaterial: { FNUMBER: '' }, FStartCustomer: { FNumber: '' }, FEndCustomer: { FNumber: '' }, FStartDepartment: { FNUMBER: '' }, FEndDepartment: { FNUMBER: '' },
-          FBillStatus: 'ALL', FIsIncludeInnerExchangeBill: false, FIsIncludeSerMat: true, FSaleOrgId: sale.id, FSettleOrgId: settle.id, FSuite: 'All', FIsGroupCust: false, FOnlyOutReturnData: false, FIncludeRefundNoGoods: false, FIsIncludeGift: true,
-        } };
+        request = salesRequest(settings, organizations, 0, 20);
         const body = object(await session.client.post('sales', { formid: 'SAL_OutStockSummaryRpt', data: JSON.stringify(request) }, options.signal));
         const result = object(body.Result), status = result.ResponseStatus == null ? null : object(result.ResponseStatus);
         ensure(success(result.IsSuccess) && (!status || status.IsSuccess == null || success(status.IsSuccess)), '销售汇总查询未成功，请检查报表权限、组织、日期和接口版本', 422);
@@ -182,9 +225,9 @@ export class XingkongService {
         return record as XingkongProbe['rows'][number];
       });
       const rowNotes = rows.map((row, index) => {
-        const displayTotal = kind === 'companySales' && ['FSETTLEORGNAME','FSALEORGNAME','FCUSTOMERNAME','FMATERIALNAME','FMATERIALID'].some(field => typeof row[field] === 'string' && /^(?:小计|合计|总计|汇总)$|[（(](?:小计|合计|总计|汇总)[）)]\s*$/.test(String(row[field]).trim()));
+        const displayTotal = kind === 'companySales' && classifySalesRow(row) !== 'business';
         if (kind === 'companySales' && !displayTotal) ensure(String(row.FSALEORGNAME).toUpperCase() === organizations[0].name.toUpperCase() && String(row.FSETTLEORGNAME).toUpperCase() === organizations[1].name.toUpperCase(), '返回业务行的销售或结算组织与请求不一致，探测未通过', 422);
-        return { row: index + 1, displayTotal, excludedCustomer: kind === 'companySales' && !displayTotal && options.excludeCustomers.some(name => typeof row.FCUSTOMERNAME === 'string' && row.FCUSTOMERNAME.includes(name)) };
+        return { row: index + 1, displayTotal, excludedCustomer: kind === 'companySales' && !displayTotal && excludedCustomer(row, options.excludeCustomers) };
       });
       this.session(binding, token); ensure(!session.client.abort.signal.aborted, '连接已关闭，探测未保存', 401);
       const warnings = ['仅保留首页最多20行，不是全量数据；不会进入明细生成，不证明与页面报表逐行一致。', '负数、空白和赠品标记保留原始值，不对探测样本计算整表合计。'];
