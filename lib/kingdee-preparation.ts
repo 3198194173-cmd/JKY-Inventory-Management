@@ -19,7 +19,7 @@ export function assessPreparation(choices: SourceChoices, files: Partial<Record<
     const choice = choices[kind];
     const base = { kind, mode: choice.mode, name: '', size: 0, ready: false, status: '', issue: '' };
     if (choice.mode === 'omit') return { ...base, ready: kind === 'legacy', status: '本批不使用', issue: kind === 'legacy' ? '' : '该来源为必需项' };
-    if (choice.mode === 'api') return { ...base, status: '接口待联调', issue: '接口尚未接通，请先选择上传Excel或已保存版本' };
+    if (choice.mode === 'api') return { ...base, status: '仅可探测20行', issue: '全量接口尚未接通，探测样本不能生成明细，请选择上传Excel或完整已保存版本' };
     if (choice.mode === 'saved') {
       const batch = history.find(batch => batch.id === choice.batchId && batch.state === 'ready');
       const source = batch?.sources.find(source => source.kind === kind);

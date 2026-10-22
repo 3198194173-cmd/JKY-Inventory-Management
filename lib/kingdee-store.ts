@@ -9,6 +9,7 @@ import { AccessError } from './accounts';
 import { sourceKinds, type KingdeeBatch, type KingdeeGoods, type KingdeeReport, type KingdeeRules, type SourceKind, type SourceReferences, type WarehouseMember } from './kingdee-types';
 import type { ImportFile } from './kingdee-import';
 import { defaultKingdeeTemplate, sheetDataPath } from './kingdee-sheet';
+import type { XingkongProbe } from './kingdee-xingkong-types';
 
 let connection: DatabaseSync | undefined;
 let busy = false;
@@ -29,6 +30,8 @@ function db() {
     CREATE INDEX IF NOT EXISTS kd_batch_owner ON kd_batches(owner,created_at DESC);
     CREATE TABLE IF NOT EXISTS kd_goods(batch_id TEXT NOT NULL REFERENCES kd_batches(id), code TEXT NOT NULL, name TEXT NOT NULL,
       category TEXT, model TEXT, pod TEXT, ip TEXT, price_status TEXT NOT NULL, unclassified INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(batch_id,code));`);
+  database.exec(`CREATE TABLE IF NOT EXISTS kd_probes(id TEXT PRIMARY KEY,owner TEXT NOT NULL,actor_id TEXT NOT NULL,created_at TEXT NOT NULL,kind TEXT NOT NULL,data TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS kd_probe_owner ON kd_probes(owner,created_at DESC);`);
   connection = database;
   if (!database.prepare('PRAGMA table_info(kd_batches)').all().some(column => column.name === 'template')) database.exec("ALTER TABLE kd_batches ADD COLUMN template TEXT NOT NULL DEFAULT 'null'");
   return database;
@@ -65,6 +68,23 @@ function batchDirectory(owner: string, id: string) {
   return join(paths().files, createHash('sha256').update(owner).digest('hex'), id);
 }
 export type KingdeeUpload = { kind: SourceKind; name: string; bytes: Buffer };
+
+// Samples have a separate table and never become ready import batches or source references.
+export function saveXingkongProbe(owner: string, actorId: string, probe: XingkongProbe) {
+  db().prepare('INSERT INTO kd_probes VALUES(?,?,?,?,?,?)').run(probe.id, owner, actorId, probe.createdAt, probe.kind, JSON.stringify(probe));
+}
+export function listXingkongProbes(owner: string) {
+  return db().prepare('SELECT id,created_at,kind,data FROM kd_probes WHERE owner=? ORDER BY created_at DESC LIMIT 10').all(owner).map(row => {
+    const probe = JSON.parse(String(row.data)) as XingkongProbe;
+    return { id: probe.id, createdAt: probe.createdAt, kind: probe.kind, returnedRows: probe.returnedRows, total: probe.total };
+  });
+}
+export function getXingkongProbe(owner: string, id: string): XingkongProbe {
+  if (!/^[\da-f-]{36}$/i.test(id)) throw new AccessError('探测记录编号无效', 400);
+  const row = db().prepare('SELECT data FROM kd_probes WHERE id=? AND owner=?').get(id, owner);
+  if (!row) throw new AccessError('找不到当前账户的探测记录', 404);
+  return JSON.parse(String(row.data)) as XingkongProbe;
+}
 
 export async function createKingdeeImport(owner: string, actorId: string, uploads: KingdeeUpload[], previousId?: string, references: SourceReferences = {}) {
   if (busy) throw new AccessError('正在处理另一批金蝶文件，请稍后重试', 409);
