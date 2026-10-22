@@ -38,11 +38,14 @@ export function salesSourceWorkbook(rows: SalesRow[], columns: { field: string; 
   }
   const end = rows.length+4, qtyCol = column(columns.findIndex(item => item.field === 'FOUTSTOCKQTY'));
   lines.push(`<row r="${end}">${cell('A'+end,'合计')}${cell(qtyCol+end,total)}</row>`);
+  return sourceWorkbook(lines,'销售完整业务来源');
+}
+export function sourceWorkbook(lines: string[], sheetName: string) {
   const ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
   return Buffer.from(zipTextFiles({
     '[Content_Types].xml':'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
     '_rels/.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
-    'xl/workbook.xml':`<workbook xmlns="${ns}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="销售完整业务来源" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    'xl/workbook.xml':`<workbook xmlns="${ns}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${escape(sheetName).replaceAll('"','&quot;')}" sheetId="1" r:id="rId1"/></sheets></workbook>`,
     'xl/_rels/workbook.xml.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"/></Relationships>',
     'xl/worksheets/sheet1.xml':`<worksheet xmlns="${ns}"><sheetData>${lines.join('')}</sheetData></worksheet>`,
   }, bytes => deflateRawSync(bytes,{level:6})));

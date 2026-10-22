@@ -63,7 +63,7 @@ try {
   const sales={kind:'companySales',start:stock.start,end:stock.end,salesOrganization:'103',settleOrganization:'103'};
   assert.equal((await post(collectionPath,sales,'b',connected.token)).status,401);
   assert.equal((await post(collectionPath,sales,'a',connected.token,'https://evil.test')).status,400);
-  assert.equal((await post(collectionPath,stock,'a',connected.token)).status,422);
+  assert.equal((await post(collectionPath,{...stock,schemeId:'invalid scheme'},'a',connected.token)).status,400);
   response=await post(collectionPath,sales,'a',connected.token);assert.equal(response.status,202,await response.clone().text());
   const collection=(await response.json()).collection;
   let completed;
@@ -85,12 +85,24 @@ try {
   imported.append('collectionReferences',JSON.stringify({companySales:collection.id}));
   response=await fetch(url+'/api/kingdee/imports',{method:'POST',headers:{cookie:headers('a').cookie,origin:url},body:imported});assert.equal(response.status,200,await response.clone().text());
   const batch=(await response.json()).batch;assert.equal(batch.summary.totals.companySales,'5');assert.equal(batch.sources.find(s=>s.kind==='companySales').originCollectionId,collection.id);
+  const stockConnection=await (await post(connectionPath,credentials)).json();
+  response=await post(collectionPath,stock,'a',stockConnection.token);assert.equal(response.status,202,await response.clone().text());
+  const stockId=(await response.json()).collection.id;let stockJob;
+  for(let i=0;i<100;i++){stockJob=(await (await get(collectionPath+'/'+stockId)).json()).collection;if(!['running','cancelling'].includes(stockJob.state))break;await new Promise(accept=>setTimeout(accept,100));}
+  assert.equal(stockJob.state,'ready',stockJob.error);assert.equal(stockJob.progress.includedQuantity,'4');assert.equal(stockJob.stock.excludedQuantity,'7');
+  assert.deepEqual((await (await get(collectionPath+'?kind=companySales')).json()).collections.map(job=>job.id),[collection.id]);
+  assert.deepEqual((await (await get(collectionPath+'?kind=companyStock')).json()).collections.map(job=>job.id),[stockId]);
+  assert.ok((await (await get(probePath+'?kind=companyStock')).json()).probes.every(job=>job.kind==='companyStock'));
+  assert.equal((await get(collectionPath+'?kind=unexpected')).status,400);
+  const combinedForm=new FormData();combinedForm.append('sourceReferences',JSON.stringify(Object.fromEntries(['storeSales','storeStock','prices'].map(kind=>[kind,batch.id]))));combinedForm.append('collectionReferences',JSON.stringify({companySales:collection.id,companyStock:stockId}));
+  response=await fetch(url+'/api/kingdee/imports',{method:'POST',headers:{cookie:headers('a').cookie,origin:url},body:combinedForm});assert.equal(response.status,200,await response.clone().text());
+  const combined=(await response.json()).batch;assert.equal(combined.summary.totals.companyStock,'4');assert.equal(combined.summary.totals.companySales,'5');
   const invalid=new FormData();invalid.append('collectionReferences','{"companySales":"../outside"}');
   response=await fetch(url+'/api/kingdee/imports',{method:'POST',headers:{cookie:headers('a').cookie,origin:url},body:invalid});assert.equal(response.status,400);
   assert.equal(db.prepare('SELECT count(*) AS n FROM stock_snapshots').get().n, 0);
   await stop(); await start();
   assert.equal((await (await get(collectionPath+'/'+collection.id)).json()).collection.state,'ready');
-  assert.equal((await (await get('/api/kingdee')).json()).batch.id,batch.id);
+  assert.equal((await (await get('/api/kingdee')).json()).batch.id,combined.id);
   assert.equal((await get(probePath + '/' + sample.id)).status, 200);
   assert.equal((await post(probePath, stock, 'a', connected.token)).status, 401);
   const next = await (await post(connectionPath, credentials)).json();

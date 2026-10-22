@@ -12,11 +12,12 @@ export type XingkongProbe = {
   warnings: string[]; sampleOnly: true; apiReadComplete: false; uiEquivalentVerified: false;
 };
 export type XingkongCollection = {
-  id: string; kind: 'companySales'; state: 'running' | 'cancelling' | 'ready' | 'failed' | 'cancelled' | 'interrupted';
+  id: string; kind: XingkongKind; state: 'running' | 'cancelling' | 'ready' | 'failed' | 'cancelled' | 'interrupted';
   createdAt: string; updatedAt: string; accountId: string; settings: XingkongSettings; error: string; phase: string;
   rules: import('./kingdee-types').KingdeeRules;
   progress: { pages: number; rawRows: number; reportedTotal: number | null; businessRows: number; subtotalRows: number; grandTotalRows: number; excludedCustomerRows: number; includedRows: number; businessQuantity: string; includedQuantity: string; blankQuantityRows: number };
   source?: { name: string; size: number; sha256: string; rows: number };
+  stock?: { inner: string; outer: string; excludedQuantity: string; excludedRows: number; queryIdReused: boolean; quantityField: 'FSTOCKJCQTY'; warehouses: { code: string; name: string; rows: number; quantity: string; group: 'inner' | 'outer' | 'excluded' | 'outside' }[] };
   warnings: string[];
 };
-export type CollectionReferences = Partial<Record<'companySales', string>>;
+export type CollectionReferences = Partial<Record<XingkongKind, string>>;

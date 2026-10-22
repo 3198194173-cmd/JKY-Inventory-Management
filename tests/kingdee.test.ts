@@ -115,7 +115,7 @@ test('数据准备按实际来源判定，接口待联调不伪造就绪，文�
   const choices = preparationChoices(null);
   const selected = Object.fromEntries(Object.keys(fixture).map(kind => [kind, { name: kind + '.xlsx', size: 100 }]));
   const pending = assessPreparation(choices, selected, []);
-  assert.equal(pending.ready, false); assert.equal(pending.readyCount, 3); assert.match(pending.issues.join(''), /接口尚未接通/);
+  assert.equal(pending.ready, false); assert.equal(pending.readyCount, 3); assert.match(pending.issues.join(''), /全量采集并采用/);
   const uploads = preparationChoices(null, 'upload');
   assert.equal(assessPreparation(uploads, selected, []).ready, true);
   assert.equal(assessPreparation(uploads, { ...selected, storeStock: { name: '错误.csv', size: 100 } }, []).ready, false);

@@ -22,7 +22,7 @@ export function assessPreparation(choices: SourceChoices, files: Partial<Record<
     if (choice.mode === 'omit') return { ...base, ready: kind === 'legacy', status: '本批不使用', issue: kind === 'legacy' ? '' : '该来源为必需项' };
     if (choice.mode === 'api') {
       const collection = collections.find(job=>job.id===choice.collectionId && job.kind===kind && job.state==='ready' && job.source);
-      return collection ? {...base,name:collection.source!.name,size:collection.source!.size,ready:true,status:'已选完整采集来源',collection} : {...base,status:kind==='companySales'?'未选择完整采集':'库存先探测或上传',issue:kind==='companySales'?'请完成全量销售采集并采用结果；20行样本不能生成明细':'库存全量接口尚未接通，请上传Excel或选择已保存版本'};
+      return collection ? {...base,name:collection.source!.name,size:collection.source!.size,ready:true,status:'已选完整采集来源',collection} : {...base,status:'未选择完整采集',issue:'请完成本模块全量采集并采用结果，或上传Excel；20行样本不能生成明细'};
     }
     if (choice.mode === 'saved') {
       const batch = history.find(batch => batch.id === choice.batchId && batch.state === 'ready');

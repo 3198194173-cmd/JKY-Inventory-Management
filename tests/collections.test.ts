@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path';
 import { XingkongService, salesColumns } from '../lib/kingdee-xingkong';
 import { XingkongCollections } from '../lib/kingdee-collections';
 import { classifySalesRow, salesQuantity, type SalesRow } from '../lib/kingdee-sales-source';
-import { createKingdeeImport, insertXingkongCollection, kingdeeView, xingkongCollectionDirectory } from '../lib/kingdee-store';
+import { createKingdeeImport, insertXingkongCollection, kingdeeView, saveKingdeeWarehouses, xingkongCollectionDirectory } from '../lib/kingdee-store';
+import { classifyStockRow } from '../lib/kingdee-stock-source';
 import { assessPreparation, preparationChoices } from '../lib/kingdee-preparation';
 import { readKingdeeXlsx } from '../lib/kingdee-xlsx';
 import { zipTextFiles } from '../lib/zip';
@@ -43,8 +44,8 @@ function fixture(reply?:(query:Query)=>{rows:SalesRow[];total:number}|Promise<{r
   }) as typeof fetch);
   return {service,queries};
 }
-async function settle(manager:XingkongCollections,id:string) {
-  for(let i=0;i<150;i++){const job=manager.get(binding.owner,id);if(!['running','cancelling'].includes(job.state))return job;await new Promise(accept=>setTimeout(accept,30));}
+async function settle(manager:XingkongCollections,id:string,owner=binding.owner) {
+  for(let i=0;i<150;i++){const job=manager.get(owner,id);if(!['running','cancelling'].includes(job.state))return job;await new Promise(accept=>setTimeout(accept,30));}
   throw new Error('Fixture job did not settle');
 }
 function xlsx(rows:Record<string,string>[]) {
@@ -126,4 +127,53 @@ test('主动停止不发布部分结果；新进程将未完成任务标为中�
   const recovered=new XingkongCollections(mock.service,3);
   assert.equal(recovered.get(binding.owner,'ccf37bf1-1207-4b7e-95d4-ebd4c648eb77').state,'interrupted');
   assert.equal(recovered.get(binding.owner,job.id).state,'cancelled');
+});
+
+const stockSettings={...settings,kind:'companyStock',schemeId:'6ad1c8d85e3e71'};
+function stockRow(code:string,warehouse:string,quantity:string,id:string):SalesRow{
+  return {FMATERIALID:'123',FMATERIALNUMBER:code,FMATERIALNAME:'库存商品(小计)',FSTOCKID:'456',FSTOCKNUMBER:'CK-'+warehouse,FSTOCKNAME:warehouse,FSTOCKUNITNAME:'Pcs',FOWNERTYPENAME:'业务组织',FOWNERNAME:'CASEBANG事业部',FSTOCKQCQTY:'0',FSTOCKINQTY:'0',FSTOCKOUTQTY:'0',FSTOCKJCQTY:quantity,FINVTURNOVERNUM:'0',FINVTURNOVERDAYS:'0',FIDENTITYID:id};
+}
+const inventoryRows=[stockRow('A','内仓','5','1'),stockRow('A','外仓','-1','2'),stockRow('B','名单外仓','7','3'),stockRow('C','内仓','0','4')];
+function stockFixture(change?:(query:{StartRow:number;CurQueryId:string;Limit:number},page:{success:boolean;TotalCount:number;CurQueryId:string;data:SalesRow[]})=>void){
+  const queries:{StartRow:number;CurQueryId:string;Limit:number}[]=[];
+  const service=new XingkongService((async(input,init)=>{
+    if(String(input).includes('ValidateUser'))return Response.json({LoginResultType:1},{headers:{'Set-Cookie':'ASP.NET_SessionId=private-stock-cookie'}});
+    assert.match(String(input),/StockReportQueryService/);
+    const query=JSON.parse(JSON.parse(String(init?.body)).parameters[0]);queries.push(query);
+    assert.equal(query.CurQueryId,query.StartRow===0?'':'private-stock-query');assert.deepEqual(query.QuicklyCondition,[]);assert.deepEqual(query.MoreCondition,[]);
+    const page={success:true,TotalCount:4,CurQueryId:'private-stock-query',data:inventoryRows.slice(query.StartRow,query.StartRow+query.Limit)};change?.(query,page);return Response.json(page);
+  }) as typeof fetch);
+  return {service,queries};
+}
+
+test('库存复用查询标识分页，先保留全部仓库再分内外仓，完整来源可生成明细并按新名单重算',async()=>{
+  const owner='stock-owner',target={actor:'stock-actor',owner};saveKingdeeWarehouses(owner,target.actor,[{name:'内仓',group:'inner'},{name:'外仓',group:'outer'}]);
+  assert.equal(classifyStockRow(inventoryRows[0]),'business');
+  const fixture=stockFixture(),manager=new XingkongCollections(fixture.service,2),session=await fixture.service.connect(target,credentials);
+  const job=await settle(manager,manager.start(target,session.token,stockSettings).id,owner);assert.equal(job.state,'ready',job.error);
+  assert.deepEqual(fixture.queries.map(query=>query.StartRow),[0,2]);assert.equal(job.progress.rawRows,4);assert.equal(job.progress.businessRows,4);
+  assert.equal(job.stock!.inner,'5');assert.equal(job.stock!.outer,'-1');assert.equal(job.stock!.excludedRows,1);assert.equal(job.stock!.excludedQuantity,'7');assert.equal(job.progress.includedQuantity,'4');assert.equal(job.stock!.queryIdReused,true);
+  assert.equal(manager.list(owner,'companySales').length,0);assert.equal(manager.list(owner,'companyStock')[0].id,job.id);
+  const file=await manager.download(owner,job.id,'source'),rows=readKingdeeXlsx(file.bytes);
+  assert.equal(rows.find(row=>row.row===4)!.cells.J,'结存');assert.equal(rows.find(row=>row.row===8)!.cells.C,'名单外仓');assert.equal(rows.at(-1)!.cells.J,'11');
+  const stats=JSON.parse((await manager.download(owner,job.id,'statistics')).bytes.toString());assert.deepEqual(stats.map((item:{code:string;quantity:string})=>[item.code,item.quantity]),[['A','4'],['C','0']]);
+  const audit=(await manager.download(owner,job.id,'audit')).bytes.toString();assert.doesNotMatch(audit,/private-stock-query|private-stock-cookie|private-password/);
+  assert.doesNotMatch(readFileSync(join(xingkongCollectionDirectory(owner,job.id),'page-0002.json'),'utf8'),/private-stock-query/);
+  const salesUpload={kind:'companySales' as const,name:'sales.xlsx',bytes:xlsx([{},{},{A:'物料编码',B:'物料名称',C:'出库数量',D:'客户名称'},{A:'A',B:'商品A',C:'1',D:'保留客户'},{A:'合计',C:'1'}])};
+  const batch=await createKingdeeImport(owner,target.actor,[salesUpload,...uploads().filter(row=>row.kind!=='companyStock')],undefined,{}, {companyStock:job.id});
+  assert.equal(batch.summary.totals.companyStock,'4');assert.equal(batch.sources.find(source=>source.kind==='companyStock')!.rows,4);assert.equal(batch.sources.find(source=>source.kind==='companyStock')!.originCollectionId,job.id);
+  await assert.rejects(createKingdeeImport(owner,target.actor,[],undefined,{}, {companySales:job.id}),/不能作为统计来源/);
+  saveKingdeeWarehouses(owner,target.actor,[{name:'内仓',group:'inner'},{name:'外仓',group:'outer'},{name:'名单外仓',group:'outer'}]);
+  const revised=await createKingdeeImport(owner,target.actor,[],batch.id);assert.equal(revised.summary.totals.companyStock,'11');assert.equal(manager.get(owner,job.id).progress.includedQuantity,'4');
+});
+
+test('库存缺失或变更查询标识、变更总数、错字段和缺失结存数量全部失败且不发布',async()=>{
+  const cases:[string,Parameters<typeof stockFixture>[0]][]=[
+    ['missing-id',(_query,page)=>{page.CurQueryId='';}],
+    ['changed-id',(query,page)=>{if(query.StartRow)page.CurQueryId='other-query';}],
+    ['changed-total',(query,page)=>{if(query.StartRow)page.TotalCount=5;}],
+    ['changed-fields',(query,page)=>{if(query.StartRow)delete page.data[0].FSTOCKUNITNAME;}],
+    ['blank-quantity',(_query,page)=>{page.data=page.data.map(row=>({...row,FSTOCKJCQTY:null}));}],
+  ];
+  for(const [name,change] of cases){const fixture=stockFixture(change),manager=new XingkongCollections(fixture.service,2),target={owner:'stock-'+name,actor:'stock-actor'},session=await fixture.service.connect(target,credentials);const job=await settle(manager,manager.start(target,session.token,stockSettings).id,target.owner);assert.equal(job.state,'failed',name);assert.equal(job.source,undefined);await assert.rejects(manager.download(target.owner,job.id,'source'),/尚无完整/);}
 });

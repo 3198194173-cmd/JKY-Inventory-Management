@@ -40,7 +40,7 @@ export function KingdeeDashboard({ initial }: { initial: View }) {
     <div className="kd-toolbar"><h1>casebang 存销明细</h1><div className="kd-actions"><button disabled={!!busy} onClick={() => { setMembers(structuredClone(view.rules.warehouses.members)); setWarehouseOpen(true); }}><Settings2 size={15}/>仓库分组</button><button disabled={!!busy} onClick={() => setUploadOpen(true)}><FolderInput size={15}/>准备数据</button>{view.batch && <a href={'/api/kingdee/export?batch=' + view.batch.id + '&sheet=' + mode}><ArrowDownToLine size={15}/>导出Excel</a>}</div></div>
     {error && <p className="kd-error" role="alert">{error}。上次成功结果仍保留。</p>}
     {busy && <p className="kd-progress" role="status"><LoaderCircle size={17} className="kd-spin"/>{busy}</p>}
-    <KingdeePreparation open={uploadOpen} batch={view.batch} history={view.history} rules={view.rules} onClose={() => setUploadOpen(false)} onGenerated={async batch => {
+    <KingdeePreparation open={uploadOpen} batch={view.batch} history={view.history} rules={view.rules} onManageWarehouses={()=>{setMembers(structuredClone(view.rules.warehouses.members));setWarehouseOpen(true);}} onClose={() => setUploadOpen(false)} onGenerated={async batch => {
       await reload(1, batch.id, { q: '', filter: 'all', sheet: 'current', column: '', contains: '', direction: '' });
       setQ(''); setFilter('all'); setMode('current'); setColumn(''); setContains(''); setDirection(''); setSelected(null); setColumnOpen(false);
     }}/>

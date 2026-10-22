@@ -103,7 +103,7 @@ type Session = Binding & { client: XingkongClient; accountId: string; expiresAt:
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 type ProbeOptions = { signal?: AbortSignal; excludeCustomers: string[] };
 export type SalesCollectionLease = {
-  accountId: string; settings: XingkongSettings; signal: AbortSignal;
+  kind: XingkongKind; accountId: string; settings: XingkongSettings; signal: AbortSignal;
   prepare: () => Promise<void>;
   page: (startRow: number, limit: number) => Promise<{ request: Record<string, unknown>; organizations: XingkongOrganization[]; rows: SalesRow[]; total: number }>;
   dispose: () => void;
@@ -160,18 +160,40 @@ export class XingkongService {
   }
   disconnect(binding: Binding, token: string) { const session = this.session(binding, token); clearTimeout(session.expiry); session.client.dispose(); this.sessions.delete(digest(token)); }
   leaseSalesCollection(binding: Binding, token: string, input: unknown): SalesCollectionLease {
+    ensure(readXingkongSettings(input).kind === 'companySales', '该入口仅用于销售采集', 422);
+    return this.leaseCollection(binding,token,input);
+  }
+  leaseCollection(binding: Binding, token: string, input: unknown): SalesCollectionLease {
     const {kind, settings} = readXingkongSettings(input);
-    ensure(kind === 'companySales', '当前只开放已核验的销售全量采集；库存先探测或上传Excel', 422);
     const session = this.session(binding, token);
     ensure(!session.busy, '连接正在探测，请等待当前请求结束', 409);
     // Transfer the memory-only connection to a bounded background job. Closing the browser cannot cancel it.
     clearTimeout(session.expiry); this.sessions.delete(digest(token));
     const expiry = setTimeout(()=>session.client.dispose(), 45*60000); expiry.unref();
-    let organizations: XingkongOrganization[] = [];
-    return { accountId: session.accountId, settings, signal: session.client.abort.signal,
-      prepare: async () => { const sale = await session.client.organization(settings.salesOrganization); const settle = settings.salesOrganization === settings.settleOrganization ? sale : await session.client.organization(settings.settleOrganization); organizations = [sale,settle]; },
+    let organizations: XingkongOrganization[] = [], queryId = '', stockFields = '';
+    return { kind, accountId: session.accountId, settings, signal: session.client.abort.signal,
+      prepare: async () => { if(kind==='companyStock')return;const sale = await session.client.organization(settings.salesOrganization); const settle = settings.salesOrganization === settings.settleOrganization ? sale : await session.client.organization(settings.settleOrganization); organizations = [sale,settle]; },
       page: async (startRow, limit) => {
-        ensure(organizations.length === 2 && Number.isInteger(startRow) && startRow >= 0 && Number.isInteger(limit) && limit > 0 && limit <= 10000, '分页参数或组织初始化无效');
+        ensure((kind==='companyStock'||organizations.length === 2) && Number.isInteger(startRow) && startRow >= 0 && Number.isInteger(limit) && limit > 0 && limit <= 10000, '分页参数或组织初始化无效');
+        if(kind==='companyStock'){
+          ensure(startRow===0||!!queryId,'库存翻页缺少CurQueryId，不重新生成另一份报表',502);
+          const request={FORMID:'STK_StockSummaryRpt',FSCHEMEID:settings.schemeId,QuicklyCondition:[],MoreCondition:[],StartRow:startRow,Limit:limit,CurQueryId:queryId,FieldKeys:''};
+          const body=object(await session.client.post('stock',{parameters:[JSON.stringify(request)]},undefined,true));
+          ensure(success(body.success),'库存全量查询失败，请检查保存方案与报表权限；没有自动重试',422);
+          let raw=body.data;if(typeof raw==='string'){try{raw=parseLosslessJson(raw);}catch{throw new AccessError('库存data不是有效JSON',502);}}
+          ensure(Array.isArray(raw)&&raw.length<=limit,'库存成功响应缺少data数组或超出本页上限',502);
+          const nextId=body.CurQueryId??'';ensure(typeof nextId==='string'&&nextId.length<=4096,'库存查询标识格式异常',502);
+          if(startRow===0)queryId=nextId;else ensure(!!nextId&&nextId===queryId,'CurQueryId缺失或发生变化，停止拼接库存分页',502);
+          const rows=raw.map(value=>{const original=object(value),entries=Object.entries(original),keys=entries.map(([key])=>key.toUpperCase()).sort();
+            ensure(keys.length>0&&keys.length<=200&&new Set(keys).size===keys.length,'库存字段为空、过多或重名',502);
+            const signature=JSON.stringify(keys);if(!stockFields)stockFields=signature;ensure(stockFields===signature,'库存分页字段集合发生变化',502);
+            ensure(entries.every(([,value])=>value==null||typeof value==='boolean'||typeof value==='string'&&value.length<=50000),'库存单元格格式异常',502);
+            return Object.fromEntries(entries.map(([key,value])=>[key.toUpperCase(),value])) as SalesRow;
+          });
+          const total=count(body.TotalCount,'TotalCount');ensure(startRow+rows.length>=total||!!queryId.trim(),'需要翻页但库存未返回CurQueryId',502);
+          // Query identifier remains memory-only, including in saved request/audit files.
+          return {request:{...request,CurQueryId:'',queryIdReused:startRow>0},organizations:[],rows,total};
+        }
         const request = salesRequest(settings, organizations, startRow, limit);
         const body = object(await session.client.post('sales',{formid:'SAL_OutStockSummaryRpt',data:JSON.stringify(request)},undefined,true));
         const result = object(body.Result), status = result.ResponseStatus == null ? null : object(result.ResponseStatus);

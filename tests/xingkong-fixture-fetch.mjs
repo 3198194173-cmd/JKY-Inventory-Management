@@ -25,6 +25,11 @@ globalThis.fetch = async (input, init) => {
   }
   if (url.pathname.includes('StockReportQueryService')) {
     const query = JSON.parse(body.parameters[0]);
+    if(query.Limit===1000){
+      if(query.StartRow!==0||query.CurQueryId!=='')throw new Error('Unexpected fixture stock page');
+      const stock=(warehouse,quantity,id)=>({FMATERIALID:'123',FMATERIALNUMBER:'A',FMATERIALNAME:'离线商品A',FSTOCKID:id,FSTOCKNUMBER:'CK'+id,FSTOCKNAME:warehouse,FSTOCKUNITNAME:'Pcs',FOWNERTYPENAME:'业务组织',FOWNERNAME:'CASEBANG事业部',FSTOCKQCQTY:'0',FSTOCKINQTY:'0',FSTOCKOUTQTY:'0',FSTOCKJCQTY:quantity,finvturnovernum:'0',finvturnoverdays:'0',fidentityid:id});
+      return Response.json({success:true,TotalCount:3,CurQueryId:'fixture-only-private-query',data:[stock('CASEBANG电商仓','5','1'),stock('Casebang Tiktok FBT美国仓','-1','2'),stock('名单外仓','7','3')]});
+    }
     if (query.Limit !== 20 || query.StartRow !== 0 || query.QuicklyCondition.length) throw new Error('Invalid fixture stock query');
     return Response.json({ success: true, TotalCount: 100, CurQueryId: 'fixture-only-private-query', data: [{ FMATERIALNUMBER: 'OFFLINE-001', FMATERIALNAME: '离线测试商品（非ERP数据）', FSTOCKNAME: '离线测试仓', FQTY: '-2.5', FZERO: 0, FBLANK: null }] });
   }

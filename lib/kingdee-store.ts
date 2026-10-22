@@ -76,8 +76,8 @@ export type KingdeeUpload = { kind: SourceKind; name: string; bytes: Buffer };
 export function saveXingkongProbe(owner: string, actorId: string, probe: XingkongProbe) {
   db().prepare('INSERT INTO kd_probes VALUES(?,?,?,?,?,?)').run(probe.id, owner, actorId, probe.createdAt, probe.kind, JSON.stringify(probe));
 }
-export function listXingkongProbes(owner: string) {
-  return db().prepare('SELECT id,created_at,kind,data FROM kd_probes WHERE owner=? ORDER BY created_at DESC LIMIT 10').all(owner).map(row => {
+export function listXingkongProbes(owner: string, kind?: 'companySales'|'companyStock') {
+  return db().prepare(`SELECT id,created_at,kind,data FROM kd_probes WHERE owner=?${kind?' AND kind=?':''} ORDER BY created_at DESC LIMIT 10`).all(...(kind?[owner,kind]:[owner])).map(row => {
     const probe = JSON.parse(String(row.data)) as XingkongProbe;
     return { id: probe.id, createdAt: probe.createdAt, kind: probe.kind, returnedRows: probe.returnedRows, total: probe.total };
   });
@@ -95,8 +95,9 @@ export function getXingkongCollection(owner: string, id: string): XingkongCollec
   if (!row) throw new AccessError('找不到当前账户的采集任务',404);
   return JSON.parse(String(row.data)) as XingkongCollection;
 }
-export function listXingkongCollections(owner: string): XingkongCollection[] {
-  return db().prepare('SELECT data FROM kd_collections WHERE owner=? ORDER BY created_at DESC LIMIT 15').all(owner).map(row=>JSON.parse(String(row.data)) as XingkongCollection);
+export function listXingkongCollections(owner: string, kind?: 'companySales'|'companyStock'): XingkongCollection[] {
+  if(!kind)return [...listXingkongCollections(owner,'companySales'),...listXingkongCollections(owner,'companyStock')].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+  return db().prepare("SELECT data FROM kd_collections WHERE owner=? AND json_extract(data,'$.kind')=? ORDER BY created_at DESC LIMIT 15").all(owner,kind).map(row=>JSON.parse(String(row.data)) as XingkongCollection);
 }
 export function insertXingkongCollection(owner: string, actor: string, runner: string, collection: XingkongCollection) {
   if (db().prepare("SELECT id FROM kd_collections WHERE owner=? AND state IN ('running','cancelling')").get(owner)) throw new AccessError('当前账户已有正在运行的采集任务',409);
@@ -118,7 +119,7 @@ export async function createKingdeeImport(owner: string, actorId: string, upload
   const saved = new Map<SourceKind, { batch: KingdeeBatch; source: KingdeeBatch['sources'][number] }>();
   const collected = new Map<SourceKind, XingkongCollection>();
   for (const [kind,id] of Object.entries(collectionReferences)) {
-    if (kind !== 'companySales' || typeof id !== 'string') throw new AccessError('仅支持完整公司销售采集来源',400);
+    if ((kind!=='companySales'&&kind!=='companyStock') || typeof id !== 'string') throw new AccessError('仅支持完整公司销售或库存采集来源',400);
     if (uploads.some(file=>file.kind===kind) || references[kind]) throw new AccessError('同一种来源不能同时上传、复用和选择采集',400);
     const job = getXingkongCollection(owner,id);
     if (job.state !== 'ready' || !job.source || job.kind !== kind) throw new AccessError('采集尚未完整完成，不能作为统计来源',400);
@@ -260,7 +261,7 @@ export async function readKingdeeSubmission(request: Request) {
       if (seenCollections || typeof value !== 'string' || value.length > 1000) throw new AccessError('采集来源参数无效',400);
       seenCollections=true;
       let parsed: unknown; try { parsed=JSON.parse(value); } catch { throw new AccessError('采集来源参数不是有效JSON',400); }
-      if (!parsed || typeof parsed!=='object' || Array.isArray(parsed) || Object.entries(parsed).some(([kind,id])=>kind!=='companySales' || typeof id!=='string' || !/^[\da-f-]{36}$/i.test(id))) throw new AccessError('采集来源参数无效',400);
+      if (!parsed || typeof parsed!=='object' || Array.isArray(parsed) || Object.entries(parsed).some(([kind,id])=>!['companySales','companyStock'].includes(kind) || typeof id!=='string' || !/^[\da-f-]{36}$/i.test(id))) throw new AccessError('采集来源参数无效',400);
       collectionReferences=parsed as CollectionReferences; continue;
     }
     if (key === 'sourceReferences') {
