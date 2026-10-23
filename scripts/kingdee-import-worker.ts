@@ -3,9 +3,9 @@ import { writeFile } from 'node:fs/promises';
 import { importKingdeeFiles, type ImportFile } from '../lib/kingdee-import';
 import type { KingdeeRules } from '../lib/kingdee-types';
 
-const data = workerData as { files: ImportFile[]; rules: KingdeeRules; output: string };
+const data = workerData as { files: ImportFile[]; rules: KingdeeRules; output: string; baselineOnly?: boolean };
 try {
-  const result = await importKingdeeFiles(data.files, data.rules);
+  const result = await importKingdeeFiles(data.files, data.rules, data.baselineOnly);
   await writeFile(data.output, JSON.stringify(result));
   parentPort!.postMessage({ ok: true });
 } catch (error) {

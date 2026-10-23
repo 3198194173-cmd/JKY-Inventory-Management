@@ -1,6 +1,6 @@
 import { deflateRawSync } from 'node:zlib';
 import { zipTextFiles } from './zip';
-import { defaultKingdeeTemplate, sheetColumns, sheetValue, type SheetMode } from './kingdee-sheet';
+import { defaultKingdeeTemplate, sheetColumns, sheetValue, sheetStyleIndex, sheetPeriods, currentStart, type SheetMode } from './kingdee-sheet';
 import type { ExcelCellStyle, KingdeeBatch, KingdeeGoods } from './kingdee-types';
 import { sourceLabels } from './kingdee-types';
 
@@ -22,14 +22,21 @@ export function kingdeeWorkbook(batch: KingdeeBatch, goods: KingdeeGoods[], mode
   const template = batch.template || defaultKingdeeTemplate, columns = sheetColumns(template, mode);
   const items = mode === 'original' ? goods.filter(row => row.legacy) : goods;
   const heading = `<row r="1" ht="${template.headerHeight * .75}" customHeight="1">${columns.map((c, i) => cell(column(i) + '1', c.label, c.headerStyle)).join('')}</row>`;
-  const data = items.map((row, index) => `<row r="${index + 2}" ht="${template.rowHeight * .75}" customHeight="1">${columns.map((c, i) => {
-    const styleIndex = mode === 'original' || i < 81 ? row.legacy?.styles[i] ?? c.bodyStyle : c.headerStyle;
-    return cell(column(i) + (index + 2), sheetValue(row, i, mode), styleIndex, i >= 6);
+  const data = items.map((row, index) => `<row r="${row.sheetRow || index + 2}" ht="${template.rowHeight * .75}" customHeight="1">${columns.map((c, i) => {
+    const styleIndex = sheetStyleIndex(row,i,template,mode), rowNumber=row.sheetRow || index+2;
+    const value=sheetValue(row,i,mode,template), address=column(i)+rowNumber;
+    if (mode==='current' && sheetPeriods(template).length && value!==null) {
+      const start=currentStart(template), ref=(offset:number)=>column(start+offset)+rowNumber;
+      const formulas:Record<number,string> = {[start+2]:`${ref(0)}+${ref(1)}`,[start+5]:`${ref(3)}+${ref(4)}`,[start+8]:`${ref(5)}*${ref(7)}`,[start+9]:`${ref(6)}*${ref(7)}`,[start+10]:`${ref(8)}+${ref(9)}`};
+      if(formulas[i]) return `<c r="${address}" s="${styleIndex}"><f>${formulas[i]}</f><v>${escape(value)}</v></c>`;
+    }
+    return cell(address, value, styleIndex, i >= 6);
   }).join('')}</row>`).join('');
-  const detail = `<worksheet xmlns="${ns}"><dimension ref="A1:CN${items.length + 1}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="6" ySplit="1" topLeftCell="G2" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><cols>${columns.map((c, i) => `<col min="${i + 1}" max="${i + 1}" width="${(c.width - 5) / 7}" customWidth="1"/>`).join('')}</cols><sheetData>${heading}${data}</sheetData><autoFilter ref="A1:CN${items.length + 1}"/></worksheet>`;
+  const lastColumn=column(columns.length-1),lastRow=items.reduce((n,row)=>Math.max(n,row.sheetRow || 1),items.length+1);
+  const detail = `<worksheet xmlns="${ns}"><dimension ref="A1:${lastColumn}${lastRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="6" ySplit="1" topLeftCell="G2" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><cols>${columns.map((c, i) => `<col min="${i + 1}" max="${i + 1}" width="${(c.width - 5) / 7}" customWidth="1"/>`).join('')}</cols><sheetData>${heading}${data}</sheetData><autoFilter ref="A1:${lastColumn}${lastRow}"/></worksheet>`;
   const groupNames: Record<string, string> = { inner: '内仓', outer: '外仓', excluded: '明确排除', outside: '未纳入本次名单' };
   const warehouseRows = [['仓库名称', '本批归属', '来源结存数量', '来源行数'], ...batch.summary.warehouses.map(row => [row.name, groupNames[row.group], row.quantity, String(row.rows)])];
-  const metadata = [['项目', '说明'], ['状态', mode === 'original' ? '原表92列缓存值对照，不执行原表公式，不改写历史' : '92列布局；G—CC为原表历史缓存，CD—CN为本批参考结果，未宣称历史年月和截止时点一致'], ['批次', batch.id], ['导入时间', batch.createdAt], ['规则版本', String(batch.rules.version)], ...batch.summary.notices.map(note => ['暂缓或范围说明', note]), ...batch.sources.flatMap(source => [[sourceLabels[source.kind], source.name], ['导出条件', source.conditions || '源文件未提供条件摘要'], ['源文件SHA256', source.sha256], ['业务行数', String(source.rows)], ['源数量合计', source.total || '不适用']])];
+  const metadata = [['项目', '说明'], ['状态', mode === 'original' ? '原表92列对照；C列停止采购取本批吉客云来源，其余保留历史缓存值' : '继承原表A—CJ与原行号，C列统一使用停止采购；新增期间七列置于价格前；末尾金额按公式计算。库存列标注不代表不同来源实际时点已统一'], ['批次', batch.id], ['导入时间', batch.createdAt], ['规则版本', String(batch.rules.version)], ...batch.summary.notices.map(note => ['暂缓或范围说明', note]), ...batch.sources.flatMap(source => [[sourceLabels[source.kind], source.name], ['导出条件', source.conditions || '源文件未提供条件摘要'], ['源文件SHA256', source.sha256], ['业务行数', String(source.rows)], ['源数量合计', source.total || '不适用']])];
   for (const source of batch.sources) if (source.originBatchId) metadata.push(['复用来源版本', `${sourceLabels[source.kind]}：${source.originBatchId}（沿用原件，未重新采集）`]);
   for (const source of batch.sources) if (source.originCollectionId) metadata.push(['完整采集任务',`${sourceLabels[source.kind]}：${source.originCollectionId}（已剔除显示汇总行，客户规则按本批规则执行）`]);
   const plain = (rows: string[][]) => `<worksheet xmlns="${ns}"><cols><col min="1" max="1" width="32" customWidth="1"/><col min="2" max="4" width="70" customWidth="1"/></cols><sheetData>${rows.map((row, i) => `<row r="${i + 1}">${row.map((value, j) => cell(column(j) + (i + 1), value)).join('')}</row>`).join('')}</sheetData></worksheet>`;

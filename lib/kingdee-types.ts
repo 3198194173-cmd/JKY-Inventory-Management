@@ -1,8 +1,8 @@
-export const sourceKinds = ['companySales', 'companyStock', 'storeSales', 'storeStock', 'prices', 'legacy'] as const;
+export const sourceKinds = ['companySales', 'companyStock', 'storeSales', 'storeStock', 'prices', 'legacy', 'goods'] as const;
 export type SourceKind = typeof sourceKinds[number];
 export const sourceLabels: Record<SourceKind, string> = {
   companySales: '星空销售出库汇总', companyStock: '星空物料收发汇总',
-  storeSales: '星辰销售明细', storeStock: '星辰库存查询', prices: '销售价目表', legacy: '旧明细主档（可选）',
+  storeSales: '星辰销售明细', storeStock: '星辰库存查询', prices: '销售价目表', legacy: '继承的原明细底表', goods: '吉客云货品属性',
 };
 export type WarehouseMember = { name: string; group: 'inner' | 'outer' | 'excluded' };
 export type KingdeeRules = {
@@ -15,17 +15,26 @@ export type SourceMeta = { kind: SourceKind; name: string; sha256: string; size:
 export type SourceReferences = Partial<Record<SourceKind, string>>;
 export type ExcelCellStyle = { background: string; color: string; font: string; size: number; bold: boolean; italic: boolean; strike: boolean; align: string; format: string };
 export type KingdeeTemplate = {
+  // Original 92-column layout is immutable. Period blocks are inserted after CJ.
+  periods?: KingdeePeriod[];
+  purchaseColumn?: boolean;
   columns: { key: string; label: string; width: number; headerStyle: number; bodyStyle: number }[];
   styles: ExcelCellStyle[]; frozenColumns: number; frozenRows: number; rowHeight: number; headerHeight: number;
 };
+export type KingdeePeriod = { id: string; start: string; end: string; stockDate: string };
+export type KingdeeImportOptions = { baselineOnly?: boolean; baseBatchId?: string; period?: KingdeePeriod };
 export type KingdeeGoods = {
   code: string; name: string; category: string | null; model: string | null; pod: string | null; ip: string | null;
+  stopPurchasing?: '是' | '否' | null;
+  purchaseStatus?: 'ready' | 'missing' | 'conflict';
   companySales: string | null; storeSales: string | null; combinedSales: string | null;
   inner: string | null; outer: string | null; companyStock: string | null; storeStock: string | null;
   price: string | null; priceStatus: 'ready' | 'missing' | 'conflict';
   companyAmount: string | null; storeAmount: string | null; totalAmount: string | null;
   sources: Partial<Record<SourceKind, number[]>>;
   sheetRow?: number;
+  periodValues?: Record<string, (string | null)[]>;
+  inventoryExcluded?: boolean;
   legacy?: { row: number; values: (string | null)[]; styles: number[] };
 };
 export type KingdeeSummary = {

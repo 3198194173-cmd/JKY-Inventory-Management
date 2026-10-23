@@ -3,12 +3,14 @@ import { AccessError } from './accounts';
 import { parseLosslessJson } from './lossless-json';
 import { xingkongBaseUrl, type XingkongKind, type XingkongOrganization, type XingkongProbe, type XingkongSettings } from './kingdee-xingkong-types';
 import { classifySalesRow, excludedCustomer, type SalesRow } from './kingdee-sales-source';
+import { mapPriceRows, priceKeys, priceRequest, readPriceSchema } from './kingdee-price-source';
 
 // Ported from 金蝶/scripts/kingdee-report.mjs and kingdee-stock-report.mjs.
 // The destination and four read-only service paths cannot be supplied by a browser.
 const services = {
   login: 'Kingdee.BOS.WebApi.ServicesStub.AuthService.ValidateUser.common.kdsvc',
   organizations: 'Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.ExecuteBillQuery.common.kdsvc',
+  prices: 'Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.BillQuery.common.kdsvc',
   sales: 'Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.GetSysReportData.common.kdsvc',
   stock: 'Kingdee.K3.SCM.WebApi.ServicesStub.StockReportQueryService.GetReportData,Kingdee.K3.SCM.WebApi.ServicesStub.common.kdsvc',
 } as const;
@@ -38,12 +40,15 @@ export function readXingkongCredentials(value: unknown) {
   return { accountId, username, password: data.password };
 }
 export function readXingkongSettings(value: unknown): { kind: XingkongKind; settings: XingkongSettings } {
-  const data = fields(value, ['kind', 'start', 'end', 'salesOrganization', 'settleOrganization', 'schemeId']);
-  ensure(data.kind === 'companySales' || data.kind === 'companyStock', '只支持星空销售汇总或库存汇总探测');
+  const data = fields(value, ['kind', 'start', 'end', 'salesOrganization', 'settleOrganization', 'schemeId', 'priceListNumber']);
+  ensure(data.kind === 'companySales' || data.kind === 'companyStock' || data.kind === 'prices', '不支持该星空采集类型');
   const settings: XingkongSettings = { start: text(data.start, '开始日期', 10), end: text(data.end, '截止日期', 10), salesOrganization: '', settleOrganization: '', schemeId: '' };
   for (const date of [settings.start, settings.end]) ensure(/^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(Date.parse(date)) && new Date(date).toISOString().slice(0, 10) === date, '日期必须为有效YYYY-MM-DD');
   ensure(settings.start <= settings.end, '开始日期不能晚于截止日期');
-  if (data.kind === 'companySales') {
+  if (data.kind === 'prices') {
+    settings.salesOrganization = text(data.salesOrganization, '价目表组织编码或名称');
+    settings.priceListNumber = text(data.priceListNumber || 'XSJMB1110', '价目表编号');
+  } else if (data.kind === 'companySales') {
     settings.salesOrganization = text(data.salesOrganization, '销售组织编码或名称');
     settings.settleOrganization = text(data.settleOrganization, '结算组织编码或名称');
   } else {
@@ -107,6 +112,7 @@ export type SalesCollectionLease = {
   prepare: () => Promise<void>;
   page: (startRow: number, limit: number) => Promise<{ request: Record<string, unknown>; organizations: XingkongOrganization[]; rows: SalesRow[]; total: number }>;
   dispose: () => void;
+  cancel?: () => void;
 };
 
 function salesRequest(settings: XingkongSettings, organizations: XingkongOrganization[], startRow: number, limit: number) {
@@ -163,18 +169,28 @@ export class XingkongService {
     ensure(readXingkongSettings(input).kind === 'companySales', '该入口仅用于销售采集', 422);
     return this.leaseCollection(binding,token,input);
   }
-  leaseCollection(binding: Binding, token: string, input: unknown): SalesCollectionLease {
+  leaseCollection(binding: Binding, token: string, input: unknown, retainSession = false): SalesCollectionLease {
     const {kind, settings} = readXingkongSettings(input);
     const session = this.session(binding, token);
     ensure(!session.busy, '连接正在探测，请等待当前请求结束', 409);
     // Transfer the memory-only connection to a bounded background job. Closing the browser cannot cancel it.
-    clearTimeout(session.expiry); this.sessions.delete(digest(token));
+    clearTimeout(session.expiry);
+    if (retainSession) {
+      session.busy=true; session.expiresAt=this.now()+120*60000;
+      session.expiry=setTimeout(()=>{session.client.dispose();this.sessions.delete(digest(token));},120*60000);session.expiry.unref();
+    } else this.sessions.delete(digest(token));
     const expiry = setTimeout(()=>session.client.dispose(), 45*60000); expiry.unref();
     let organizations: XingkongOrganization[] = [], queryId = '', stockFields = '';
     return { kind, accountId: session.accountId, settings, signal: session.client.abort.signal,
-      prepare: async () => { if(kind==='companyStock')return;const sale = await session.client.organization(settings.salesOrganization); const settle = settings.salesOrganization === settings.settleOrganization ? sale : await session.client.organization(settings.settleOrganization); organizations = [sale,settle]; },
+      prepare: async () => { if(kind==='companyStock')return;if(kind==='prices')readPriceSchema();const sale = await session.client.organization(settings.salesOrganization); if(kind==='prices'){organizations=[sale];return;} const settle = settings.salesOrganization === settings.settleOrganization ? sale : await session.client.organization(settings.settleOrganization); organizations = [sale,settle]; },
       page: async (startRow, limit) => {
-        ensure((kind==='companyStock'||organizations.length === 2) && Number.isInteger(startRow) && startRow >= 0 && Number.isInteger(limit) && limit > 0 && limit <= 10000, '分页参数或组织初始化无效');
+        ensure((kind==='companyStock'||organizations.length === (kind==='prices'?1:2)) && Number.isInteger(startRow) && startRow >= 0 && Number.isInteger(limit) && limit > 0 && limit <= 10000, '分页参数或组织初始化无效');
+        if(kind==='prices'){
+          const schema=readPriceSchema(), request=priceRequest(schema,organizations[0].code,settings.priceListNumber!,startRow,limit);
+          const raw=await session.client.post('prices',{data:JSON.stringify(request)},undefined,true);
+          const rows=mapPriceRows(raw,schema,organizations[0].code,settings.priceListNumber!);
+          return {request,organizations,rows:rows as unknown as SalesRow[],total:rows.length===0?startRow:-1};
+        }
         if(kind==='companyStock'){
           ensure(startRow===0||!!queryId,'库存翻页缺少CurQueryId，不重新生成另一份报表',502);
           const request={FORMID:'STK_StockSummaryRpt',FSCHEMEID:settings.schemeId,QuicklyCondition:[],MoreCondition:[],StartRow:startRow,Limit:limit,CurQueryId:queryId,FieldKeys:''};
@@ -200,7 +216,8 @@ export class XingkongService {
         ensure(success(result.IsSuccess) && (!status || status.IsSuccess == null || success(status.IsSuccess)), '销售全量查询失败，请检查报表权限与条件；没有自动重试', 422);
         return { request, organizations, rows:mapSalesRows(result.Rows,limit+1), total:count(result.RowCount,'RowCount') };
       },
-      dispose: () => { clearTimeout(expiry); session.client.dispose(); },
+      cancel: () => { clearTimeout(expiry); session.client.dispose(); },
+      dispose: () => { clearTimeout(expiry); if(retainSession)session.busy=false;else session.client.dispose(); },
     };
   }
   async probe(binding: Binding, token: string, input: unknown, options: ProbeOptions): Promise<XingkongProbe> {
@@ -210,7 +227,13 @@ export class XingkongService {
     try {
       let request: Record<string, unknown>, rawRows: unknown, total: number, queryIdReceived = false;
       let columns: XingkongProbe['columns'], organizations: XingkongOrganization[] = [];
-      if (kind === 'companySales') {
+      if (kind === 'prices') {
+        const schema=readPriceSchema(),org=await session.client.organization(settings.salesOrganization,options.signal);organizations=[org];
+        request=priceRequest(schema,org.code,settings.priceListNumber!,0,20);
+        rawRows=mapPriceRows(await session.client.post('prices',{data:JSON.stringify(request)},options.signal),schema,org.code,settings.priceListNumber!);
+        total=(rawRows as unknown[]).length;
+        columns=priceKeys.map(field=>({field,label:field}));
+      } else if (kind === 'companySales') {
         const sale = await session.client.organization(settings.salesOrganization, options.signal);
         const settle = settings.salesOrganization === settings.settleOrganization ? sale : await session.client.organization(settings.settleOrganization, options.signal);
         organizations = [sale, settle];
@@ -254,10 +277,11 @@ export class XingkongService {
       this.session(binding, token); ensure(!session.client.abort.signal.aborted, '连接已关闭，探测未保存', 401);
       const warnings = ['仅保留首页最多20行，不是全量数据；不会进入明细生成，不证明与页面报表逐行一致。', '负数、空白和赠品标记保留原始值，不对探测样本计算整表合计。'];
       if (kind === 'companyStock') warnings.push(`库存条件完全取自保存方案${settings.schemeId}；${settings.start}至${settings.end}只是你填写的预期日期，未作为接口条件发送，也未核验方案实际日期、组织或仓库范围。`);
+      else if(kind==='prices')warnings.push('价目表按组织、编号查询，状态、整单状态及失效均为全部；样本行数不是全表总数。保留单位和有效期，不自动选择冲突价格。');
       else warnings.push(`销售日期${settings.start}至${settings.end}已作为请求条件发送；返回汇总行不含单据日期，仍需对照同条件页面或Excel。客户排除仅按当前名单标注，不删除原始样本。`);
       if (!rows.length) warnings.push('接口返回0行，仅表示本次请求没有样本，不代表页面数据为0或全部权限已通过。');
       if (kind === 'companyStock' && total > rows.length && !queryIdReceived) warnings.push('未返回CurQueryId，后续全量分页尚不能验收。');
-      return { id: randomUUID(), createdAt, kind, accountId: session.accountId, endpoint: new URL(kind === 'companySales' ? services.sales : services.stock, xingkongBaseUrl).href,
+      return { id: randomUUID(), createdAt, kind, accountId: session.accountId, endpoint: new URL(kind === 'companySales' ? services.sales : kind==='prices'?services.prices:services.stock, xingkongBaseUrl).href,
         request, columns, rows, total, returnedRows: rows.length, durationMs: this.now() - started, queryIdReceived, organizations, customerExclusions: kind === 'companySales' ? [...options.excludeCustomers] : [], rowNotes, warnings, sampleOnly: true, apiReadComplete: false, uiEquivalentVerified: false };
     } finally { session.busy = false; }
   }

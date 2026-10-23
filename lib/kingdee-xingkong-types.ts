@@ -1,6 +1,7 @@
 export const xingkongBaseUrl = 'https://benks.ik3cloud.com/k3cloud/';
-export type XingkongKind = 'companySales' | 'companyStock';
-export type XingkongSettings = { start: string; end: string; salesOrganization: string; settleOrganization: string; schemeId: string };
+export type XingkongKind = 'companySales' | 'companyStock' | 'prices';
+export type CollectionKind = XingkongKind | 'goods';
+export type XingkongSettings = { start: string; end: string; salesOrganization: string; settleOrganization: string; schemeId: string; priceListNumber?: string };
 export type XingkongOrganization = { id: string; code: string; name: string };
 export type XingkongProbe = {
   id: string; createdAt: string; kind: XingkongKind; accountId: string; endpoint: string;
@@ -12,7 +13,8 @@ export type XingkongProbe = {
   warnings: string[]; sampleOnly: true; apiReadComplete: false; uiEquivalentVerified: false;
 };
 export type XingkongCollection = {
-  id: string; kind: XingkongKind; state: 'running' | 'cancelling' | 'ready' | 'failed' | 'cancelled' | 'interrupted';
+  id: string; kind: CollectionKind; state: 'running' | 'cancelling' | 'ready' | 'failed' | 'cancelled' | 'interrupted';
+  runId?: string;
   createdAt: string; updatedAt: string; accountId: string; settings: XingkongSettings; error: string; phase: string;
   rules: import('./kingdee-types').KingdeeRules;
   progress: { pages: number; rawRows: number; reportedTotal: number | null; businessRows: number; subtotalRows: number; grandTotalRows: number; excludedCustomerRows: number; includedRows: number; businessQuantity: string; includedQuantity: string; blankQuantityRows: number };
@@ -20,4 +22,5 @@ export type XingkongCollection = {
   stock?: { inner: string; outer: string; excludedQuantity: string; excludedRows: number; queryIdReused: boolean; quantityField: 'FSTOCKJCQTY'; warehouses: { code: string; name: string; rows: number; quantity: string; group: 'inner' | 'outer' | 'excluded' | 'outside' }[] };
   warnings: string[];
 };
-export type CollectionReferences = Partial<Record<XingkongKind, string>>;
+export type CollectionReferences = Partial<Record<CollectionKind, string>>;
+export type CollectionRun = { id:string; createdAt:string; updatedAt:string; state:'running'|'ready'|'failed'|'cancelled'|'interrupted'; phase:string; error:string; kinds:CollectionKind[]; collections:CollectionReferences; cancelRequested?:boolean };

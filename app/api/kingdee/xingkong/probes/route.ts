@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 const headers = { 'Cache-Control': 'private, no-store' };
 export async function GET(request:Request) {
-  try { const { target } = await currentContext(),kind=new URL(request.url).searchParams.get('kind');if(kind!==null&&kind!=='companySales'&&kind!=='companyStock')throw new AccessError('探测模块无效',400);return Response.json({ probes: listXingkongProbes(target.data_owner,kind||undefined) }, { headers }); }
+  try { const { target } = await currentContext(),kind=new URL(request.url).searchParams.get('kind');if(kind!==null&&kind!=='companySales'&&kind!=='companyStock'&&kind!=='prices')throw new AccessError('探测模块无效',400);return Response.json({ probes: listXingkongProbes(target.data_owner,kind||undefined) }, { headers }); }
   catch (error) { return errorResponse(error); }
 }
 export async function POST(request: Request) {

@@ -6,10 +6,12 @@ import { dirname, join, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import preset from '@/data/kingdee-default-rules.json';
 import { AccessError } from './accounts';
-import { sourceKinds, type KingdeeBatch, type KingdeeGoods, type KingdeeReport, type KingdeeRules, type SourceKind, type SourceReferences, type WarehouseMember } from './kingdee-types';
+import { sourceKinds, type KingdeeImportOptions, type KingdeeBatch, type KingdeeGoods, type KingdeeReport, type KingdeeRules, type SourceKind, type SourceReferences, type WarehouseMember } from './kingdee-types';
 import type { ImportFile } from './kingdee-import';
-import { defaultKingdeeTemplate, sheetDataPath } from './kingdee-sheet';
-import type { CollectionReferences, XingkongCollection, XingkongProbe } from './kingdee-xingkong-types';
+import { defaultKingdeeTemplate, sheetDataPath, sheetColumns, sheetBinding } from './kingdee-sheet';
+import type { CollectionKind, CollectionReferences, CollectionRun, XingkongCollection, XingkongKind, XingkongProbe } from './kingdee-xingkong-types';
+
+import { inheritKingdeeReport, validatePeriod } from './kingdee-inheritance';
 
 let connection: DatabaseSync | undefined;
 let busy = false;
@@ -36,6 +38,7 @@ function db() {
     CREATE INDEX IF NOT EXISTS kd_collection_owner ON kd_collections(owner,created_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS kd_collection_active ON kd_collections(owner) WHERE state IN ('running','cancelling');`);
   connection = database;
+  database.exec(`CREATE TABLE IF NOT EXISTS kd_collection_runs(id TEXT PRIMARY KEY,owner TEXT NOT NULL,runner TEXT NOT NULL,created_at TEXT NOT NULL,data TEXT NOT NULL);`);
   if (!database.prepare('PRAGMA table_info(kd_batches)').all().some(column => column.name === 'template')) database.exec("ALTER TABLE kd_batches ADD COLUMN template TEXT NOT NULL DEFAULT 'null'");
   return database;
 }
@@ -58,8 +61,11 @@ export function saveKingdeeWarehouses(owner: string, actorId: string, value: unk
   return rules;
 }
 function parseBatch(row: Record<string, unknown>): KingdeeBatch {
+  const summary = JSON.parse(String(row.summary));
+  // Old batches retain their immutable source files; their display follows today's C-column semantics.
+  summary.notices = (summary.notices || []).map((note: string) => /POD/i.test(note) ? 'C列统一为停止采购，取本批吉客云货品来源；是/否直接展示，未知或冲突留空。' : note);
   return { id: String(row.id), createdAt: String(row.created_at), state: String(row.state), error: String(row.error),
-    summary: JSON.parse(String(row.summary)), sources: JSON.parse(String(row.sources)), rules: JSON.parse(String(row.rules)), template: JSON.parse(String(row.template || 'null')) || undefined };
+    summary, sources: JSON.parse(String(row.sources)), rules: JSON.parse(String(row.rules)), template: JSON.parse(String(row.template || 'null')) || undefined };
 }
 export function getKingdeeBatch(owner: string, id: string) {
   const row = db().prepare('SELECT * FROM kd_batches WHERE id=? AND owner=?').get(id, owner);
@@ -76,7 +82,7 @@ export type KingdeeUpload = { kind: SourceKind; name: string; bytes: Buffer };
 export function saveXingkongProbe(owner: string, actorId: string, probe: XingkongProbe) {
   db().prepare('INSERT INTO kd_probes VALUES(?,?,?,?,?,?)').run(probe.id, owner, actorId, probe.createdAt, probe.kind, JSON.stringify(probe));
 }
-export function listXingkongProbes(owner: string, kind?: 'companySales'|'companyStock') {
+export function listXingkongProbes(owner: string, kind?: XingkongKind) {
   return db().prepare(`SELECT id,created_at,kind,data FROM kd_probes WHERE owner=?${kind?' AND kind=?':''} ORDER BY created_at DESC LIMIT 10`).all(...(kind?[owner,kind]:[owner])).map(row => {
     const probe = JSON.parse(String(row.data)) as XingkongProbe;
     return { id: probe.id, createdAt: probe.createdAt, kind: probe.kind, returnedRows: probe.returnedRows, total: probe.total };
@@ -95,8 +101,8 @@ export function getXingkongCollection(owner: string, id: string): XingkongCollec
   if (!row) throw new AccessError('找不到当前账户的采集任务',404);
   return JSON.parse(String(row.data)) as XingkongCollection;
 }
-export function listXingkongCollections(owner: string, kind?: 'companySales'|'companyStock'): XingkongCollection[] {
-  if(!kind)return [...listXingkongCollections(owner,'companySales'),...listXingkongCollections(owner,'companyStock')].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+export function listXingkongCollections(owner: string, kind?: CollectionKind): XingkongCollection[] {
+  if(!kind)return (['companySales','companyStock','prices','goods'] as const).flatMap(kind=>listXingkongCollections(owner,kind)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   return db().prepare("SELECT data FROM kd_collections WHERE owner=? AND json_extract(data,'$.kind')=? ORDER BY created_at DESC LIMIT 15").all(owner,kind).map(row=>JSON.parse(String(row.data)) as XingkongCollection);
 }
 export function insertXingkongCollection(owner: string, actor: string, runner: string, collection: XingkongCollection) {
@@ -110,17 +116,27 @@ export function updateXingkongCollection(owner: string, collection: XingkongColl
 export function interruptXingkongCollections(runner: string) {
   const rows = db().prepare("SELECT owner,data FROM kd_collections WHERE state IN ('running','cancelling') AND runner<>?").all(runner);
   for (const row of rows) { const job = JSON.parse(String(row.data)) as XingkongCollection; job.state='interrupted'; job.phase='服务重启，采集已中断'; job.error='未发布完整来源；已保存原始页保留，重新采集需再次登录。'; updateXingkongCollection(String(row.owner),job); }
+  for (const row of db().prepare("SELECT owner,data FROM kd_collection_runs WHERE runner<>? AND json_extract(data,'$.state')='running'").all(runner)) {
+    const run=JSON.parse(String(row.data)) as CollectionRun;run.state='interrupted';run.phase='服务重启，统一采集中断';run.error='已完成子任务保留；重新开始需登录。';saveCollectionRun(String(row.owner),runner,run);
+  }
 }
+export function listCollectionRuns(owner:string):CollectionRun[]{return db().prepare('SELECT data FROM kd_collection_runs WHERE owner=? ORDER BY created_at DESC LIMIT 15').all(owner).map(row=>JSON.parse(String(row.data)));}
+export function saveCollectionRun(owner:string,runner:string,run:CollectionRun){run.updatedAt=new Date().toISOString();db().prepare('INSERT INTO kd_collection_runs VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(run.id,owner,runner,run.createdAt,JSON.stringify(run));}
 
-export async function createKingdeeImport(owner: string, actorId: string, uploads: KingdeeUpload[], previousId?: string, references: SourceReferences = {}, collectionReferences: CollectionReferences = {}) {
+export async function createKingdeeImport(owner: string, actorId: string, uploads: KingdeeUpload[], previousId?: string, references: SourceReferences = {}, collectionReferences: CollectionReferences = {}, options: KingdeeImportOptions = {}) {
   if (busy) throw new AccessError('正在处理另一批金蝶文件，请稍后重试', 409);
   const previous = previousId ? getKingdeeBatch(owner, previousId) : null;
   if (previous && previous.state !== 'ready') throw new AccessError('该批次尚不能重算', 400);
+  const baseId = previousId || options.baseBatchId || references.legacy;
+  const base = baseId ? getKingdeeBatch(owner,baseId) : null;
+  if (base && base.state !== 'ready') throw new AccessError('只能继承成功明细',400);
+  const period = options.period ? validatePeriod(options.period) : previous?.template?.periods?.at(-1);
+  if (options.baselineOnly && (baseId || uploads.length !== 1 || uploads[0].kind !== 'legacy' || Object.keys(references).length || Object.keys(collectionReferences).length)) throw new AccessError('仅载入底表时只上传原明细文件',400);
   const saved = new Map<SourceKind, { batch: KingdeeBatch; source: KingdeeBatch['sources'][number] }>();
   const collected = new Map<SourceKind, XingkongCollection>();
   for (const [kind,id] of Object.entries(collectionReferences)) {
-    if ((kind!=='companySales'&&kind!=='companyStock') || typeof id !== 'string') throw new AccessError('仅支持完整公司销售或库存采集来源',400);
-    if (uploads.some(file=>file.kind===kind) || references[kind]) throw new AccessError('同一种来源不能同时上传、复用和选择采集',400);
+    if (!['companySales','companyStock','prices','goods'].includes(kind) || typeof id !== 'string') throw new AccessError('仅支持完整采集来源',400);
+    if (uploads.some(file=>file.kind===kind) || references[kind as SourceKind]) throw new AccessError('同一种来源不能同时上传、复用和选择采集',400);
     const job = getXingkongCollection(owner,id);
     if (job.state !== 'ready' || !job.source || job.kind !== kind) throw new AccessError('采集尚未完整完成，不能作为统计来源',400);
     collected.set(kind,job);
@@ -128,7 +144,7 @@ export async function createKingdeeImport(owner: string, actorId: string, upload
   if (Object.keys(references).some(key => !sourceKinds.includes(key as SourceKind))) throw new AccessError('来源类型无效', 400);
   for (const kind of sourceKinds) {
     if (collected.has(kind)) continue;
-    const reference = references[kind] || previous?.id;
+    const reference = references[kind] || previous?.id || (kind === 'legacy' ? base?.id : undefined);
     if (uploads.some(file => file.kind === kind)) { if (references[kind]) throw new AccessError('同一种来源不能同时上传和复用', 400); continue; }
     if (!reference) continue;
     const batch = previous?.id === reference ? previous : getKingdeeBatch(owner, reference);
@@ -137,7 +153,8 @@ export async function createKingdeeImport(owner: string, actorId: string, upload
     if (!source) { if (references[kind]) throw new AccessError('所选批次不包含该来源', 400); continue; }
     saved.set(kind, { batch, source });
   }
-  if (sourceKinds.slice(0, 5).some(kind => !uploads.some(file => file.kind === kind) && !saved.has(kind) && !collected.has(kind))) throw new AccessError('请准备四份业务表和销售价目表，或明确选择已保存版本', 400);
+  if ((period || options.baselineOnly) && !uploads.some(f=>f.kind==='legacy') && !saved.has('legacy')) throw new AccessError('请上传或选择原明细底表；不能仅凭业务表重新生成另一张明细',400);
+  if (!options.baselineOnly && sourceKinds.slice(0, 5).some(kind => !uploads.some(file => file.kind === kind) && !saved.has(kind) && !collected.has(kind))) throw new AccessError('请准备四份业务表和销售价目表，或明确选择已保存版本', 400);
   const bytes = uploads.reduce((sum, file) => sum + file.bytes.length, 0) + [...saved.values()].reduce((sum, item) => sum + item.source.size, 0) + [...collected.values()].reduce((sum,job)=>sum+job.source!.size,0);
   if (bytes > 50 * 1024 * 1024) throw new AccessError('本批上传与复用文件合计不能超过50MB', 413);
   const id = randomUUID(), rules = kingdeeRules(owner), directory = batchDirectory(owner, id);
@@ -163,7 +180,7 @@ export async function createKingdeeImport(owner: string, actorId: string, upload
     }
     const output = join(directory, 'report.json');
     await new Promise<void>((accept, reject) => {
-      const worker = new Worker(resolve('build-node/kingdee-import.mjs'), { workerData: { files, output, rules }, resourceLimits: { maxOldGenerationSizeMb: 768 } });
+      const worker = new Worker(resolve('build-node/kingdee-import.mjs'), { workerData: { files, output, rules, baselineOnly:!!options.baselineOnly }, resourceLimits: { maxOldGenerationSizeMb: 768 } });
       let settled = false;
       const timer = setTimeout(() => { settled = true; void worker.terminate(); reject(new Error('解析超过180秒，请检查源表规模后重试')); }, 180000);
       worker.once('message', message => { settled = true; clearTimeout(timer); if (message.ok) accept(); else reject(new Error(message.error || 'Excel解析失败')); });
@@ -181,11 +198,19 @@ export async function createKingdeeImport(owner: string, actorId: string, upload
         if (old.source.originCollectionId) source.originCollectionId = old.source.originCollectionId;
       }
     }
+    if (period) {
+      const oldSource = base?.sources.find(s=>s.kind==='legacy');
+      const newSource = report.sources.find(s=>s.kind==='legacy');
+      if (oldSource && newSource?.sha256 !== oldSource.sha256) throw new Error('继承批次与所选原明细底表不同，请使用同一原件，或单独载入新底表');
+      const baseData = base && oldSource ? kingdeeExportData(owner,base.id) : null;
+      inheritKingdeeReport(report,period,baseData?{rows:baseData.rows,template:baseData.batch.template || defaultKingdeeTemplate}:undefined);
+      await writeFile(output,JSON.stringify(report));
+    }
     database.exec('BEGIN IMMEDIATE');
     try {
       const insert = database.prepare('INSERT INTO kd_goods VALUES(?,?,?,?,?,?,?,?,?,?)');
       for (const row of report.rows) insert.run(id, row.code, row.name, row.category, row.model, row.pod, row.ip, row.priceStatus,
-        [row.category, row.model, row.pod, row.ip].some(value => value === null) ? 1 : 0, JSON.stringify(row));
+        [row.category, row.model, row.ip].some(value => value === null) ? 1 : 0, JSON.stringify(row));
       database.prepare("UPDATE kd_batches SET state='ready',summary=?,sources=?,template=? WHERE id=? AND owner=?").run(JSON.stringify(report.summary), JSON.stringify(report.sources), JSON.stringify(report.template || null), id, owner);
       database.exec('COMMIT');
     } catch (error) { database.exec('ROLLBACK'); throw error; }
@@ -206,8 +231,18 @@ export function kingdeeView(owner: string, params: URLSearchParams = new URLSear
   const requested = params.get('batch');
   const batch = requested ? getKingdeeBatch(owner, requested) : latestReady;
   const rules = kingdeeRules(owner);
-  if (!batch || batch.state !== 'ready') return { batch: null, history, rules, rows: [] as KingdeeGoods[], totalRows: 0, page: 1, pageSize: 100, rulesChanged: false };
-  const pageSize = 100;
+  const requestedPageSize=Number(params.get('pageSize'));
+  const pageSize=[100,500,1000].includes(requestedPageSize)?requestedPageSize:1000;
+  if (!batch || batch.state !== 'ready') return { batch: null, history, rules, rows: [] as KingdeeGoods[], totalRows: 0, page: 1, pageSize, coverage:null, rulesChanged: false };
+  const coverageRow=database.prepare(`SELECT COUNT(*) AS goods,
+    SUM(CASE WHEN json_type(data,'$.companySales')='text' THEN 1 ELSE 0 END) AS companySales,
+    SUM(CASE WHEN json_type(data,'$.storeSales')='text' THEN 1 ELSE 0 END) AS storeSales,
+    SUM(CASE WHEN json_type(data,'$.companyStock')='text' THEN 1 ELSE 0 END) AS companyStock,
+    SUM(CASE WHEN json_type(data,'$.storeStock')='text' THEN 1 ELSE 0 END) AS storeStock,
+    SUM(CASE WHEN json_type(data,'$.combinedSales')='text' THEN 1 ELSE 0 END) AS combinedSales,
+    SUM(CASE WHEN json_type(data,'$.legacy')='object' THEN 1 ELSE 0 END) AS legacy
+    FROM kd_goods WHERE batch_id=?`).get(batch.id)!;
+  const coverage=Object.fromEntries(Object.entries(coverageRow).map(([key,value])=>[key,Number(value||0)])) as Record<'goods'|'companySales'|'storeSales'|'companyStock'|'storeStock'|'combinedSales'|'legacy',number>;
   const values: (string | number)[] = [batch.id];
   let where = 'batch_id=?';
   const mode = params.get('sheet') === 'original' ? 'original' : 'current';
@@ -217,12 +252,13 @@ export function kingdeeView(owner: string, params: URLSearchParams = new URLSear
   if (params.get('filter') === 'missing') where += " AND price_status='missing'";
   if (params.get('filter') === 'conflict') where += " AND price_status='conflict'";
   if (params.get('filter') === 'unclassified') where += ' AND unclassified=1';
-  const columns = batch.template?.columns || defaultKingdeeTemplate.columns;
+  const template = batch.template || defaultKingdeeTemplate;
+  const columns = sheetColumns(template,mode);
   const columnIndex = columns.findIndex(column => column.key === params.get('column'));
   const contains = (params.get('contains') || '').slice(0, 150);
-  const expression = columnIndex < 0 ? null : mode === 'current' && columnIndex < 6
-    ? `CASE WHEN json_type(data,'$.legacy')='object' THEN json_extract(data,'$.legacy.values[${columnIndex}]') ELSE json_extract(data,'${sheetDataPath(columnIndex, mode)}') END`
-    : `json_extract(data,'${sheetDataPath(columnIndex, mode)}')`;
+  const expression = columnIndex < 0 ? null : columnIndex < 6 && sheetBinding(columnIndex,mode,template).original !== undefined
+    ? `CASE WHEN json_type(data,'$.legacy')='object' THEN json_extract(data,'$.legacy.values[${columnIndex}]') ELSE json_extract(data,'$.${['category','model','pod','ip','code','name'][columnIndex]}') END`
+    : `json_extract(data,'${sheetDataPath(columnIndex, mode,template)}')`;
   if (contains && expression) { where += ` AND CAST(${expression} AS TEXT) LIKE ? ESCAPE '!'`; values.push('%' + contains.replace(/[!%_]/g, value => '!' + value) + '%'); }
   const count = Number(database.prepare('SELECT COUNT(*) AS n FROM kd_goods WHERE ' + where).get(...values)!.n);
   const page = Math.min(Math.max(1, Math.ceil(count / pageSize)), Math.max(1, Math.min(10000, Math.floor(Number(params.get('page')) || 1))));
@@ -232,7 +268,7 @@ export function kingdeeView(owner: string, params: URLSearchParams = new URLSear
     order = `(${expression} IS NULL),${columnIndex >= 6 ? `CAST(${expression} AS REAL)` : expression} ${direction},code`;
   }
   const rows = database.prepare('SELECT data FROM kd_goods WHERE ' + where + ' ORDER BY ' + order + ' LIMIT ? OFFSET ?').all(...values, pageSize, (page - 1) * pageSize).map(row => JSON.parse(String(row.data)) as KingdeeGoods);
-  return { batch, history, rules, rows, totalRows: count, page, pageSize, rulesChanged: JSON.stringify(batch.rules) !== JSON.stringify(rules) };
+  return { batch, history, rules, rows, totalRows: count, page, pageSize, coverage, rulesChanged: JSON.stringify(batch.rules) !== JSON.stringify(rules) };
 }
 export function kingdeeExportData(owner: string, id: string) {
   const batch = getKingdeeBatch(owner, id);
@@ -255,13 +291,26 @@ export async function readKingdeeSubmission(request: Request) {
   const form = await new Response(Buffer.concat(chunks), { headers: { 'Content-Type': type } }).formData();
   const uploads: KingdeeUpload[] = [];
   let references: SourceReferences = {}, seenReferences = false;
+  let options: KingdeeImportOptions = {}; let seenOptions=false;
   let collectionReferences: CollectionReferences = {}, seenCollections = false;
   for (const [key, value] of form.entries()) {
+    if (key === 'inheritance') {
+      if (seenOptions || typeof value !== 'string' || value.length > 1000) throw new AccessError('继承参数无效',400);
+      seenOptions=true;
+      try {
+        const parsed=JSON.parse(value);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).some(k=>!['baselineOnly','baseBatchId','period'].includes(k))) throw new Error('继承参数无效');
+        if (parsed.baseBatchId && (typeof parsed.baseBatchId!=='string'|| !/^[\da-f-]{36}$/i.test(parsed.baseBatchId))) throw new Error('底表版本无效');
+        if (parsed.baselineOnly !== undefined && typeof parsed.baselineOnly!=='boolean') throw new Error('底表模式无效');
+        options={baselineOnly:parsed.baselineOnly,baseBatchId:parsed.baseBatchId,...(!parsed.baselineOnly?{period:validatePeriod(parsed.period)}:{})};
+      } catch(error) { throw new AccessError(error instanceof Error?error.message:'继承参数无效',400); }
+      continue;
+    }
     if (key === 'collectionReferences') {
       if (seenCollections || typeof value !== 'string' || value.length > 1000) throw new AccessError('采集来源参数无效',400);
       seenCollections=true;
       let parsed: unknown; try { parsed=JSON.parse(value); } catch { throw new AccessError('采集来源参数不是有效JSON',400); }
-      if (!parsed || typeof parsed!=='object' || Array.isArray(parsed) || Object.entries(parsed).some(([kind,id])=>!['companySales','companyStock'].includes(kind) || typeof id!=='string' || !/^[\da-f-]{36}$/i.test(id))) throw new AccessError('采集来源参数无效',400);
+      if (!parsed || typeof parsed!=='object' || Array.isArray(parsed) || Object.entries(parsed).some(([kind,id])=>!['companySales','companyStock','prices','goods'].includes(kind) || typeof id!=='string' || !/^[\da-f-]{36}$/i.test(id))) throw new AccessError('采集来源参数无效',400);
       collectionReferences=parsed as CollectionReferences; continue;
     }
     if (key === 'sourceReferences') {
@@ -275,5 +324,5 @@ export async function readKingdeeSubmission(request: Request) {
     if (uploads.some(file => file.kind === key) || !/\.xlsx$/i.test(value.name) || value.size > 32 * 1024 * 1024) throw new AccessError('每种来源只可上传一份xlsx，单份不超过32MB', 400);
     uploads.push({ kind: key as SourceKind, name: value.name.replace(/.*[\\/]/, '').slice(0, 200), bytes: Buffer.from(await value.arrayBuffer()) });
   }
-  return { uploads, references, collectionReferences };
+  return { uploads, references, collectionReferences, options, hasInheritance:seenOptions };
 }

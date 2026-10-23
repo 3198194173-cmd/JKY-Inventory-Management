@@ -11,7 +11,9 @@ import { KingdeeDashboard } from '@/components/kingdee-dashboard';
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: '金蝶 · 存销分析' };
 
-export default async function KingdeePage() {
+export default async function KingdeePage({searchParams}: {searchParams:Promise<Record<string,string|string[]|undefined>>}) {
+  const query=await searchParams;
+  const params=new URLSearchParams(Object.entries(query).flatMap(([key,value])=>typeof value==='string'?[[key,value]]:[]));
   await requireChatGPTUser('/kingdee');
   const { actor, target } = await currentContext();
   const profile = { id: actor.id, name: actor.display_name, role: actor.role, targetId: target.id, targetName: target.display_name };
@@ -19,7 +21,7 @@ export default async function KingdeePage() {
     <header className="platform-header"><Link href="/kingdee" className="platform-brand"><span><Building2 size={22}/></span>金蝶存销分析</Link><div className="platform-header-actions"><Link href="/platforms"><ArrowLeftRight size={16}/>切换平台</Link><PlatformSignOut/></div></header>
     <div className="platform-content">
       <AccountBar profile={profile} showPlatformSwitch={false}/>
-      <KingdeeDashboard key={target.data_owner} initial={kingdeeView(target.data_owner)}/>
+      <KingdeeDashboard key={target.data_owner} initial={kingdeeView(target.data_owner,params)}/>
     </div>
   </main>;
 }

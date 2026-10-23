@@ -10,7 +10,7 @@ export type PreparedSource = { kind: SourceKind; mode: SourceMode; name: string;
 export function preparationChoices(batch: KingdeeBatch | null, preset: 'mixed' | 'upload' | 'saved' = 'mixed'): SourceChoices {
   return Object.fromEntries(sourceKinds.map(kind => {
     const available = batch?.state === 'ready' && batch.sources.some(source => source.kind === kind);
-    const mode: SourceMode = preset === 'saved' && available ? 'saved' : kind === 'legacy' ? available ? 'saved' : 'omit' : kind === 'prices' && preset === 'mixed' && available ? 'saved' : preset === 'mixed' && (kind === 'companySales' || kind === 'companyStock') ? 'api' : 'upload';
+    const mode: SourceMode = preset === 'saved' && available ? 'saved' : kind === 'legacy' ? available ? 'saved' : 'upload' : kind === 'goods' && preset !== 'mixed' ? available ? 'saved' : 'omit' : preset === 'mixed' && ['companySales','companyStock','prices','goods'].includes(kind) ? 'api' : 'upload';
     return [kind, { mode, batchId: available ? batch!.id : '' }];
   })) as SourceChoices;
 }
@@ -19,7 +19,7 @@ export function assessPreparation(choices: SourceChoices, files: Partial<Record<
   const rows: PreparedSource[] = sourceKinds.map(kind => {
     const choice = choices[kind];
     const base = { kind, mode: choice.mode, name: '', size: 0, ready: false, status: '', issue: '' };
-    if (choice.mode === 'omit') return { ...base, ready: kind === 'legacy', status: '本批不使用', issue: kind === 'legacy' ? '' : '该来源为必需项' };
+    if (choice.mode === 'omit') return { ...base, ready: kind === 'goods', status: '本批不使用', issue: kind === 'goods' ? '' : '该来源为必需项' };
     if (choice.mode === 'api') {
       const collection = collections.find(job=>job.id===choice.collectionId && job.kind===kind && job.state==='ready' && job.source);
       return collection ? {...base,name:collection.source!.name,size:collection.source!.size,ready:true,status:'已选完整采集来源',collection} : {...base,status:'未选择完整采集',issue:'请完成本模块全量采集并采用结果，或上传Excel；20行样本不能生成明细'};
@@ -37,8 +37,8 @@ export function assessPreparation(choices: SourceChoices, files: Partial<Record<
   const size = rows.reduce((sum, row) => sum + row.size, 0);
   const issues = rows.filter(row => row.issue).map(row => `${sourceLabels[row.kind]}：${row.issue}`);
   if (size > 50 * 1024 * 1024) issues.push('本批上传与复用文件合计不能超过50MB');
-  const required = rows.filter(row => row.kind !== 'legacy');
+  const required = rows.filter(row => !(row.kind === 'goods' && row.mode === 'omit'));
   const references = Object.fromEntries(rows.filter(row => row.mode === 'saved' && row.ready).map(row => [row.kind, row.batch!.id])) as SourceReferences;
   const collectionReferences = Object.fromEntries(rows.filter(row=>row.mode==='api' && row.ready && row.collection).map(row=>[row.kind,row.collection!.id])) as CollectionReferences;
-  return { rows, size, issues, ready: issues.length === 0, readyCount: required.filter(row => row.ready).length, references, collectionReferences };
+  return { rows, size, issues, ready: issues.length === 0, readyCount: required.filter(row => row.ready).length, requiredCount: required.length, references, collectionReferences };
 }

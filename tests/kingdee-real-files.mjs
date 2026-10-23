@@ -17,12 +17,12 @@ await new Promise((accept, reject) => {
   worker.once('exit', code => { if (code) reject(new Error('Worker exit ' + code)); });
 });
 const report = JSON.parse(readFileSync(output, 'utf8'));
-assert.equal(report.summary.goods, 43927);
+assert.equal(report.summary.goods, 43925);
 assert.equal(report.summary.totals.companySales, '131412');
 assert.equal(report.summary.totals.storeSales, '3385');
-assert.equal(report.summary.totals.inner, '1313426');
+assert.equal(report.summary.totals.inner, '166161');
 assert.equal(report.summary.totals.outer, '55849');
-assert.equal(report.summary.totals.companyStock, '1369275');
+assert.equal(report.summary.totals.companyStock, '222010');
 assert.equal(report.summary.totals.storeStock, '67009');
 assert.equal(report.summary.unmatchedConfiguredWarehouses.length, 0);
 assert.deepEqual(report.sources.map(item => item.rows), [18624,39934,3704,7659,65851,40578]);

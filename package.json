@@ -22,7 +22,8 @@
     "test:accounts": "node tests/run-accounts.mjs",
     "test:kingdee": "node tests/run-kingdee.mjs",
     "test:xingkong": "node tests/run-xingkong.mjs",
-    "test:collections": "node tests/run-collections.mjs"
+    "test:collections": "node tests/run-collections.mjs",
+    "test:goods-price": "node tests/run-goods-price.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

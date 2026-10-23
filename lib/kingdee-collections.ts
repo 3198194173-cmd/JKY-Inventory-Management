@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { AccessError } from './accounts';
 import { addQuantity } from './decimal';
 import { classifySalesRow, excludedCustomer, salesQuantity, salesSourceWorkbook, type SalesRow } from './kingdee-sales-source';
-import { getXingkongCollection, insertXingkongCollection, interruptXingkongCollections, kingdeeRules, listXingkongCollections, updateXingkongCollection, xingkongCollectionDirectory } from './kingdee-store';
-import { salesColumns, xingkongService, type SalesCollectionLease, type XingkongService } from './kingdee-xingkong';
-import type { XingkongCollection } from './kingdee-xingkong-types';
+import { getXingkongCollection, insertXingkongCollection, interruptXingkongCollections, kingdeeRules, listXingkongCollections, updateXingkongCollection, xingkongCollectionDirectory, listCollectionRuns, saveCollectionRun } from './kingdee-store';
+import { readXingkongSettings, salesColumns, xingkongService, type SalesCollectionLease, type XingkongService } from './kingdee-xingkong';
+import type { CollectionKind, CollectionRun, XingkongCollection } from './kingdee-xingkong-types';
 import { classifyStockRow, stockQuantity, stockSourceColumns, stockSourceWorkbook } from './kingdee-stock-source';
+import { fetchGoodsPage, flatSourceWorkbook, type GoodsRecord } from './kingdee-goods-source';
+import { priceSourceWorkbook, readPriceSchema, type PriceRow } from './kingdee-price-source';
 type Binding = { actor: string; owner: string };
 const check = (condition: unknown, message: string) => { if (!condition) throw new Error(message); };
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -15,30 +17,126 @@ const columns = salesColumns.map(([label,field])=>({label,field}));
 
 export class XingkongCollections {
   private runner = randomUUID();
-  private active: { id: string; owner: string; lease: SalesCollectionLease; cancelled: boolean } | null = null;
-  constructor(private service: XingkongService = xingkongService(), private pageSize = 10000) { interruptXingkongCollections(this.runner); }
+  private active: { id: string; owner: string; lease: Pick<SalesCollectionLease,'dispose'|'signal'|'cancel'>; cancelled: boolean } | null = null;
+  private task: Promise<void> | null = null;
+  private pipeline: { owner:string; run:CollectionRun } | null = null;
+  constructor(private service: XingkongService = xingkongService(), private pageSize = 10000, private goodsFetcher = fetchGoodsPage) { interruptXingkongCollections(this.runner); }
   list(owner: string,kind?: XingkongCollection['kind']) { return listXingkongCollections(owner,kind); }
   get(owner: string,id: string) { return getXingkongCollection(owner,id); }
-  start(binding: Binding, token: string, input: unknown) {
+  start(binding: Binding, token: string, input: unknown, runId?:string) {
+    if(this.pipeline&&this.pipeline.run.id!==runId)throw new AccessError('统一采集正在执行，请等待完成',409);
     if (this.active) throw new AccessError(this.active.owner === binding.owner ? '当前账户已有正在运行的采集任务' : '服务器正在处理另一项采集，请稍后再试',409);
     if (this.list(binding.owner).some(job=>job.state==='running'||job.state==='cancelling')) throw new AccessError('当前账户已有正在运行的采集任务',409);
-    const lease = this.service.leaseCollection(binding,token,input), now = new Date().toISOString();
+    const lease = this.service.leaseCollection(binding,token,input,!!runId), now = new Date().toISOString();
     const job: XingkongCollection = { id:randomUUID(),kind:lease.kind,state:'running',createdAt:now,updatedAt:now,accountId:lease.accountId,settings:lease.settings,
-      error:'',phase:lease.kind==='companySales'?'正在核验组织权限':'正在按保存方案初始化库存查询',rules:structuredClone(kingdeeRules(binding.owner)),warnings:[],
+      ...(runId?{runId}:{}),error:'',phase:'正在初始化采集与校验条件',rules:structuredClone(kingdeeRules(binding.owner)),warnings:[],
       progress:{ pages:0,rawRows:0,reportedTotal:null,businessRows:0,subtotalRows:0,grandTotalRows:0,excludedCustomerRows:0,includedRows:0,businessQuantity:'0',includedQuantity:'0',blankQuantityRows:0 } };
     try { insertXingkongCollection(binding.owner,binding.actor,this.runner,job); }
     catch (error) { lease.dispose(); throw error; }
     this.active={id:job.id,owner:binding.owner,lease,cancelled:false};
     // Standalone Node deployment: background work continues after this response and browser close.
     // A new process marks unfinished jobs interrupted; credentials and sessions are never restored.
-    void (job.kind==='companyStock'?this.runStock(binding.owner,job,lease):this.run(binding.owner,job,lease)).catch(()=>{ console.error('星空采集状态保存失败，请检查金蝶业务存储。'); });
+    this.task=(job.kind==='prices'?this.runPrices(binding.owner,job,lease):job.kind==='companyStock'?this.runStock(binding.owner,job,lease):this.run(binding.owner,job,lease));
+    void this.task.catch(()=>{ console.error('采集状态保存失败，请检查金蝶业务存储。'); });
     return job;
   }
+  runs(owner:string){return listCollectionRuns(owner);}
+  startRun(binding:Binding,token:string,input:unknown){
+    if(this.pipeline||this.active)throw new AccessError('已有采集正在执行',409);
+    if(!input||typeof input!=='object'||Array.isArray(input))throw new AccessError('统一采集参数无效',400);
+    const data=input as Record<string,unknown>,kinds=data.kinds;
+    if(!Array.isArray(kinds)||!kinds.length||new Set(kinds).size!==kinds.length||kinds.some(kind=>!['companySales','companyStock','prices','goods'].includes(String(kind))))throw new AccessError('请选择有效采集模块',400);
+    const settings=Object.fromEntries(Object.entries(data).filter(([key])=>key!=='kinds'));
+    for(const kind of kinds)if(kind!=='goods')readXingkongSettings({...settings,kind});
+    const now=new Date().toISOString(),run:CollectionRun={id:randomUUID(),createdAt:now,updatedAt:now,state:'running',phase:'准备开始统一采集',error:'',kinds:kinds as CollectionKind[],collections:{}};
+    saveCollectionRun(binding.owner,this.runner,run);this.pipeline={owner:binding.owner,run};
+    void this.executeRun(binding,token,settings,run).catch(()=>console.error('统一采集状态保存失败'));return run;
+  }
+  cancelRun(owner:string,id:string){
+    if(!this.pipeline||this.pipeline.owner!==owner||this.pipeline.run.id!==id)throw new AccessError('当前账户没有该活动统一采集',404);
+    this.pipeline.run.cancelRequested=true;
+    if(this.active?.owner===owner)this.cancel(owner,this.active.id);
+    saveCollectionRun(owner,this.runner,this.pipeline.run);return this.pipeline.run;
+  }
+  private async executeRun(binding:Binding,token:string,settings:Record<string,unknown>,run:CollectionRun){
+    const errors:string[]=[];
+    try{
+      // Browser only starts/polls the run; all sequencing lives on the server.
+      for(const kind of run.kinds){
+        if(run.cancelRequested)break;
+        run.phase=`正在采集${{companySales:'公司销量',companyStock:'公司库存',prices:'结算价',goods:'停止采购'}[kind]}`;saveCollectionRun(binding.owner,this.runner,run);
+        try{
+          const job=kind==='goods'?this.startGoods(binding,run.id):this.start(binding,token,{...settings,kind},run.id);
+          run.collections[kind]=job.id;saveCollectionRun(binding.owner,this.runner,run);
+          await this.task;
+          const done=this.get(binding.owner,job.id);if(done.state!=='ready')errors.push(`${kind}：${done.error||done.phase}`);
+        }catch(error){errors.push(`${kind}：${error instanceof Error?error.message:'启动失败'}`);}
+      }
+      run.state=run.cancelRequested?'cancelled':errors.length?'failed':'ready';
+      run.phase=run.state==='ready'?'所选模块全部完成，可采用本次来源':run.state==='cancelled'?'统一采集已停止':'部分模块失败，已完成来源保留';run.error=errors.join('；').slice(0,1500);
+    }catch{run.state='failed';run.phase='统一采集失败';run.error='任务状态处理失败，请检查记录';}
+    finally{try{if(token)this.service.disconnect(binding,token);}catch{}try{saveCollectionRun(binding.owner,this.runner,run);}finally{this.pipeline=null;}}
+  }
+  startGoods(binding:Binding,runId?:string){
+    if(this.active||(this.pipeline&&this.pipeline.run.id!==runId))throw new AccessError('已有采集正在执行',409);
+    const appkey=process.env.JACKYUN_APP_KEY||'',secret=process.env.JACKYUN_APP_SECRET||'';
+    if(!appkey||!secret)throw new AccessError('服务器未配置吉客云采集应用',422);
+    const now=new Date().toISOString(),abort=new AbortController(),timer=setTimeout(()=>abort.abort(),45*60000);timer.unref();
+    const job:XingkongCollection={id:randomUUID(),kind:'goods',...(runId?{runId}:{}),state:'running',createdAt:now,updatedAt:now,accountId:'吉客云服务端应用',settings:{start:'',end:'',salesOrganization:'',settleOrganization:'',schemeId:''},rules:structuredClone(kingdeeRules(binding.owner)),error:'',phase:'正在读取货品停止采购状态',warnings:[],progress:{pages:0,rawRows:0,reportedTotal:null,businessRows:0,subtotalRows:0,grandTotalRows:0,excludedCustomerRows:0,includedRows:0,businessQuantity:'0',includedQuantity:'0',blankQuantityRows:0}};
+    const lease={signal:abort.signal,dispose:()=>{clearTimeout(timer);abort.abort();}};
+    try{insertXingkongCollection(binding.owner,binding.actor,this.runner,job);}catch(error){lease.dispose();throw error;}
+    this.active={id:job.id,owner:binding.owner,lease,cancelled:false};this.task=this.runGoods(binding.owner,job,appkey,secret,lease);void this.task.catch(()=>console.error('货品采集状态保存失败'));return job;
+  }
+  private async runGoods(owner:string,job:XingkongCollection,appkey:string,secret:string,lease:Pick<SalesCollectionLease,'signal'|'dispose'>){
+    const directory=xingkongCollectionDirectory(owner,job.id),rows:GoodsRecord[]=[],seen=new Set<string>();let cursor='0',complete=false;
+    try{
+      await mkdir(directory,{recursive:true});
+      for(let page=1;page<=5000;page++){
+        check(!lease.signal.aborted,'货品采集已停止');const result=await this.goodsFetcher(appkey,secret,cursor,lease.signal);
+        if(page===1)job.progress.reportedTotal=result.total;
+        await writeFile(join(directory,`page-${String(page).padStart(4,'0')}.json`),JSON.stringify({cursor,...result}),{flag:'wx'});
+        job.progress.pages=page;
+        if(!result.rows.length){complete=true;break;}
+        const next=result.rows.at(-1)!.skuId;
+        for(const row of result.rows){check(BigInt(row.skuId)>BigInt(cursor)&&BigInt(row.skuId)<=BigInt(next)&&!seen.has(row.skuId),'货品分页规格内码重复或游标未递增');seen.add(row.skuId);rows.push(row);}
+        check(rows.length<=149999,'货品超过149999规格处理上限，未发布');cursor=next;
+        job.progress.rawRows=rows.length;job.progress.businessRows=rows.length;job.progress.includedRows=rows.length;job.phase=`货品第${page}页，已读取${rows.length}条`;updateXingkongCollection(owner,job);
+        await new Promise<void>(accept=>setTimeout(accept,200));
+      }
+      check(complete&&!lease.signal.aborted,'货品尚未完整采集');
+      check(job.progress.reportedTotal===null||rows.length===job.progress.reportedTotal,'货品实收数与首批总数不符，未发布');
+      const content=flatSourceWorkbook(['物料编码','物料名称','停止采购','规格内码'],rows.map(row=>[row.goodsNo,row.goodsName,row.stopPurchasing,row.skuId]),'吉客云货品属性');
+      await this.publishSource(owner,job,content,`吉客云货品属性-${job.createdAt.slice(0,10)}.xlsx`,{method:'erp.storage.goodslist',rows:rows.length,unknown:rows.filter(row=>row.stopPurchasing===null).length});
+      job.warnings=['只按goodsNo精确关联物料编码，不从名称猜测；未返回或冲突保留未知，不当作否。','停止采购直接使用isStopPurchasing，不转换POD，不改写类目、型号或IP。'];
+      job.state='ready';job.phase='货品停止采购采集完成';updateXingkongCollection(owner,job);
+    }catch(error){this.fail(owner,job,error);}finally{lease.dispose();if(this.active?.id===job.id)this.active=null;}
+  }
+  private async runPrices(owner:string,job:XingkongCollection,lease:SalesCollectionLease){
+    const rows:PriceRow[]=[],seen=new Set<string>(),directory=xingkongCollectionDirectory(owner,job.id);let complete=false;
+    try{
+      await mkdir(directory,{recursive:true});await lease.prepare();
+      for(let page=1;page<=500;page++){
+        check(!lease.signal.aborted,'价目表采集已停止');const result=await lease.page(rows.length,2000);
+        await writeFile(join(directory,`page-${String(page).padStart(4,'0')}.json`),JSON.stringify(result),{flag:'wx'});
+        job.progress.pages=page;if(!result.rows.length){complete=true;break;}
+        for(const row of result.rows as unknown as PriceRow[]){const key=row.id+'\0'+row.entryId;check(!seen.has(key),'价目表出现重复分录内码，未发布');seen.add(key);rows.push(row);}
+        check(rows.length<=149999,'价目表超过149999分录处理上限，未发布');job.progress.rawRows=rows.length;job.progress.businessRows=rows.length;job.progress.includedRows=rows.length;job.phase=`价目表第${page}页，已读取${rows.length}条`;updateXingkongCollection(owner,job);
+      }
+      check(complete&&!lease.signal.aborted,'价目表尚未完整采集');job.progress.reportedTotal=rows.length;
+      await this.publishSource(owner,job,priceSourceWorkbook(rows,readPriceSchema()),`星空销售价目表-${job.settings.priceListNumber}.xlsx`,{rows:rows.length,formId:'BD_SAL_PriceList',settings:job.settings});
+      job.warnings=['按组织、价目表编号查询；状态、整单状态、失效均为全部，单位和有效期原值保留。','同编码价格或单位/有效期冲突留空，不任取第一条；价格生效口径尚需业务确认。','稳定内码排序并检查重复分录；分页并非原子快照，采集期间请避免修改价目表。'];job.state='ready';job.phase='销售价目表采集完成';updateXingkongCollection(owner,job);
+    }catch(error){this.fail(owner,job,error);}finally{lease.dispose();if(this.active?.id===job.id)this.active=null;}
+  }
+  private async publishSource(owner:string,job:XingkongCollection,content:Buffer,name:string,audit:unknown){
+    check(content.length<=32*1024*1024,'来源超过32MB，未发布');const directory=xingkongCollectionDirectory(owner,job.id);
+    await writeFile(join(directory,'source.xlsx'),content,{flag:'wx'});await writeFile(join(directory,'audit.json'),JSON.stringify(audit));await writeFile(join(directory,'statistics.json'),JSON.stringify(audit));job.source={name,size:content.length,sha256:hash(content),rows:job.progress.businessRows};
+  }
+  private fail(owner:string,job:XingkongCollection,error:unknown){const cancelled=this.active?.id===job.id&&this.active.cancelled;job.state=cancelled?'cancelled':'failed';job.phase=cancelled?'采集已停止':'采集失败，未发布完整来源';job.error=error instanceof Error?error.message.slice(0,500):'采集失败';delete job.source;updateXingkongCollection(owner,job);}
   cancel(owner: string,id: string) {
     const job = this.get(owner,id);
     if (job.state !== 'running' && job.state !== 'cancelling') throw new AccessError('该采集任务已结束',409);
     if (!this.active || this.active.id !== id || this.active.owner !== owner) throw new AccessError('当前进程没有该活动任务，请刷新后检查中断状态',409);
-    this.active.cancelled=true; this.active.lease.dispose();
+    this.active.cancelled=true; (this.active.lease.cancel ?? this.active.lease.dispose)();
     job.state='cancelling';job.phase='正在停止，未发布的结果不会用于统计';updateXingkongCollection(owner,job);return job;
   }
   private async run(owner: string,job: XingkongCollection,lease: SalesCollectionLease) {
